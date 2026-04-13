@@ -1,0 +1,59 @@
+# Environment
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+.venv/
+venv/
+env/
+pip-wheel-metadata/
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+.hypothesis/
+
+# MyPy
+.mypy_cache/
+.dmypy.json
+
+# Ruff
+.ruff_cache/
+
+# Data & Models (large files)
+data/
+models/
+*.db
+*.sqlite
+
+# Logs
+logs/
+*.log
+*.jsonl
+
+# MetaTrader
+*.ex4
+*.ex5
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

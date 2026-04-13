@@ -1,0 +1,63 @@
+"""ML module configuration."""
+
+from __future__ import annotations
+
+from pydantic import Field
+
+from metatrade.core.config_base import BaseConfig
+
+
+class MLConfig(BaseConfig):
+    """Configuration for the ML analysis module.
+
+    Walk-forward training parameters and model hyper-parameters
+    are defined here. Override via environment variables with the
+    ``ML_`` prefix (e.g. ``ML_TRAIN_WINDOW_BARS=5000``).
+    """
+
+    # ── Walk-forward training ─────────────────────────────────────────────────
+    # Training window in bars (how much history the model trains on)
+    train_window_bars: int = Field(default=2000, ge=200)
+
+    # Test window in bars (how many bars to evaluate each fold)
+    test_window_bars: int = Field(default=500, ge=50)
+
+    # Step size in bars between successive training windows
+    step_bars: int = Field(default=250, ge=10)
+
+    # ── Feature / label parameters ────────────────────────────────────────────
+    # Number of bars to look ahead when computing labels
+    forward_bars: int = Field(default=5, ge=1, le=50)
+
+    # ATR multiplier for label threshold (0 = no-trade zone width)
+    atr_threshold_mult: float = Field(default=1.5, gt=0.0)
+
+    # ── Model ─────────────────────────────────────────────────────────────────
+    # Minimum class accuracy before a model is considered "trained"
+    min_accuracy: float = Field(default=0.52, ge=0.5, le=1.0)
+
+    # Minimum number of training samples
+    min_train_samples: int = Field(default=100, ge=10)
+
+    # Random seed for reproducibility
+    random_seed: int = Field(default=42)
+
+    # Max number of boosting iterations for HistGradientBoostingClassifier
+    # (equivalent to n_estimators in RandomForest)
+    max_iter: int = Field(default=100, ge=10)
+
+    # Max depth of each tree (None = unlimited)
+    max_depth: int | None = Field(default=5)
+
+    # ── Registry ─────────────────────────────────────────────────────────────
+    # Directory where model snapshots are persisted
+    model_registry_dir: str = Field(default="data/models")
+
+    model_config = {
+        "env_prefix": "ML_",
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        "case_sensitive": False,
+        "extra": "ignore",
+        "frozen": True,
+    }

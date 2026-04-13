@@ -1,0 +1,425 @@
+"""Base runner — shared logic across backtest, paper, and live modes.
+
+The BaseRunner implements the core signal→decision→execution pipeline:
+1. Receive bar data (via process_bar())
+2. Run each technical/ML module to produce AnalysisSignals
+3. Feed signals to the consensus engine
+4. Evaluate risk (kill switch, limits, position sizing)
+5. Return the RiskDecision (approved or vetoed) to the caller
+
+Each runner subclass calls process_bar() with appropriate account data.
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, replace
+from datetime import date, datetime, timezone
+from decimal import Decimal
+
+from metatrade.consensus.engine import ConsensusEngine
+from metatrade.consensus.config import ConsensusConfig
+from metatrade.consensus.market_accuracy_tracker import MarketAccuracyTracker
+from metatrade.core.contracts.account import AccountState
+from metatrade.core.contracts.market import Bar
+from metatrade.core.contracts.signal import AnalysisSignal
+from metatrade.core.contracts.risk import RiskDecision
+from metatrade.core.enums import ConsensusMode, SignalDirection, OrderSide, RunMode
+from metatrade.alerting.telegram_alerter import TelegramAlerter
+from metatrade.risk.config import RiskConfig
+from metatrade.risk.manager import RiskManager
+from metatrade.runner.config import RunnerConfig
+from metatrade.technical_analysis.interface import ITechnicalModule
+
+
+log = logging.getLogger(__name__)
+
+
+@dataclass
+class RunStats:
+    """Accumulated statistics for a runner session."""
+
+    bars_processed: int = 0
+    signals_generated: int = 0
+    trades_attempted: int = 0
+    trades_executed: int = 0
+    trades_vetoed: int = 0
+    kill_switch_activations: int = 0
+    weight_updates: int = 0           # signals evaluated against market
+
+
+class BaseRunner:
+    """Core orchestration logic shared by all runner modes.
+
+    Subclasses call `process_bar()` to run the full pipeline for one tick.
+
+    Args:
+        config:  RunnerConfig for this session.
+        modules: List of ITechnicalModule instances to query each bar.
+    """
+
+    def __init__(
+        self,
+        config: RunnerConfig,
+        modules: list[ITechnicalModule],
+        auto_weight: bool = True,
+        weight_forward_bars: int = 5,
+        alerter: TelegramAlerter | None = None,
+    ) -> None:
+        """
+        Args:
+            config:               RunnerConfig for this session.
+            modules:              List of ITechnicalModule instances.
+            auto_weight:          If True (default), use DYNAMIC_VOTE consensus
+                                  and automatically update module weights based
+                                  on how well each module predicted market
+                                  direction over the next ``weight_forward_bars``
+                                  bars.  Weights are proportional to accuracy:
+                                  a large error reduces the weight more than a
+                                  small one.
+            weight_forward_bars:  Bars ahead used to evaluate signal accuracy.
+                                  Must match the ML labelling horizon (default 5).
+            alerter:              Optional TelegramAlerter for operational alerts.
+                                  None (default) = silent, no alerts sent.
+        """
+        self._config = config
+        self._modules = modules
+
+        consensus_cfg = ConsensusConfig(
+            mode=ConsensusMode.DYNAMIC_VOTE if auto_weight else ConsensusMode.SIMPLE_VOTE,
+            threshold=config.consensus_threshold,
+            min_signals=config.min_signals,
+        )
+        self._consensus = ConsensusEngine(consensus_cfg)
+
+        # Market accuracy tracker — evaluates each signal N bars later and
+        # updates the dynamic weight of the module proportionally to its error.
+        if auto_weight:
+            self._tracker: MarketAccuracyTracker | None = MarketAccuracyTracker(
+                update_callback=self._consensus.update_performance_scored,
+                forward_bars=weight_forward_bars,
+            )
+        else:
+            self._tracker = None
+
+        risk_cfg = RiskConfig(
+            max_risk_pct=config.max_risk_pct,
+            daily_loss_limit_pct=config.daily_loss_limit_pct,
+            auto_kill_drawdown_pct=config.auto_kill_drawdown_pct,
+            max_open_positions=config.max_open_positions,
+        )
+        self._risk = RiskManager(risk_cfg)
+        self._stats = RunStats()
+
+        # ── Cooldown counter ──────────────────────────────────────────────────
+        # Counts down the remaining bars to skip after an approved trade.
+        self._cooldown_remaining: int = 0
+
+        # ── Drawdown recovery ─────────────────────────────────────────────────
+        # Tracks the highest equity seen so far to measure peak-to-trough DD.
+        self._peak_equity: Decimal = Decimal("0")
+
+        # ── Daily circuit breaker ─────────────────────────────────────────────
+        # Resets each day; blocks new entries once intraday loss >= limit.
+        self._today_date: date | None = None
+        self._session_start_equity: Decimal = Decimal("0")
+
+        # ── Alerter ───────────────────────────────────────────────────────────
+        self._alerter: TelegramAlerter | None = alerter
+
+    @property
+    def stats(self) -> RunStats:
+        return self._stats
+
+    @property
+    def risk_manager(self) -> RiskManager:
+        return self._risk
+
+    @property
+    def accuracy_tracker(self) -> MarketAccuracyTracker | None:
+        """The market accuracy tracker, or None if auto_weight=False."""
+        return self._tracker
+
+    def get_module_weight(self, module_id: str) -> float | None:
+        """Current dynamic weight for a module (None if auto_weight=False)."""
+        return self._consensus.get_module_weight(module_id)
+
+    # ── Pipeline ──────────────────────────────────────────────────────────────
+
+    def process_bar(
+        self,
+        bars: list[Bar],
+        account_balance: Decimal,
+        account_equity: Decimal,
+        free_margin: Decimal,
+        timestamp_utc: datetime | None = None,
+        open_positions: int = 0,
+        current_spread_pips: float | None = None,
+        run_mode: RunMode = RunMode.PAPER,
+    ) -> RiskDecision | None:
+        """Run the full pipeline for one bar tick.
+
+        Args:
+            bars:                 Recent bars (oldest first, newest last).
+            account_balance:      Current account balance.
+            account_equity:       Balance + unrealized PnL.
+            free_margin:          Capital available for new positions.
+            timestamp_utc:        UTC timestamp; defaults to now.
+            open_positions:       Number of currently open positions.
+            current_spread_pips:  Current spread in pips (for spread check).
+            run_mode:             Execution context (PAPER, LIVE, BACKTEST).
+
+        Returns:
+            RiskDecision (approved=True or approved=False with veto) if consensus
+            produced an actionable signal. None if consensus is HOLD.
+        """
+        if timestamp_utc is None:
+            timestamp_utc = datetime.now(timezone.utc)
+
+        self._stats.bars_processed += 1
+
+        # ── Guard: spread filter ──────────────────────────────────────────────
+        # Block new entries when the broker spread is too wide.
+        max_spread = self._config.max_spread_pips
+        if (
+            max_spread > 0
+            and current_spread_pips is not None
+            and current_spread_pips > max_spread
+        ):
+            log.debug(
+                "spread_filter: %.2f pips > max %.2f — skipping bar",
+                current_spread_pips,
+                max_spread,
+            )
+            return None
+
+        # ── Guard: daily circuit breaker (absolute USD) ───────────────────────
+        # Resets the daily reference equity at the start of each new calendar day.
+        # Once intraday losses exceed daily_loss_limit_usd, all new entries are blocked.
+        bar_date = timestamp_utc.date()
+        if self._today_date != bar_date:
+            self._today_date = bar_date
+            self._session_start_equity = account_equity
+        daily_limit = Decimal(str(self._config.daily_loss_limit_usd))
+        if daily_limit > Decimal("0"):
+            daily_loss = self._session_start_equity - account_equity
+            if daily_loss >= daily_limit:
+                log.debug(
+                    "daily_circuit_breaker: loss=%.2f >= limit=%.2f — skipping bar",
+                    float(daily_loss),
+                    float(daily_limit),
+                )
+                return None
+
+        # ── Guard: signal cooldown ────────────────────────────────────────────
+        # After any approved trade, stay out of the market for N bars.
+        if self._cooldown_remaining > 0:
+            self._cooldown_remaining -= 1
+            log.debug(
+                "signal_cooldown: %d bars remaining — skipping bar",
+                self._cooldown_remaining + 1,
+            )
+            return None
+
+        current_close = bars[-1].close
+
+        # ── Step 1a: Evaluate past signals against current price ──────────────
+        # Must run BEFORE collecting new signals so that weights are already
+        # updated when the consensus engine votes on the current bar.
+        if self._tracker is not None:
+            evaluations = self._tracker.on_bar(current_close, timestamp_utc)
+            self._stats.weight_updates += len(evaluations)
+
+        # ── Step 1b: Collect signals ──────────────────────────────────────────
+        signals: list[AnalysisSignal] = []
+        for module in self._modules:
+            if len(bars) < module.min_bars:
+                continue
+            try:
+                sig = module.analyse(bars, timestamp_utc)
+                signals.append(sig)
+                self._stats.signals_generated += 1
+            except Exception as exc:
+                log.warning(
+                    "Module %s raised during analyse(): %s",
+                    module.module_id,
+                    exc,
+                )
+
+        if not signals:
+            return None
+
+        # ── Step 1c: Record new signals for future weight evaluation ──────────
+        if self._tracker is not None:
+            self._tracker.record_signals(signals, current_close, timestamp_utc)
+
+        # ── Step 2: Consensus ─────────────────────────────────────────────────
+        consensus_result = self._consensus.evaluate(
+            symbol=self._config.symbol,
+            signals=signals,
+            timestamp_utc=timestamp_utc,
+        )
+
+        if not consensus_result.is_actionable:
+            return None
+
+        direction = consensus_result.final_direction
+        if direction == SignalDirection.BUY:
+            side = OrderSide.BUY
+        elif direction == SignalDirection.SELL:
+            side = OrderSide.SELL
+        else:
+            return None
+
+        # ── Step 3: Build AccountState ────────────────────────────────────────
+        used_margin = (
+            account_balance - free_margin
+            if account_balance >= free_margin
+            else Decimal("0")
+        )
+        account = AccountState(
+            balance=account_balance,
+            equity=account_equity,
+            free_margin=free_margin,
+            used_margin=used_margin,
+            timestamp_utc=timestamp_utc,
+            open_positions_count=open_positions,
+            run_mode=run_mode,
+        )
+
+        # ── Step 3b: Drawdown-recovery tracking ───────────────────────────────
+        # Keep a running peak-equity and detect when we're in recovery mode.
+        if account_equity > self._peak_equity:
+            self._peak_equity = account_equity
+
+        in_recovery = False
+        if self._peak_equity > Decimal("0"):
+            dd_pct = float(
+                (self._peak_equity - account_equity) / self._peak_equity
+            )
+            if dd_pct >= self._config.drawdown_recovery_threshold_pct:
+                in_recovery = True
+                log.debug(
+                    "drawdown_recovery: equity=%.2f peak=%.2f dd=%.2f%% — "
+                    "scaling risk by %.2f",
+                    float(account_equity),
+                    float(self._peak_equity),
+                    dd_pct * 100,
+                    self._config.drawdown_recovery_risk_mult,
+                )
+
+        # ── Step 4: Risk evaluation ───────────────────────────────────────────
+        self._stats.trades_attempted += 1
+
+        entry_price = bars[-1].close
+        sl_price = self._estimate_sl(bars, entry_price, side)
+        current_atr = self._compute_current_atr(bars)
+
+        decision = self._risk.evaluate(
+            symbol=self._config.symbol,
+            side=side,
+            entry_price=entry_price,
+            sl_price=sl_price,
+            account=account,
+            timestamp_utc=timestamp_utc,
+            spread_pips=current_spread_pips,
+            current_atr=current_atr,
+        )
+
+        # ── Step 4b: Apply drawdown-recovery lot-size reduction ───────────────
+        if decision.approved and in_recovery and decision.position_size is not None:
+            mult = Decimal(str(self._config.drawdown_recovery_risk_mult))
+            scaled_ps = replace(
+                decision.position_size,
+                lot_size=decision.position_size.lot_size * mult,
+            )
+            decision = replace(decision, position_size=scaled_ps)
+
+        # ── Step 4c: Update stats, alerter, and cooldown ─────────────────────
+        if decision.approved:
+            self._stats.trades_executed += 1
+            # Fire operational alert if alerter is configured
+            if self._alerter is not None and decision.position_size is not None:
+                ps = decision.position_size
+                self._alerter.alert_trade_opened(
+                    symbol=self._config.symbol,
+                    side=side.value,
+                    lot_size=float(ps.lot_size),
+                    entry=float(entry_price),
+                    sl=float(ps.stop_loss_price),
+                    tp=float(ps.take_profit_price) if ps.take_profit_price else None,
+                )
+            # Activate cooldown — prevents re-entry for N bars after a trade.
+            if self._config.signal_cooldown_bars > 0:
+                self._cooldown_remaining = self._config.signal_cooldown_bars
+        else:
+            self._stats.trades_vetoed += 1
+            if (
+                decision.veto is not None
+                and "KILL_SWITCH" in decision.veto.veto_code
+            ):
+                self._stats.kill_switch_activations += 1
+
+        return decision
+
+    def _estimate_sl(
+        self,
+        bars: list[Bar],
+        entry_price: Decimal,
+        side: OrderSide,
+    ) -> Decimal:
+        """Estimate a stop-loss price using the Chandelier Exit method.
+
+        SL = entry ± ATR(chandelier_atr_period) × chandelier_atr_mult
+
+        The Chandelier Exit uses actual volatility to set the stop distance,
+        adapting to current market conditions rather than a fixed pip value.
+
+        Falls back to a 20-pip default (0.0020) when there are insufficient
+        bars to compute ATR.
+        """
+        period = self._config.chandelier_atr_period
+        mult = Decimal(str(self._config.chandelier_atr_mult))
+        fallback_distance = Decimal("0.0020")
+
+        if len(bars) >= period + 1:
+            try:
+                from metatrade.technical_analysis.indicators.atr import atr as compute_atr
+                highs  = [b.high  for b in bars]
+                lows   = [b.low   for b in bars]
+                closes = [b.close for b in bars]
+                atr_vals = compute_atr(highs, lows, closes, period)
+                curr_atr = atr_vals[-1]
+                if curr_atr > Decimal("0"):
+                    distance = curr_atr * mult
+                    if side == OrderSide.BUY:
+                        return entry_price - distance
+                    return entry_price + distance
+            except Exception as exc:
+                log.debug("chandelier_sl fallback: %s", exc)
+
+        # Fallback: fixed 20-pip distance
+        if side == OrderSide.BUY:
+            return entry_price - fallback_distance
+        return entry_price + fallback_distance
+
+    def _compute_current_atr(self, bars: list[Bar]) -> Decimal | None:
+        """Return the most recent ATR value, or None if insufficient data.
+
+        Used to supply vol-scaled position sizing with the current market
+        volatility without recomputing ATR a second time.
+        """
+        period = self._config.chandelier_atr_period
+        if len(bars) < period + 1:
+            return None
+        try:
+            from metatrade.technical_analysis.indicators.atr import atr as compute_atr
+            highs  = [b.high  for b in bars]
+            lows   = [b.low   for b in bars]
+            closes = [b.close for b in bars]
+            atr_vals = compute_atr(highs, lows, closes, period)
+            val = atr_vals[-1]
+            return val if val > Decimal("0") else None
+        except Exception as exc:
+            log.debug("_compute_current_atr failed: %s", exc)
+            return None
