@@ -1,6 +1,6 @@
-"""Live trading runner — real broker, real fills, real money.
+"""Live trading runner - real broker, real fills, real money.
 
-⚠️  WARNING: This script places REAL ORDERS on a LIVE account.
+WARNING: This script places REAL ORDERS on a LIVE account.
     Test thoroughly on a DEMO account using scripts/run_paper.py first.
 
 Usage:
@@ -32,10 +32,11 @@ _SRC = Path(__file__).parent.parent / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from metatrade.core.enums import Timeframe
+from metatrade.core.enums import RunMode, Timeframe
 from metatrade.core.log import get_logger
 from metatrade.ml.config import MLConfig
 from metatrade.ml.registry import ModelRegistry
+from metatrade.market_data.config import MarketDataConfig
 from metatrade.runner.config import RunnerConfig
 from metatrade.runner.module_config import ModuleConfig
 from metatrade.runner.module_builder import build_modules
@@ -66,7 +67,7 @@ _TF_SECONDS: dict[Timeframe, int] = {
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Forex LIVE trading via MetaTrader 5  ⚠️  REAL MONEY"
+        description="Forex LIVE trading via MetaTrader 5 - REAL MONEY"
     )
     p.add_argument("--symbol", default="EURUSD")
     p.add_argument("--timeframe", default="H1", choices=list(_TIMEFRAME_MAP))
@@ -81,6 +82,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--mt5-login", type=int, default=0)
     p.add_argument("--mt5-password", default="")
     p.add_argument("--mt5-server", default="")
+    p.add_argument("--mt5-path", default="", help="Path to terminal64.exe if MT5 is not auto-detected")
+    p.add_argument("--mt5-timeout-ms", type=int, default=60000, help="MT5 initialization timeout in milliseconds")
     p.add_argument("--magic-number", type=int, default=20240601, help="MT5 magic number for order tagging")
     # Model
     p.add_argument("--model-dir", type=Path, default=Path("data/models"))
@@ -103,11 +106,35 @@ def require_confirmation(args: argparse.Namespace) -> None:
     """Force explicit confirmation before going live."""
     if args.confirm:
         return
-    print("⚠️  You are about to start LIVE trading with REAL MONEY.")
+    print("WARNING: You are about to start LIVE trading with REAL MONEY.")
     print("   Add --confirm to the command to proceed.")
     print()
     print("   For paper trading (no real money) use: scripts/run_paper.py")
     sys.exit(0)
+
+
+def validate_mt5_access_mode(args: argparse.Namespace) -> None:
+    """Accept either explicit credentials or an already logged-in MT5 terminal."""
+    if args.mt5_login and args.mt5_password and args.mt5_server:
+        return
+    print(
+        "No explicit MT5 credentials provided - using the account currently logged into the MT5 terminal.",
+        file=sys.stderr,
+    )
+
+
+def apply_mt5_defaults(args: argparse.Namespace) -> argparse.Namespace:
+    """Fill MT5 connection args from .env when CLI values are omitted."""
+    cfg = MarketDataConfig.load()
+    if not args.mt5_login:
+        args.mt5_login = cfg.mt5_login
+    if not args.mt5_password:
+        args.mt5_password = cfg.mt5_password
+    if not args.mt5_server:
+        args.mt5_server = cfg.mt5_server
+    if not args.mt5_path:
+        args.mt5_path = cfg.mt5_path
+    return args
 
 
 def load_registry(args: argparse.Namespace) -> ModelRegistry | None:
@@ -119,14 +146,16 @@ def load_registry(args: argparse.Namespace) -> ModelRegistry | None:
         if snap is None:
             print(f"ERROR: Model {args.model_version!r} not found in {args.model_dir}", file=sys.stderr)
             sys.exit(1)
-        registry.register(snap.classifier, snap.symbol, version=snap.version, tags=snap.tags)
-        registry.promote(snap.version)
         print(f"Model loaded: {snap.version}")
     else:
         active = registry.get_active()
         if active is None:
+            latest = sorted(args.model_dir.glob(f"{args.symbol}_v*.pkl"), reverse=True)
+            if latest:
+                version = latest[0].stem.removeprefix(f"{args.symbol}_")
+                active = registry.load_from_disk(args.symbol, version)
             if args.no_ml:
-                print("No ML model — running with technical indicators only.")
+                print("No ML model - running with technical indicators only.")
                 return None
             print(
                 "WARNING: No active model. Run scripts/train.py first, or pass --no-ml.",
@@ -150,15 +179,17 @@ def make_module_cfg(args: argparse.Namespace) -> ModuleConfig:
 
 def main() -> None:
     args = parse_args()
+    args = apply_mt5_defaults(args)
     require_confirmation(args)
+    validate_mt5_access_mode(args)
 
     tf = _TIMEFRAME_MAP[args.timeframe]
     tf_secs = _TF_SECONDS[tf]
 
-    # ── 1. Connect to MT5 ─────────────────────────────────────────────────────
+    # 1. Connect to MT5
     try:
         from metatrade.market_data.collectors.mt5_collector import MT5Collector
-        from metatrade.broker.mt5_adapter import MT5Adapter
+        from metatrade.broker.mt5_adapter import MT5BrokerAdapter
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(1)
@@ -168,22 +199,29 @@ def main() -> None:
         login=args.mt5_login,
         password=args.mt5_password,
         server=args.mt5_server,
+        path=args.mt5_path,
+        timeout=args.mt5_timeout_ms,
     )
 
-    broker = MT5Adapter(
-        symbol=args.symbol,
+    broker = MT5BrokerAdapter(
+        login=args.mt5_login,
+        password=args.mt5_password,
+        server=args.mt5_server,
+        path=args.mt5_path or None,
+        timeout=args.mt5_timeout_ms,
+        run_mode=RunMode.LIVE,
         magic_number=args.magic_number,
     )
 
-    # ── 2. Load warmup bars ───────────────────────────────────────────────────
+    # 2. Load warmup bars
     date_to = datetime.now(timezone.utc)
     date_from = date_to - timedelta(seconds=tf_secs * (args.warmup_bars + 10))
 
-    print(f"Loading {args.warmup_bars} warmup bars …")
+    print(f"Loading {args.warmup_bars} warmup bars ...")
     bars = collector.collect(args.symbol, tf, date_from, date_to)
     print(f"  Got {len(bars)} bars.")
 
-    # ── 3. Build runner ───────────────────────────────────────────────────────
+    # 3. Build runner
     registry = load_registry(args)
     module_cfg = make_module_cfg(args)
     modules = build_modules(args.timeframe.lower(), module_cfg=module_cfg, registry=registry)
@@ -208,7 +246,7 @@ def main() -> None:
         runner._bar_buffer = runner._bar_buffer[-500:]
 
     account = broker.get_account()
-    print(f"\n🟢 LIVE trading started — {args.symbol}/{args.timeframe}")
+    print(f"\nLIVE trading started - {args.symbol}/{args.timeframe}")
     print(f"  Account  : {account.login if hasattr(account, 'login') else 'N/A'}")
     print(f"  Balance  : {account.balance}")
     print(f"  Equity   : {account.equity}")
@@ -222,11 +260,11 @@ def main() -> None:
 
     def _stop(sig, frame):
         _running[0] = False
-        print("\nStopping …")
+        print("\nStopping ...")
 
     signal.signal(signal.SIGINT, _stop)
 
-    # ── 4. Live loop ──────────────────────────────────────────────────────────
+    # 4. Live loop
     while _running[0]:
         date_to = datetime.now(timezone.utc)
         date_from = date_to - timedelta(seconds=tf_secs * 5)
@@ -258,23 +296,23 @@ def main() -> None:
             elif hasattr(decision, "approved") and decision.approved:
                 ps = decision.position_size
                 print(
-                    f"[{ts_str}] 🔵 ORDER SUBMITTED  side={decision.side.value}  "
+                    f"[{ts_str}] ORDER SUBMITTED  side={decision.side.value}  "
                     f"lot={float(ps.lot_size):.2f}  sl={ps.stop_loss_price}  tp={ps.take_profit_price}"
                 )
             else:
                 veto_code = decision.veto.veto_code if decision.veto else "?"
-                # Kill switch = red, normal veto = yellow
-                icon = "🔴" if "KILL" in veto_code else "🟡"
+                # Use ASCII output so Windows consoles do not fail on Unicode.
+                icon = "KILL" if "KILL" in veto_code else "VETO"
                 print(f"[{ts_str}] {icon} VETOED  ({veto_code})")
                 if "KILL" in veto_code:
-                    print("  Kill switch triggered — stopping runner.")
+                    print("  Kill switch triggered - stopping runner.")
                     _running[0] = False
                     break
 
         if _running[0]:
             time.sleep(poll_interval)
 
-    # ── 5. Summary ────────────────────────────────────────────────────────────
+    # 5. Summary
     runner.disconnect()
 
     stats = runner.stats

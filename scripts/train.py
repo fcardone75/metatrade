@@ -37,6 +37,7 @@ from metatrade.core.log import get_logger
 from metatrade.ml.config import MLConfig
 from metatrade.ml.registry import ModelRegistry
 from metatrade.ml.walk_forward import WalkForwardTrainer
+from metatrade.market_data.config import MarketDataConfig
 
 log = get_logger("train")
 
@@ -75,12 +76,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--mt5-login", type=int, default=0, help="MT5 account login")
     p.add_argument("--mt5-password", default="", help="MT5 account password")
     p.add_argument("--mt5-server", default="", help="MT5 broker server name")
+    p.add_argument("--mt5-path", default="", help="Path to terminal64.exe if MT5 is not auto-detected")
+    p.add_argument("--mt5-timeout-ms", type=int, default=0, help="MT5 initialization timeout in milliseconds")
     # ML config overrides
     p.add_argument("--train-window", type=int, default=2000, help="Training window in bars")
     p.add_argument("--test-window", type=int, default=500, help="Test window in bars")
     p.add_argument("--step", type=int, default=250, help="Step size in bars between folds")
     p.add_argument("--forward-bars", type=int, default=5, help="Bars ahead for label generation")
-    p.add_argument("--n-estimators", type=int, default=200, help="RandomForest trees")
+    p.add_argument("--max-iter", type=int, default=200, help="HistGradientBoosting max iterations")
     p.add_argument("--max-depth", type=int, default=5, help="RandomForest max depth")
     p.add_argument("--min-accuracy", type=float, default=0.52, help="Min accuracy to accept model")
     p.add_argument(
@@ -90,6 +93,22 @@ def parse_args() -> argparse.Namespace:
         help="Directory for model persistence (default: data/models)",
     )
     return p.parse_args()
+
+
+def apply_mt5_defaults(args: argparse.Namespace) -> argparse.Namespace:
+    """Fill MT5 connection args from .env when CLI values are omitted."""
+    cfg = MarketDataConfig.load()
+    if not args.mt5_login:
+        args.mt5_login = cfg.mt5_login
+    if not args.mt5_password:
+        args.mt5_password = cfg.mt5_password
+    if not args.mt5_server:
+        args.mt5_server = cfg.mt5_server
+    if not args.mt5_path:
+        args.mt5_path = cfg.mt5_path
+    if not args.mt5_timeout_ms:
+        args.mt5_timeout_ms = cfg.mt5_timeout_ms
+    return args
 
 
 def load_from_csv(args: argparse.Namespace):
@@ -120,6 +139,8 @@ def load_from_mt5(args: argparse.Namespace):
         login=args.mt5_login,
         password=args.mt5_password,
         server=args.mt5_server,
+        path=args.mt5_path,
+        timeout=args.mt5_timeout_ms,
     )
 
     tf = _TIMEFRAME_MAP[args.timeframe]
@@ -142,6 +163,7 @@ def load_from_mt5(args: argparse.Namespace):
 
 def main() -> None:
     args = parse_args()
+    args = apply_mt5_defaults(args)
 
     # ── 1. Load data ──────────────────────────────────────────────────────────
     if args.source == "csv":
@@ -163,7 +185,7 @@ def main() -> None:
         test_window_bars=args.test_window,
         step_bars=args.step,
         forward_bars=args.forward_bars,
-        n_estimators=args.n_estimators,
+        max_iter=args.max_iter,
         max_depth=args.max_depth,
         min_accuracy=args.min_accuracy,
         model_registry_dir=str(args.model_dir),

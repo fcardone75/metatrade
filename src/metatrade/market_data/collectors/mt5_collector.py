@@ -82,7 +82,7 @@ class MT5Collector(IHistoricalCollector):
 
     def __init__(
         self,
-        store: IBarStore,
+        store: IBarStore | None,
         normalizer: BarNormalizer | None = None,
         batch_size: int = 50_000,
     ) -> None:
@@ -218,7 +218,7 @@ class MT5Collector(IHistoricalCollector):
             return []
 
         bars, skipped = self._normalizer.normalize_mt5_rates(symbol, timeframe, rates)
-        saved = self._store.save_bars(bars)
+        saved = self._store.save_bars(bars) if self._store is not None else 0
 
         log.info(
             "collection_complete",

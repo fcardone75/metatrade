@@ -37,6 +37,7 @@ from metatrade.core.enums import Timeframe
 from metatrade.core.log import get_logger
 from metatrade.ml.config import MLConfig
 from metatrade.ml.registry import ModelRegistry
+from metatrade.market_data.config import MarketDataConfig
 from metatrade.runner.config import RunnerConfig
 from metatrade.runner.module_config import ModuleConfig
 from metatrade.runner.module_builder import build_modules
@@ -78,6 +79,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--mt5-login", type=int, default=0)
     p.add_argument("--mt5-password", default="")
     p.add_argument("--mt5-server", default="")
+    p.add_argument("--mt5-path", default="", help="Path to terminal64.exe if MT5 is not auto-detected")
+    p.add_argument("--mt5-timeout-ms", type=int, default=60000, help="MT5 initialization timeout in milliseconds")
     p.add_argument("--no-ml", action="store_true", help="Disable ML module, use only technical indicators")
     # Module toggles
     p.add_argument("--no-news", action="store_true", help="Disable news/calendar filter")
@@ -96,12 +99,14 @@ def load_registry(args: argparse.Namespace) -> ModelRegistry | None:
         if snap is None:
             print(f"ERROR: Model version {args.model_version!r} not found in {args.model_dir}", file=sys.stderr)
             sys.exit(1)
-        registry.register(snap.classifier, snap.symbol, version=snap.version, tags=snap.tags)
-        registry.promote(snap.version)
         print(f"Loaded model {snap.version} (test_acc={snap.tags.get('best_test_acc', '?')})")
     else:
         active = registry.get_active()
         if active is None:
+            latest = sorted(args.model_dir.glob(f"{args.symbol}_v*.pkl"), reverse=True)
+            if latest:
+                version = latest[0].stem.removeprefix(f"{args.symbol}_")
+                active = registry.load_from_disk(args.symbol, version)
             if args.no_ml:
                 print("No ML model found — running with technical indicators only.")
                 return None
@@ -126,8 +131,25 @@ def make_module_cfg(args: argparse.Namespace) -> ModuleConfig:
     )
 
 
+def apply_mt5_defaults(args: argparse.Namespace) -> argparse.Namespace:
+    """Fill MT5 connection args from .env when CLI values are omitted."""
+    cfg = MarketDataConfig.load()
+    if not args.mt5_login:
+        args.mt5_login = cfg.mt5_login
+    if not args.mt5_password:
+        args.mt5_password = cfg.mt5_password
+    if not args.mt5_server:
+        args.mt5_server = cfg.mt5_server
+    if not args.mt5_path:
+        args.mt5_path = cfg.mt5_path
+    if not args.mt5_timeout_ms:
+        args.mt5_timeout_ms = cfg.mt5_timeout_ms
+    return args
+
+
 def main() -> None:
     args = parse_args()
+    args = apply_mt5_defaults(args)
     tf = _TIMEFRAME_MAP[args.timeframe]
 
     # ── 1. Connect to MT5 ─────────────────────────────────────────────────────
@@ -142,6 +164,8 @@ def main() -> None:
         login=args.mt5_login,
         password=args.mt5_password,
         server=args.mt5_server,
+        path=args.mt5_path,
+        timeout=args.mt5_timeout_ms,
     )
 
     # ── 2. Load warmup bars ───────────────────────────────────────────────────

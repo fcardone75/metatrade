@@ -41,7 +41,7 @@ class MLModule(ITechnicalModule):
 
     def __init__(
         self,
-        registry: ModelRegistry,
+        registry: ModelRegistry | None,
         timeframe_id: str = "h1",
         min_confidence: float = _MIN_CONFIDENCE_THRESHOLD,
     ) -> None:
@@ -59,6 +59,17 @@ class MLModule(ITechnicalModule):
 
     def analyse(self, bars: list[Bar], timestamp_utc: datetime) -> AnalysisSignal:
         self._require_min_bars(bars)
+
+        if self._registry is None:
+            return AnalysisSignal(
+                direction=SignalDirection.HOLD,
+                confidence=0.50,
+                reason=f"{self.module_id}: registry not available",
+                module_id=self.module_id,
+                module_version=_VERSION,
+                timestamp_utc=timestamp_utc,
+                metadata={"model_available": False, "registry_available": False},
+            )
 
         snapshot = self._registry.get_active()
 

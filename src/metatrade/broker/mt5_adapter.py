@@ -96,6 +96,7 @@ class MT5BrokerAdapter(IBrokerAdapter):
         timeout: int = 30_000,
         run_mode: RunMode = RunMode.PAPER,
         deviation: int = 20,
+        magic_number: int = 12345,
     ) -> None:
         self._login = login
         self._password = password
@@ -104,6 +105,7 @@ class MT5BrokerAdapter(IBrokerAdapter):
         self._timeout = timeout
         self._run_mode = run_mode
         self._deviation = deviation
+        self._magic_number = magic_number
         self._connected = False
 
     # ── IBrokerAdapter ────────────────────────────────────────────────────────
@@ -128,22 +130,31 @@ class MT5BrokerAdapter(IBrokerAdapter):
                 context={"error": str(err)},
             )
 
-        authorized = mt5.login(
-            login=self._login,
-            password=self._password,
-            server=self._server,
-        )
-        if not authorized:
+        if self._login and self._password and self._server:
+            authorized = mt5.login(
+                login=self._login,
+                password=self._password,
+                server=self._server,
+            )
+            if not authorized:
+                mt5.shutdown()
+                err = mt5.last_error()
+                raise BrokerConnectionError(
+                    message=f"MT5 login() failed for account {self._login}: {err}",
+                    code="MT5_LOGIN_FAILED",
+                    context={"login": self._login, "server": self._server, "error": str(err)},
+                )
+
+        info = mt5.account_info()
+        if info is None:
             mt5.shutdown()
-            err = mt5.last_error()
             raise BrokerConnectionError(
-                message=f"MT5 login() failed for account {self._login}: {err}",
-                code="MT5_LOGIN_FAILED",
-                context={"login": self._login, "server": self._server, "error": str(err)},
+                message="MT5 connected but account_info() returned None - not logged in",
+                code="MT5_NOT_LOGGED_IN",
             )
 
         self._connected = True
-        log.info("mt5_connected", login=self._login, server=self._server)
+        log.info("mt5_connected", login=info.login, server=info.server)
 
     def disconnect(self) -> None:
         if self._connected:
@@ -247,7 +258,7 @@ class MT5BrokerAdapter(IBrokerAdapter):
             "volume": float(order.lot_size),
             "type": order_type,
             "deviation": self._deviation,
-            "magic": 12345,  # magic number to identify our EA
+            "magic": self._magic_number,
             "comment": order.comment or "metatrade",
             "type_filling": _MT5_FILLING_FOK,
         }
