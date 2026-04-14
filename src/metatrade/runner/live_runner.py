@@ -23,6 +23,7 @@ from metatrade.core.contracts.market import Bar
 from metatrade.core.contracts.risk import RiskDecision, RiskVeto
 from metatrade.core.enums import OrderSide, OrderStatus
 from metatrade.execution.order_manager import OrderManager
+from metatrade.observability.store import TelemetryStore
 from metatrade.runner.base import BaseRunner
 from metatrade.runner.config import RunnerConfig
 from metatrade.technical_analysis.interface import ITechnicalModule
@@ -51,10 +52,23 @@ class LiveRunner(BaseRunner):
         modules: list[ITechnicalModule],
         broker: IBrokerAdapter,
         order_manager: OrderManager | None = None,
+        telemetry: TelemetryStore | None = None,
+        session_id: str | None = None,
+        timeframe: str | None = None,
     ) -> None:
-        super().__init__(config, modules)
+        super().__init__(
+            config,
+            modules,
+            telemetry=telemetry,
+            session_id=session_id,
+            timeframe=timeframe,
+        )
         self._broker = broker
-        self._order_manager = order_manager or OrderManager(broker)
+        self._order_manager = order_manager or OrderManager(
+            broker,
+            telemetry=telemetry,
+            session_id=session_id,
+        )
         self._bar_buffer: list[Bar] = []
         self._connected = False
 

@@ -16,6 +16,7 @@ from metatrade.broker.paper_broker import PaperBrokerAdapter as PaperBroker
 from metatrade.core.contracts.market import Bar
 from metatrade.core.contracts.risk import RiskDecision, RiskVeto
 from metatrade.core.enums import OrderSide
+from metatrade.observability.store import TelemetryStore
 from metatrade.runner.base import BaseRunner
 from metatrade.runner.config import RunnerConfig
 from metatrade.technical_analysis.interface import ITechnicalModule
@@ -41,8 +42,17 @@ class PaperRunner(BaseRunner):
         config: RunnerConfig,
         modules: list[ITechnicalModule],
         broker: PaperBroker | None = None,
+        telemetry: TelemetryStore | None = None,
+        session_id: str | None = None,
+        timeframe: str | None = None,
     ) -> None:
-        super().__init__(config, modules)
+        super().__init__(
+            config,
+            modules,
+            telemetry=telemetry,
+            session_id=session_id,
+            timeframe=timeframe,
+        )
         if broker is None:
             from metatrade.broker.paper_broker import PaperBrokerAdapter
             broker = PaperBrokerAdapter(initial_balance=Decimal(str(config.paper_initial_balance)))
@@ -78,7 +88,21 @@ class PaperRunner(BaseRunner):
         if self._pending_order_id is not None:
             ts = bar.timestamp_utc
             try:
-                self._broker.fill_pending(self._pending_order_id, ts)
+                fill = self._broker.fill_pending(self._pending_order_id, ts)
+                if self._telemetry is not None:
+                    self._telemetry.record_order_event(
+                        session_id=self._session_id,
+                        run_mode="PAPER",
+                        event_type="paper_order_filled",
+                        ts=fill.timestamp_utc,
+                        symbol=fill.symbol,
+                        side=fill.side.value,
+                        order_id=fill.order_id,
+                        broker_order_id=fill.broker_order_id,
+                        status="FILLED",
+                        lot_size=float(fill.filled_lots),
+                        price=float(fill.filled_price),
+                    )
             except Exception as exc:
                 log.warning("Paper fill failed for %s: %s", self._pending_order_id, exc)
             self._pending_order_id = None
@@ -146,6 +170,18 @@ class PaperRunner(BaseRunner):
 
         try:
             self._broker.send_order(order)
+            if self._telemetry is not None:
+                self._telemetry.record_order_event(
+                    session_id=self._session_id,
+                    run_mode="PAPER",
+                    event_type="paper_order_submitted",
+                    ts=bar.timestamp_utc,
+                    symbol=order.symbol,
+                    side=order.side.value,
+                    order_id=order.order_id,
+                    status="SUBMITTED",
+                    lot_size=float(order.lot_size),
+                )
             return order_id
         except Exception as exc:
             log.error("Paper order submission failed: %s", exc)

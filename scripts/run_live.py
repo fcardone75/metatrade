@@ -41,6 +41,7 @@ from metatrade.runner.config import RunnerConfig
 from metatrade.runner.module_config import ModuleConfig
 from metatrade.runner.module_builder import build_modules
 from metatrade.runner.live_runner import LiveRunner
+from metatrade.observability.store import TelemetryStore
 
 log = get_logger("run_live")
 
@@ -182,6 +183,7 @@ def main() -> None:
     args = apply_mt5_defaults(args)
     require_confirmation(args)
     validate_mt5_access_mode(args)
+    telemetry = TelemetryStore.from_env()
 
     tf = _TIMEFRAME_MAP[args.timeframe]
     tf_secs = _TF_SECONDS[tf]
@@ -223,6 +225,15 @@ def main() -> None:
 
     # 3. Build runner
     registry = load_registry(args)
+    active_model = registry.get_active().version if registry and registry.get_active() else None
+    session_id = telemetry.start_session(
+        run_mode="LIVE",
+        symbol=args.symbol,
+        timeframe=args.timeframe,
+        ml_enabled=not args.no_ml,
+        model_version=active_model,
+        details={"mt5_server": args.mt5_server, "confirm": args.confirm},
+    )
     module_cfg = make_module_cfg(args)
     modules = build_modules(args.timeframe.lower(), module_cfg=module_cfg, registry=registry)
 
@@ -236,7 +247,14 @@ def main() -> None:
         min_signals=1 if args.no_ml else 2,
     )
 
-    runner = LiveRunner(config=runner_cfg, modules=modules, broker=broker)
+    runner = LiveRunner(
+        config=runner_cfg,
+        modules=modules,
+        broker=broker,
+        telemetry=telemetry,
+        session_id=session_id,
+        timeframe=args.timeframe,
+    )
     runner.connect()
 
     # Pre-fill buffer
@@ -327,6 +345,15 @@ def main() -> None:
     print(f"  Final equity    : {account.equity}")
     print("=" * 55)
 
+    telemetry.finish_session(
+        session_id,
+        status="completed",
+        details={
+            "bars_processed": stats.bars_processed,
+            "trades_executed": stats.trades_executed,
+            "trades_vetoed": stats.trades_vetoed,
+        },
+    )
     collector.shutdown()
 
 

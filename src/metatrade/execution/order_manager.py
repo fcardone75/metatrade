@@ -24,6 +24,7 @@ from metatrade.core.enums import OrderSide, OrderStatus, OrderType, PositionSide
 from metatrade.core.errors import DuplicateOrderError, ModeGuardError, OrderRejectedError
 from metatrade.core.log import get_logger
 from metatrade.execution.idempotency_guard import IdempotencyGuard
+from metatrade.observability.store import TelemetryStore
 
 log = get_logger(__name__)
 
@@ -42,10 +43,14 @@ class OrderManager:
         broker: object,  # IBrokerAdapter — duck-typed to avoid circular imports
         run_mode: RunMode = RunMode.PAPER,
         ttl_seconds: int = 3600,
+        telemetry: TelemetryStore | None = None,
+        session_id: str | None = None,
     ) -> None:
         self._broker = broker
         self._run_mode = run_mode
         self._guard = IdempotencyGuard(ttl_seconds=ttl_seconds)
+        self._telemetry = telemetry
+        self._session_id = session_id
         # {order_id: Order} — all orders this session
         self._orders: dict[str, Order] = {}
         # {position_id: Position} — open positions this session
@@ -125,6 +130,12 @@ class OrderManager:
                 order_id=order.order_id,
                 error=str(exc),
             )
+            self._record_order_event(
+                event_type="order_failed",
+                order=order,
+                status=OrderStatus.REJECTED.value,
+                details={"error": str(exc)},
+            )
             raise OrderRejectedError(
                 message=f"Broker rejected order {order.order_id}: {exc}",
                 code="ORDER_REJECTED",
@@ -139,6 +150,12 @@ class OrderManager:
             side=order.side.value,
             lots=str(order.lot_size),
             broker_id=submitted.broker_order_id,
+        )
+        self._record_order_event(
+            event_type="order_submitted",
+            order=order,
+            broker_order_id=submitted.broker_order_id,
+            status=OrderStatus.SUBMITTED.value,
         )
         return submitted
 
@@ -198,3 +215,32 @@ class OrderManager:
     @property
     def run_mode(self) -> RunMode:
         return self._run_mode
+
+    def _record_order_event(
+        self,
+        *,
+        event_type: str,
+        order: Order,
+        status: str,
+        broker_order_id: str | None = None,
+        details: dict | None = None,
+    ) -> None:
+        if self._telemetry is None:
+            return
+        try:
+            self._telemetry.record_order_event(
+                session_id=self._session_id,
+                run_mode=self._run_mode.value,
+                event_type=event_type,
+                ts=order.timestamp_utc,
+                symbol=order.symbol,
+                side=order.side.value,
+                order_id=order.order_id,
+                broker_order_id=broker_order_id,
+                status=status,
+                lot_size=float(order.lot_size),
+                price=float(order.price) if order.price is not None else None,
+                details=details,
+            )
+        except Exception as exc:
+            log.warning("order_event_telemetry_failed", error=str(exc))

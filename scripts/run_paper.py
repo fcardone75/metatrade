@@ -42,6 +42,7 @@ from metatrade.runner.config import RunnerConfig
 from metatrade.runner.module_config import ModuleConfig
 from metatrade.runner.module_builder import build_modules
 from metatrade.runner.paper_runner import PaperRunner
+from metatrade.observability.store import TelemetryStore
 
 log = get_logger("run_paper")
 
@@ -151,115 +152,145 @@ def main() -> None:
     args = parse_args()
     args = apply_mt5_defaults(args)
     tf = _TIMEFRAME_MAP[args.timeframe]
+    telemetry = TelemetryStore.from_env()
+    session_id: str | None = None
+    collector = None
+    runner = None
 
-    # ── 1. Connect to MT5 ─────────────────────────────────────────────────────
     try:
-        from metatrade.market_data.collectors.mt5_collector import MT5Collector
-    except Exception as exc:
-        print(f"ERROR: Cannot import MT5 collector: {exc}", file=sys.stderr)
-        sys.exit(1)
-
-    collector = MT5Collector(store=None)
-    collector.initialize(
-        login=args.mt5_login,
-        password=args.mt5_password,
-        server=args.mt5_server,
-        path=args.mt5_path,
-        timeout=args.mt5_timeout_ms,
-    )
-
-    # ── 2. Load warmup bars ───────────────────────────────────────────────────
-    tf_secs = _TF_SECONDS[tf]
-    date_to = datetime.now(timezone.utc)
-    date_from = date_to - timedelta(seconds=tf_secs * (args.warmup_bars + 10))
-
-    print(f"Loading {args.warmup_bars} warmup bars for {args.symbol}/{args.timeframe} …")
-    bars = collector.collect(args.symbol, tf, date_from, date_to)
-    print(f"  Got {len(bars)} bars.")
-
-    # ── 3. Build runner ───────────────────────────────────────────────────────
-    registry = load_registry(args)
-    module_cfg = make_module_cfg(args)
-    modules = build_modules(args.timeframe.lower(), module_cfg=module_cfg, registry=registry)
-
-    runner_cfg = RunnerConfig(
-        symbol=args.symbol,
-        max_risk_pct=args.max_risk_pct,
-        min_signals=1 if args.no_ml else 2,
-    )
-    runner = PaperRunner(config=runner_cfg, modules=modules)
-
-    # Pre-fill buffer with warmup bars (without triggering signals)
-    for bar in bars:
-        runner._bar_buffer.append(bar)
-    if len(runner._bar_buffer) > 500:
-        runner._bar_buffer = runner._bar_buffer[-500:]
-
-    print(f"\nPaper trading started — {args.symbol}/{args.timeframe}")
-    print(f"  Modules    : {[m.__class__.__name__ for m in modules]}")
-    print(f"  Balance    : {runner.broker.get_account().balance}")
-    print("  Press Ctrl+C to stop and view summary.\n")
-
-    poll_interval = args.poll_interval if args.poll_interval > 0 else tf_secs
-    last_bar_time: datetime | None = bars[-1].timestamp_utc if bars else None
-
-    # Graceful shutdown on Ctrl+C
-    _running = [True]
-    def _stop(sig, frame):
-        _running[0] = False
-    signal.signal(signal.SIGINT, _stop)
-
-    # ── 4. Live polling loop ──────────────────────────────────────────────────
-    while _running[0]:
-        date_to = datetime.now(timezone.utc)
-        date_from = date_to - timedelta(seconds=tf_secs * 5)
-
+        # ── 1. Connect to MT5 ─────────────────────────────────────────────────
         try:
-            new_bars = collector.collect(args.symbol, tf, date_from, date_to)
+            from metatrade.market_data.collectors.mt5_collector import MT5Collector
         except Exception as exc:
-            log.warning("mt5_fetch_error", error=str(exc))
-            time.sleep(5)
-            continue
+            print(f"ERROR: Cannot import MT5 collector: {exc}", file=sys.stderr)
+            sys.exit(1)
 
-        # Only process bars newer than the last seen one
-        if last_bar_time is not None:
-            new_bars = [b for b in new_bars if b.timestamp_utc > last_bar_time]
+        collector = MT5Collector(store=None)
+        collector.initialize(
+            login=args.mt5_login,
+            password=args.mt5_password,
+            server=args.mt5_server,
+            path=args.mt5_path,
+            timeout=args.mt5_timeout_ms,
+        )
 
-        for bar in new_bars:
-            last_bar_time = bar.timestamp_utc
-            ts_str = bar.timestamp_utc.strftime("%Y-%m-%d %H:%M")
+        # ── 2. Load warmup bars ───────────────────────────────────────────────
+        tf_secs = _TF_SECONDS[tf]
+        date_to = datetime.now(timezone.utc)
+        date_from = date_to - timedelta(seconds=tf_secs * (args.warmup_bars + 10))
 
-            decision = runner.on_bar(bar)
+        print(f"Loading {args.warmup_bars} warmup bars for {args.symbol}/{args.timeframe} …")
+        bars = collector.collect(args.symbol, tf, date_from, date_to)
+        print(f"  Got {len(bars)} bars.")
 
-            if decision is None:
-                print(f"[{ts_str}] HOLD  (no signal)")
-            elif hasattr(decision, "approved") and decision.approved:
-                ps = decision.position_size
-                print(
-                    f"[{ts_str}] TRADE  side={decision.side.value}  "
-                    f"lot={float(ps.lot_size):.2f}  "
-                    f"sl={ps.stop_loss_price}  tp={ps.take_profit_price}"
-                )
-            else:
-                veto_code = decision.veto.veto_code if decision.veto else "?"
-                print(f"[{ts_str}] VETOED  ({veto_code})")
+        # ── 3. Build runner ───────────────────────────────────────────────────
+        registry = load_registry(args)
+        active_model = registry.get_active().version if registry and registry.get_active() else None
+        session_id = telemetry.start_session(
+            run_mode="PAPER",
+            symbol=args.symbol,
+            timeframe=args.timeframe,
+            ml_enabled=not args.no_ml,
+            model_version=active_model,
+            details={"mt5_server": args.mt5_server},
+        )
+        module_cfg = make_module_cfg(args)
+        modules = build_modules(args.timeframe.lower(), module_cfg=module_cfg, registry=registry)
 
-        time.sleep(poll_interval)
+        runner_cfg = RunnerConfig(
+            symbol=args.symbol,
+            max_risk_pct=args.max_risk_pct,
+            min_signals=1 if args.no_ml else 2,
+        )
+        runner = PaperRunner(
+            config=runner_cfg,
+            modules=modules,
+            telemetry=telemetry,
+            session_id=session_id,
+            timeframe=args.timeframe,
+        )
 
-    # ── 5. Summary ────────────────────────────────────────────────────────────
-    account = runner.broker.get_account()
-    stats = runner.stats
-    print("\n" + "=" * 50)
-    print("PAPER TRADING SUMMARY")
-    print("=" * 50)
-    print(f"  Bars processed  : {stats.bars_processed}")
-    print(f"  Trades executed : {stats.trades_executed}")
-    print(f"  Trades vetoed   : {stats.trades_vetoed}")
-    print(f"  Final balance   : {account.balance}")
-    print(f"  Final equity    : {account.equity}")
-    print("=" * 50)
+        # Pre-fill buffer with warmup bars (without triggering signals)
+        for bar in bars:
+            runner._bar_buffer.append(bar)
+        if len(runner._bar_buffer) > 500:
+            runner._bar_buffer = runner._bar_buffer[-500:]
 
-    collector.shutdown()
+        print(f"\nPaper trading started — {args.symbol}/{args.timeframe}")
+        print(f"  Modules    : {[m.__class__.__name__ for m in modules]}")
+        print(f"  Balance    : {runner.broker.get_account().balance}")
+        print("  Press Ctrl+C to stop and view summary.\n")
+
+        poll_interval = args.poll_interval if args.poll_interval > 0 else tf_secs
+        last_bar_time: datetime | None = bars[-1].timestamp_utc if bars else None
+
+        # Graceful shutdown on Ctrl+C
+        _running = [True]
+        def _stop(sig, frame):
+            _running[0] = False
+        signal.signal(signal.SIGINT, _stop)
+
+        # ── 4. Live polling loop ──────────────────────────────────────────────
+        while _running[0]:
+            date_to = datetime.now(timezone.utc)
+            date_from = date_to - timedelta(seconds=tf_secs * 5)
+
+            try:
+                new_bars = collector.collect(args.symbol, tf, date_from, date_to)
+            except Exception as exc:
+                log.warning("mt5_fetch_error", error=str(exc))
+                time.sleep(5)
+                continue
+
+            # Only process bars newer than the last seen one
+            if last_bar_time is not None:
+                new_bars = [b for b in new_bars if b.timestamp_utc > last_bar_time]
+
+            for bar in new_bars:
+                last_bar_time = bar.timestamp_utc
+                ts_str = bar.timestamp_utc.strftime("%Y-%m-%d %H:%M")
+
+                decision = runner.on_bar(bar)
+
+                if decision is None:
+                    print(f"[{ts_str}] HOLD  (no signal)")
+                elif hasattr(decision, "approved") and decision.approved:
+                    ps = decision.position_size
+                    print(
+                        f"[{ts_str}] TRADE  side={decision.side.value}  "
+                        f"lot={float(ps.lot_size):.2f}  "
+                        f"sl={ps.stop_loss_price}  tp={ps.take_profit_price}"
+                    )
+                else:
+                    veto_code = decision.veto.veto_code if decision.veto else "?"
+                    print(f"[{ts_str}] VETOED  ({veto_code})")
+
+            time.sleep(poll_interval)
+
+        # ── 5. Summary ────────────────────────────────────────────────────────
+        account = runner.broker.get_account()
+        stats = runner.stats
+        print("\n" + "=" * 50)
+        print("PAPER TRADING SUMMARY")
+        print("=" * 50)
+        print(f"  Bars processed  : {stats.bars_processed}")
+        print(f"  Trades executed : {stats.trades_executed}")
+        print(f"  Trades vetoed   : {stats.trades_vetoed}")
+        print(f"  Final balance   : {account.balance}")
+        print(f"  Final equity    : {account.equity}")
+        print("=" * 50)
+    finally:
+        if session_id is not None:
+            summary = None
+            if runner is not None:
+                summary = {
+                    "bars_processed": runner.stats.bars_processed,
+                    "trades_executed": runner.stats.trades_executed,
+                    "trades_vetoed": runner.stats.trades_vetoed,
+                }
+            telemetry.finish_session(session_id, status="completed", details=summary)
+        if collector is not None:
+            collector.shutdown()
 
 
 if __name__ == "__main__":

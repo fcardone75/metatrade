@@ -8,7 +8,7 @@
 # ── Configurable defaults (override on the command line) ──────────────────────
 SYMBOL    ?= EURUSD
 TIMEFRAME ?= H1
-BARS      ?= 5000
+BARS      ?= 30000
 CSV_FILE  ?= data/$(SYMBOL)_$(TIMEFRAME).csv
 MODEL_DIR ?= data/models
 BALANCE   ?= 10000
@@ -63,13 +63,24 @@ train:   ## Train ML model from CSV  (CSV_FILE=data/EURUSD_H1.csv SYMBOL=EURUSD)
 train-csv:   ## Same as train (explicit alias)
 	$(MAKE) train
 
-train-mt5:   ## Train ML model fetching data live from MT5  (SYMBOL=EURUSD BARS=5000)
+train-mt5:   ## Train ML model fetching data live from MT5  (SYMBOL=EURUSD BARS=30000)
 	python scripts/train.py \
 		--source mt5 \
 		--symbol $(SYMBOL) \
 		--timeframe $(TIMEFRAME) \
 		--bars $(BARS) \
 		--model-dir $(MODEL_DIR)
+
+TIMEFRAMES ?= M5,M15,M30
+
+train-mt5-mtf:   ## Train su M5, M15, M30 da MT5 (TIMEFRAMES= override, PROMOTE_TF= timeframe attivo)
+	python scripts/train.py \
+		--source mt5 \
+		--symbol $(SYMBOL) \
+		--timeframes $(TIMEFRAMES) \
+		--bars $(BARS) \
+		--model-dir $(MODEL_DIR) \
+		$(if $(PROMOTE_TF),--promote-timeframe $(PROMOTE_TF),)
 
 # ── Backtesting ───────────────────────────────────────────────────────────────
 

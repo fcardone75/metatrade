@@ -6,38 +6,54 @@ Usage examples:
     python scripts/train.py --source csv --file data/EURUSD_H1.csv --symbol EURUSD
 
     # From MetaTrader 5 (Windows only, MT5 must be open)
-    python scripts/train.py --source mt5 --symbol EURUSD --timeframe H1 --bars 5000
+    python scripts/train.py --source mt5 --symbol EURUSD --timeframe H1
 
-    # Override ML config
-    python scripts/train.py --source csv --file data/EURUSD_H1.csv \\
-        --symbol EURUSD --n-estimators 300 --min-accuracy 0.53
+    # Piu' timeframe da MT5 (M5, M15, M30) con report JSON e telemetria
+    python scripts/train.py --source mt5 --symbol EURUSD --timeframes M5,M15,M30
+
+    # CSV multi-timeframe: usa segnaposto nel path file
+    python scripts/train.py --source csv --file data/EURUSD_{TIMEFRAME}.csv --symbol EURUSD \\
+        --timeframes M5,M15,M30
+
+    # Quale modello risulta attivo in dashboard (default: ultimo della lista)
+    python scripts/train.py --source mt5 --symbol EURUSD --timeframes M5,M15,M30 \\
+        --promote-timeframe M15
 
 The script:
   1. Loads historical bars (CSV or MT5)
   2. Runs walk-forward training (expanding window)
-  3. Prints fold-by-fold accuracy
+  3. Prints fold-by-fold accuracy e riepilogo strutturato (log JSON se configurato)
   4. Registers the best model to disk
-  5. Promotes it as the active model in the registry
+  5. Promotes one model as active in registry (ultimo timeframe o --promote-timeframe)
+  6. Scrive un report JSON in data/models/training_reports/ (disattiva con --no-report-json)
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import sys
-from datetime import datetime, timezone
+import time
+from dataclasses import asdict, dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
-# Make sure src/ is on the path when running as a plain script
 _SRC = Path(__file__).parent.parent / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from metatrade.core.enums import Timeframe
-from metatrade.core.log import get_logger
-from metatrade.ml.config import MLConfig
-from metatrade.ml.registry import ModelRegistry
-from metatrade.ml.walk_forward import WalkForwardTrainer
-from metatrade.market_data.config import MarketDataConfig
+from metatrade.core.enums import Timeframe  # noqa: E402
+from metatrade.core.log import get_logger  # noqa: E402
+from metatrade.market_data.config import MarketDataConfig  # noqa: E402
+from metatrade.ml.config import MLConfig  # noqa: E402
+from metatrade.ml.registry import ModelRegistry  # noqa: E402
+from metatrade.ml.walk_forward import (  # noqa: E402
+    WalkForwardFold,
+    WalkForwardResult,
+    WalkForwardTrainer,
+)
+from metatrade.observability.store import TelemetryStore  # noqa: E402
 
 log = get_logger("train")
 
@@ -52,9 +68,27 @@ _TIMEFRAME_MAP: dict[str, Timeframe] = {
 }
 
 
+@dataclass
+class TimeframeTrainReport:
+    """Esito training per un singolo timeframe (serializzabile in JSON)."""
+
+    timeframe: str
+    success: bool
+    error: str | None
+    bars_used: int
+    duration_sec: float
+    model_version: str | None
+    mean_test_accuracy: float | None
+    best_test_accuracy: float | None
+    best_fold_index: int | None
+    n_folds: int
+    folds: list[dict[str, Any]]
+    artifact_path: str | None
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Train Forex ML model with walk-forward validation"
+        description="Train Forex ML model with walk-forward validation",
     )
     p.add_argument(
         "--source",
@@ -62,23 +96,42 @@ def parse_args() -> argparse.Namespace:
         required=True,
         help="Data source: csv (local file) or mt5 (MetaTrader 5, Windows only)",
     )
-    # CSV options
     p.add_argument("--file", type=Path, help="Path to CSV file (required for --source csv)")
     p.add_argument("--symbol", default="EURUSD", help="Symbol name (e.g. EURUSD)")
     p.add_argument(
         "--timeframe",
         default="H1",
         choices=list(_TIMEFRAME_MAP),
-        help="Timeframe for MT5 collection (default: H1)",
+        help="Timeframe singolo (default: H1). Ignorato se --timeframes e' impostato.",
     )
-    # MT5 options
-    p.add_argument("--bars", type=int, default=5000, help="Number of bars to fetch from MT5")
+    p.add_argument(
+        "--timeframes",
+        default=None,
+        metavar="M5,M15,M30",
+        help="Piu' timeframe separati da virgola o spazio (es. M5,M15,M30). Sostituisce --timeframe.",
+    )
+    p.add_argument(
+        "--promote-timeframe",
+        default=None,
+        metavar="M15",
+        help="Dopo training multiplo, quale timeframe e' attivo in telemetria (default: ultimo in --timeframes).",
+    )
+    p.add_argument(
+        "--no-report-json",
+        action="store_true",
+        help="Non scrivere il file JSON di riepilogo in MODEL_DIR/training_reports/.",
+    )
+    p.add_argument(
+        "--bars",
+        type=int,
+        default=30_000,
+        help="Numero di barre da scaricare da MT5 (default: 30000; piu' barre = piu' storia per walk-forward)",
+    )
     p.add_argument("--mt5-login", type=int, default=0, help="MT5 account login")
     p.add_argument("--mt5-password", default="", help="MT5 account password")
     p.add_argument("--mt5-server", default="", help="MT5 broker server name")
     p.add_argument("--mt5-path", default="", help="Path to terminal64.exe if MT5 is not auto-detected")
     p.add_argument("--mt5-timeout-ms", type=int, default=0, help="MT5 initialization timeout in milliseconds")
-    # ML config overrides
     p.add_argument("--train-window", type=int, default=2000, help="Training window in bars")
     p.add_argument("--test-window", type=int, default=500, help="Test window in bars")
     p.add_argument("--step", type=int, default=250, help="Step size in bars between folds")
@@ -96,7 +149,6 @@ def parse_args() -> argparse.Namespace:
 
 
 def apply_mt5_defaults(args: argparse.Namespace) -> argparse.Namespace:
-    """Fill MT5 connection args from .env when CLI values are omitted."""
     cfg = MarketDataConfig.load()
     if not args.mt5_login:
         args.mt5_login = cfg.mt5_login
@@ -111,30 +163,88 @@ def apply_mt5_defaults(args: argparse.Namespace) -> argparse.Namespace:
     return args
 
 
-def load_from_csv(args: argparse.Namespace):
+def parse_timeframe_list(args: argparse.Namespace) -> list[str]:
+    if args.timeframes:
+        raw = args.timeframes.replace(",", " ").split()
+        out = [t.strip().upper() for t in raw if t.strip()]
+        if not out:
+            print("ERROR: --timeframes e' vuoto.", file=sys.stderr)
+            sys.exit(1)
+        for t in out:
+            if t not in _TIMEFRAME_MAP:
+                print(
+                    f"ERROR: timeframe sconosciuto {t!r}. Validi: {', '.join(_TIMEFRAME_MAP)}.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+        return out
+    return [args.timeframe]
+
+
+def resolve_promote_timeframe(timeframes: list[str], args: argparse.Namespace) -> str:
+    if args.promote_timeframe:
+        target = args.promote_timeframe.strip().upper()
+        if target not in timeframes:
+            print(
+                f"ERROR: --promote-timeframe={target!r} non e' tra i timeframe addestrati: {timeframes}.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        return target
+    return timeframes[-1]
+
+
+def resolve_csv_path(file_arg: Path, timeframe: str, *, multi: bool) -> Path:
+    s = str(file_arg)
+    if "{TIMEFRAME}" in s or "{TF}" in s or "{timeframe}" in s:
+        return Path(
+            s.replace("{TIMEFRAME}", timeframe)
+            .replace("{TF}", timeframe)
+            .replace("{timeframe}", timeframe)
+        )
+    if multi:
+        print(
+            "ERROR: con piu' timeframe da CSV usa un segnaposto in --file, "
+            "es. data/EURUSD_{TIMEFRAME}.csv",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return file_arg
+
+
+def fold_to_dict(fold: WalkForwardFold) -> dict[str, Any]:
+    return {
+        "fold_index": fold.fold_index,
+        "train_bars": fold.train_end - fold.train_start,
+        "n_test_samples": fold.n_test_samples,
+        "train_accuracy": float(fold.train_metrics.accuracy),
+        "test_accuracy": float(fold.test_accuracy),
+    }
+
+
+def load_from_csv(path: Path, symbol: str, timeframe: str):
     from metatrade.market_data.collectors.csv_collector import CsvCollector
 
-    if args.file is None:
-        print("ERROR: --file is required when --source csv", file=sys.stderr)
+    if not path.exists():
+        print(f"ERROR: file CSV non trovato: {path}", file=sys.stderr)
         sys.exit(1)
 
-    tf = _TIMEFRAME_MAP[args.timeframe]
+    tf = _TIMEFRAME_MAP[timeframe]
     collector = CsvCollector()
-    print(f"Loading bars from {args.file} …")
+    print(f"Caricamento barre da {path} ...")
     bars = collector.collect_file(
-        file_path=args.file,
-        symbol=args.symbol,
+        file_path=path,
+        symbol=symbol,
         timeframe=tf,
     )
-    print(f"  Loaded {len(bars)} bars.")
+    print(f"  Caricate {len(bars)} barre ({timeframe}).")
     return bars
 
 
-def load_from_mt5(args: argparse.Namespace):
-    from datetime import timedelta
+def load_from_mt5(args: argparse.Namespace, timeframe: str):
     from metatrade.market_data.collectors.mt5_collector import MT5Collector
 
-    collector = MT5Collector(store=None)  # no persistence needed here
+    collector = MT5Collector(store=None)
     collector.initialize(
         login=args.mt5_login,
         password=args.mt5_password,
@@ -143,44 +253,278 @@ def load_from_mt5(args: argparse.Namespace):
         timeout=args.mt5_timeout_ms,
     )
 
-    tf = _TIMEFRAME_MAP[args.timeframe]
-    date_to = datetime.now(timezone.utc)
+    tf = _TIMEFRAME_MAP[timeframe]
+    date_to = datetime.now(UTC)
 
-    # Estimate date_from from bar count × timeframe minutes
     tf_minutes = {
-        Timeframe.M1: 1, Timeframe.M5: 5, Timeframe.M15: 15, Timeframe.M30: 30,
-        Timeframe.H1: 60, Timeframe.H4: 240, Timeframe.D1: 1440,
+        Timeframe.M1: 1,
+        Timeframe.M5: 5,
+        Timeframe.M15: 15,
+        Timeframe.M30: 30,
+        Timeframe.H1: 60,
+        Timeframe.H4: 240,
+        Timeframe.D1: 1440,
     }
     minutes = tf_minutes.get(tf, 60) * args.bars
     date_from = date_to - timedelta(minutes=minutes)
 
-    print(f"Fetching {args.bars} bars of {args.symbol}/{args.timeframe} from MT5 …")
+    print(f"Scarico {args.bars} barre {args.symbol}/{timeframe} da MT5 ...")
     bars = collector.collect(args.symbol, tf, date_from, date_to)
     collector.shutdown()
-    print(f"  Fetched {len(bars)} bars.")
+    print(f"  Scaricate {len(bars)} barre.")
     return bars
+
+
+def _print_fold_table(result: WalkForwardResult) -> None:
+    print(f"{'Fold':>5}  {'Train bars':>11}  {'Test bars':>10}  {'Train acc':>10}  {'Test acc':>9}")
+    print("-" * 55)
+    for fold in result.folds:
+        print(
+            f"{fold.fold_index:>5}  "
+            f"{fold.train_end - fold.train_start:>11}  "
+            f"{fold.n_test_samples:>10}  "
+            f"{fold.train_metrics.accuracy:>10.2%}  "
+            f"{fold.test_accuracy:>9.2%}",
+        )
+    print("-" * 55)
+    print(f"{'Mean':>5}  {'':>11}  {'':>10}  {'':>10}  {result.mean_test_accuracy:>9.2%}")
+    print(f"{'Best':>5}  {'':>11}  {'':>10}  {'':>10}  {result.best_test_accuracy:>9.2%}")
+
+
+def train_single_timeframe(
+    *,
+    args: argparse.Namespace,
+    timeframe: str,
+    bars: list,
+    ml_cfg: MLConfig,
+    telemetry: TelemetryStore,
+    telemetry_is_active: bool,
+) -> TimeframeTrainReport:
+    t0 = time.perf_counter()
+    log.info(
+        "train_timeframe_start",
+        symbol=args.symbol,
+        timeframe=timeframe,
+        n_bars=len(bars),
+        source=args.source,
+        train_window=ml_cfg.train_window_bars,
+        test_window=ml_cfg.test_window_bars,
+        step=ml_cfg.step_bars,
+    )
+
+    if len(bars) < args.train_window + args.test_window:
+        msg = (
+            f"Barre insufficienti ({len(bars)}) per train={args.train_window} + test={args.test_window}."
+        )
+        log.warning("train_timeframe_skipped", symbol=args.symbol, timeframe=timeframe, reason=msg)
+        return TimeframeTrainReport(
+            timeframe=timeframe,
+            success=False,
+            error=msg,
+            bars_used=len(bars),
+            duration_sec=round(time.perf_counter() - t0, 3),
+            model_version=None,
+            mean_test_accuracy=None,
+            best_test_accuracy=None,
+            best_fold_index=None,
+            n_folds=0,
+            folds=[],
+            artifact_path=None,
+        )
+
+    trainer = WalkForwardTrainer(ml_cfg)
+    print(f"\n=== Walk-forward: {args.symbol} {timeframe} ({len(bars)} barre) ===")
+    print(f"  train_window={ml_cfg.train_window_bars}  test_window={ml_cfg.test_window_bars}  step={ml_cfg.step_bars}")
+    print()
+
+    result, model = trainer.run(bars)
+
+    if not result.folds:
+        msg = "Nessun fold prodotto: dati insufficienti."
+        log.error("train_timeframe_failed", symbol=args.symbol, timeframe=timeframe, reason=msg)
+        print(f"ERROR: {msg}", file=sys.stderr)
+        return TimeframeTrainReport(
+            timeframe=timeframe,
+            success=False,
+            error=msg,
+            bars_used=len(bars),
+            duration_sec=round(time.perf_counter() - t0, 3),
+            model_version=None,
+            mean_test_accuracy=None,
+            best_test_accuracy=None,
+            best_fold_index=None,
+            n_folds=0,
+            folds=[],
+            artifact_path=None,
+        )
+
+    _print_fold_table(result)
+    print()
+
+    if model is None or not model.is_trained:
+        msg = (
+            f"Nessun modello sopra la soglia min_accuracy ({ml_cfg.min_accuracy:.0%}). "
+            "Prova --bars piu' alto, --min-accuracy piu' basso, o verifica i dati."
+        )
+        log.warning("train_timeframe_below_threshold", symbol=args.symbol, timeframe=timeframe, message=msg)
+        print(f"WARNING: {msg}", file=sys.stderr)
+        return TimeframeTrainReport(
+            timeframe=timeframe,
+            success=False,
+            error=msg,
+            bars_used=len(bars),
+            duration_sec=round(time.perf_counter() - t0, 3),
+            model_version=None,
+            mean_test_accuracy=float(result.mean_test_accuracy),
+            best_test_accuracy=float(result.best_test_accuracy),
+            best_fold_index=int(result.best_fold_index),
+            n_folds=len(result.folds),
+            folds=[fold_to_dict(f) for f in result.folds],
+            artifact_path=None,
+        )
+
+    args.model_dir.mkdir(parents=True, exist_ok=True)
+    registry = ModelRegistry(config=ml_cfg, persist=True)
+    best_fold = result.folds[result.best_fold_index]
+    version = f"v{time.strftime('%Y%m%d_%H%M%S')}_{timeframe}"
+    snapshot = registry.register(
+        classifier=model,
+        symbol=args.symbol,
+        version=version,
+        tags={
+            "source": args.source,
+            "n_folds": len(result.folds),
+            "mean_test_acc": round(result.mean_test_accuracy, 4),
+            "best_test_acc": round(result.best_test_accuracy, 4),
+            "best_fold": best_fold.fold_index,
+            "train_bars": len(bars),
+            "timeframe": timeframe,
+        },
+    )
+    registry.promote(snapshot.version)
+
+    artifact_path = args.model_dir / f"{args.symbol}_{snapshot.version}.pkl"
+    duration_sec = round(time.perf_counter() - t0, 3)
+
+    print(f"Modello salvato e registrato ({timeframe}).")
+    print(f"  Versione : {snapshot.version}")
+    print(f"  Symbol   : {snapshot.symbol}")
+    print(f"  Accuracy : {result.best_test_accuracy:.2%} (miglior fold)")
+    print(f"  File     : {artifact_path}")
+    print(f"  Durata   : {duration_sec}s")
+    print()
+
+    fold_details = [fold_to_dict(f) for f in result.folds]
+    telemetry.record_training_run(
+        symbol=args.symbol,
+        timeframe=timeframe,
+        source=args.source,
+        bars_requested=args.bars if args.source == "mt5" else len(bars),
+        bars_fetched=len(bars),
+        train_window=args.train_window,
+        test_window=args.test_window,
+        step=args.step,
+        forward_bars=args.forward_bars,
+        max_iter=args.max_iter,
+        max_depth=args.max_depth,
+        min_accuracy=args.min_accuracy,
+        mean_test_accuracy=result.mean_test_accuracy,
+        best_test_accuracy=result.best_test_accuracy,
+        best_fold=best_fold.fold_index,
+        model_version=snapshot.version,
+        status="completed",
+        details={
+            "artifact_path": str(artifact_path),
+            "duration_sec": duration_sec,
+            "telemetry_is_active": telemetry_is_active,
+            "folds": fold_details,
+        },
+    )
+    telemetry.record_model_artifact(
+        version=snapshot.version,
+        symbol=args.symbol,
+        timeframe=timeframe,
+        source=args.source,
+        train_bars=len(bars),
+        n_folds=len(result.folds),
+        mean_test_accuracy=result.mean_test_accuracy,
+        best_test_accuracy=result.best_test_accuracy,
+        artifact_path=str(artifact_path),
+        is_active=telemetry_is_active,
+        details={
+            "best_fold": best_fold.fold_index,
+            "mean_test_acc": result.mean_test_accuracy,
+            "best_test_acc": result.best_test_accuracy,
+            "duration_sec": duration_sec,
+        },
+    )
+
+    log.info(
+        "train_timeframe_done",
+        symbol=args.symbol,
+        timeframe=timeframe,
+        version=snapshot.version,
+        n_folds=len(result.folds),
+        mean_test_accuracy=round(result.mean_test_accuracy, 4),
+        best_test_accuracy=round(result.best_test_accuracy, 4),
+        duration_sec=duration_sec,
+        telemetry_is_active=telemetry_is_active,
+    )
+
+    return TimeframeTrainReport(
+        timeframe=timeframe,
+        success=True,
+        error=None,
+        bars_used=len(bars),
+        duration_sec=duration_sec,
+        model_version=snapshot.version,
+        mean_test_accuracy=float(result.mean_test_accuracy),
+        best_test_accuracy=float(result.best_test_accuracy),
+        best_fold_index=int(result.best_fold_index),
+        n_folds=len(result.folds),
+        folds=fold_details,
+        artifact_path=str(artifact_path),
+    )
+
+
+def write_json_report(model_dir: Path, payload: dict[str, Any]) -> Path:
+    report_dir = model_dir / "training_reports"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    name = f"summary_{time.strftime('%Y%m%d_%H%M%S')}.json"
+    path = report_dir / name
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path
 
 
 def main() -> None:
     args = parse_args()
     args = apply_mt5_defaults(args)
+    telemetry = TelemetryStore.from_env()
 
-    # ── 1. Load data ──────────────────────────────────────────────────────────
-    if args.source == "csv":
-        bars = load_from_csv(args)
-    else:
-        bars = load_from_mt5(args)
+    timeframes = parse_timeframe_list(args)
+    promote_tf = resolve_promote_timeframe(timeframes, args)
+    multi = len(timeframes) > 1
 
-    if len(bars) < args.train_window + args.test_window:
-        print(
-            f"ERROR: Not enough bars ({len(bars)}) for the configured windows "
-            f"({args.train_window} train + {args.test_window} test).",
-            file=sys.stderr,
-        )
+    if args.source == "csv" and args.file is None:
+        print("ERROR: --file obbligatorio con --source csv", file=sys.stderr)
         sys.exit(1)
 
-    # ── 2. Configure and run walk-forward training ────────────────────────────
-    cfg = MLConfig(
+    log.info(
+        "train_batch_start",
+        symbol=args.symbol,
+        timeframes=timeframes,
+        multi=multi,
+        promote_timeframe=promote_tf,
+        source=args.source,
+    )
+    print("\n" + "=" * 60)
+    print(f" Training ML  |  {args.symbol}  |  timeframe: {', '.join(timeframes)}")
+    print(f" Sorgente: {args.source}  |  modello attivo in dashboard: {promote_tf}")
+    if multi:
+        print(" Nota: ogni run produce un artifact; solo uno e' marcato attivo in telemetria.")
+    print("=" * 60 + "\n")
+
+    ml_cfg = MLConfig(
         train_window_bars=args.train_window,
         test_window_bars=args.test_window,
         step_bars=args.step,
@@ -191,69 +535,82 @@ def main() -> None:
         model_registry_dir=str(args.model_dir),
     )
 
-    trainer = WalkForwardTrainer(cfg)
+    reports: list[TimeframeTrainReport] = []
+    for tf in timeframes:
+        if args.source == "csv":
+            assert args.file is not None
+            csv_path = resolve_csv_path(args.file, tf, multi=multi)
+            bars = load_from_csv(csv_path, args.symbol, tf)
+        else:
+            bars = load_from_mt5(args, tf)
 
-    print(f"\nStarting walk-forward training on {len(bars)} bars …")
-    print(f"  train_window={cfg.train_window_bars}  test_window={cfg.test_window_bars}  step={cfg.step_bars}")
-    print()
-
-    result, model = trainer.run(bars)
-
-    # ── 3. Print fold summary ─────────────────────────────────────────────────
-    if not result.folds:
-        print("ERROR: No folds produced — not enough data.", file=sys.stderr)
-        sys.exit(1)
-
-    print(f"{'Fold':>5}  {'Train bars':>11}  {'Test bars':>10}  {'Train acc':>10}  {'Test acc':>9}")
-    print("-" * 55)
-    for fold in result.folds:
-        print(
-            f"{fold.fold_index:>5}  "
-            f"{fold.train_end - fold.train_start:>11}  "
-            f"{fold.n_test_samples:>10}  "
-            f"{fold.train_metrics.accuracy:>10.2%}  "
-            f"{fold.test_accuracy:>9.2%}"
+        is_active = tf == promote_tf
+        report = train_single_timeframe(
+            args=args,
+            timeframe=tf,
+            bars=bars,
+            ml_cfg=ml_cfg,
+            telemetry=telemetry,
+            telemetry_is_active=is_active,
         )
-    print("-" * 55)
-    print(f"{'Mean':>5}  {'':>11}  {'':>10}  {'':>10}  {result.mean_test_accuracy:>9.2%}")
-    print(f"{'Best':>5}  {'':>11}  {'':>10}  {'':>10}  {result.best_test_accuracy:>9.2%}")
-    print()
+        reports.append(report)
 
-    # ── 4. Register and promote ───────────────────────────────────────────────
-    if model is None or not model.is_trained:
-        print(
-            f"WARNING: No model met the minimum accuracy threshold ({cfg.min_accuracy:.0%}).\n"
-            "Increase --bars, decrease --min-accuracy, or review data quality.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    ok_count = sum(1 for r in reports if r.success)
+    fail_count = len(reports) - ok_count
 
-    args.model_dir.mkdir(parents=True, exist_ok=True)
-    registry = ModelRegistry(config=cfg, persist=True)
+    print("\n" + "=" * 60)
+    print(" RIEPILOGO FINALE")
+    print("=" * 60)
+    print(f"{'TF':<6} {'Esito':<10} {'Barre':>7} {'Mean test':>10} {'Best test':>10} {'Versione':<22}")
+    print("-" * 60)
+    for r in reports:
+        status = "OK" if r.success else "FALLITO"
+        mean_s = f"{r.mean_test_accuracy:.2%}" if r.mean_test_accuracy is not None else "-"
+        best_s = f"{r.best_test_accuracy:.2%}" if r.best_test_accuracy is not None else "-"
+        ver = (r.model_version or "-")[:20]
+        print(f"{r.timeframe:<6} {status:<10} {r.bars_used:>7} {mean_s:>10} {best_s:>10} {ver:<22}")
+        if r.error and not r.success:
+            print(f"        ({r.error})")
+    print("-" * 60)
+    print(f" Completati con successo: {ok_count}/{len(reports)}  |  attivo (telemetria): {promote_tf}")
+    print("=" * 60 + "\n")
 
-    best_fold = result.folds[result.best_fold_index]
-    snapshot = registry.register(
-        classifier=model,
+    log.info(
+        "train_batch_done",
         symbol=args.symbol,
-        tags={
-            "source": args.source,
-            "n_folds": len(result.folds),
-            "mean_test_acc": round(result.mean_test_accuracy, 4),
-            "best_test_acc": round(result.best_test_accuracy, 4),
-            "best_fold": best_fold.fold_index,
-            "train_bars": len(bars),
-            "timeframe": args.timeframe,
-        },
+        ok=ok_count,
+        failed=fail_count,
+        promote_timeframe=promote_tf,
     )
-    registry.promote(snapshot.version)
 
-    print(f"Model saved and promoted.")
-    print(f"  Version : {snapshot.version}")
-    print(f"  Symbol  : {snapshot.symbol}")
-    print(f"  Accuracy: {result.best_test_accuracy:.2%}")
-    print(f"  Location: {args.model_dir}/{args.symbol}/")
-    print()
-    print("Done. Ready for paper or live trading.")
+    if not args.no_report_json:
+        payload: dict[str, Any] = {
+            "generated_at_utc": datetime.now(UTC).isoformat(),
+            "symbol": args.symbol,
+            "source": args.source,
+            "timeframes": timeframes,
+            "promote_timeframe": promote_tf,
+            "train_window": args.train_window,
+            "test_window": args.test_window,
+            "step": args.step,
+            "forward_bars": args.forward_bars,
+            "max_iter": args.max_iter,
+            "max_depth": args.max_depth,
+            "min_accuracy": args.min_accuracy,
+            "bars_requested_mt5": args.bars if args.source == "mt5" else None,
+            "runs": [asdict(r) for r in reports],
+        }
+        out_path = write_json_report(args.model_dir, payload)
+        print(f"Report JSON: {out_path.resolve()}")
+        log.info("train_report_written", path=str(out_path.resolve()))
+
+    if ok_count == 0:
+        print("ERROR: nessun training completato con successo.", file=sys.stderr)
+        sys.exit(1)
+    if fail_count:
+        sys.exit(1)
+
+    print("Fatto. Puoi avviare paper o live con il modello desiderato (versione in data/models).")
 
 
 if __name__ == "__main__":

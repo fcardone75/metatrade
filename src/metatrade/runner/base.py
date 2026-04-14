@@ -26,6 +26,7 @@ from metatrade.core.contracts.signal import AnalysisSignal
 from metatrade.core.contracts.risk import RiskDecision
 from metatrade.core.enums import ConsensusMode, SignalDirection, OrderSide, RunMode
 from metatrade.alerting.telegram_alerter import TelegramAlerter
+from metatrade.observability.store import TelemetryStore
 from metatrade.risk.config import RiskConfig
 from metatrade.risk.manager import RiskManager
 from metatrade.runner.config import RunnerConfig
@@ -65,6 +66,9 @@ class BaseRunner:
         auto_weight: bool = True,
         weight_forward_bars: int = 5,
         alerter: TelegramAlerter | None = None,
+        telemetry: TelemetryStore | None = None,
+        session_id: str | None = None,
+        timeframe: str | None = None,
     ) -> None:
         """
         Args:
@@ -126,6 +130,9 @@ class BaseRunner:
 
         # ── Alerter ───────────────────────────────────────────────────────────
         self._alerter: TelegramAlerter | None = alerter
+        self._telemetry = telemetry
+        self._session_id = session_id
+        self._timeframe = timeframe
 
     @property
     def stats(self) -> RunStats:
@@ -177,6 +184,22 @@ class BaseRunner:
             timestamp_utc = datetime.now(timezone.utc)
 
         self._stats.bars_processed += 1
+
+        used_margin = (
+            account_balance - free_margin
+            if account_balance >= free_margin
+            else Decimal("0")
+        )
+        account = AccountState(
+            balance=account_balance,
+            equity=account_equity,
+            free_margin=free_margin,
+            used_margin=used_margin,
+            timestamp_utc=timestamp_utc,
+            open_positions_count=open_positions,
+            run_mode=run_mode,
+        )
+        self._record_account_snapshot(account)
 
         # ── Guard: spread filter ──────────────────────────────────────────────
         # Block new entries when the broker spread is too wide.
@@ -261,6 +284,7 @@ class BaseRunner:
         )
 
         if not consensus_result.is_actionable:
+            self._record_decision(signals, consensus_result, None, run_mode)
             return None
 
         direction = consensus_result.final_direction
@@ -270,22 +294,6 @@ class BaseRunner:
             side = OrderSide.SELL
         else:
             return None
-
-        # ── Step 3: Build AccountState ────────────────────────────────────────
-        used_margin = (
-            account_balance - free_margin
-            if account_balance >= free_margin
-            else Decimal("0")
-        )
-        account = AccountState(
-            balance=account_balance,
-            equity=account_equity,
-            free_margin=free_margin,
-            used_margin=used_margin,
-            timestamp_utc=timestamp_utc,
-            open_positions_count=open_positions,
-            run_mode=run_mode,
-        )
 
         # ── Step 3b: Drawdown-recovery tracking ───────────────────────────────
         # Keep a running peak-equity and detect when we're in recovery mode.
@@ -360,7 +368,44 @@ class BaseRunner:
             ):
                 self._stats.kill_switch_activations += 1
 
+        self._record_decision(signals, consensus_result, decision, run_mode)
         return decision
+
+    def _record_account_snapshot(self, account: AccountState) -> None:
+        if self._telemetry is None or self._session_id is None:
+            return
+        try:
+            self._telemetry.record_account_snapshot(
+                session_id=self._session_id,
+                symbol=self._config.symbol,
+                timeframe=self._timeframe,
+                account=account,
+                details={"bars_processed": self._stats.bars_processed},
+            )
+        except Exception as exc:
+            log.warning("account_snapshot_telemetry_failed: %s", exc)
+
+    def _record_decision(
+        self,
+        signals: list[AnalysisSignal],
+        consensus_result,
+        decision: RiskDecision | None,
+        run_mode: RunMode,
+    ) -> None:
+        if self._telemetry is None or self._session_id is None:
+            return
+        try:
+            self._telemetry.record_decision(
+                session_id=self._session_id,
+                symbol=self._config.symbol,
+                timeframe=self._timeframe,
+                run_mode=run_mode.value,
+                signals=signals,
+                consensus_result=consensus_result,
+                decision=decision,
+            )
+        except Exception as exc:
+            log.warning("decision_telemetry_failed: %s", exc)
 
     def _estimate_sl(
         self,
