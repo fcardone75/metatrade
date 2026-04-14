@@ -26,6 +26,14 @@ The script:
   4. Registers the best model to disk
   5. Promotes one model as active in registry (ultimo timeframe o --promote-timeframe)
   6. Scrive un report JSON in data/models/training_reports/ (disattiva con --no-report-json)
+
+Monitoraggio avanzamento walk-forward (mentre gira il training):
+
+    # File aggiornato ad ogni fold completato (MODEL_DIR/training_progress.json)
+    Get-Content data\\models\\training_progress.json
+
+    # PowerShell: aggiorna ogni 3 secondi
+    while ($true) { Clear-Host; Get-Content data\\models\\training_progress.json; Start-Sleep 3 }
 """
 
 from __future__ import annotations
@@ -275,6 +283,27 @@ def load_from_mt5(args: argparse.Namespace, timeframe: str):
     return bars
 
 
+TRAINING_PROGRESS_JSON = "training_progress.json"
+
+
+def training_progress_path(model_dir: Path) -> Path:
+    return model_dir / TRAINING_PROGRESS_JSON
+
+
+def _estimate_max_walk_forward_folds(n_bars: int, train_w: int, test_w: int, step: int) -> int:
+    """Limite superiore grezzo sul numero di fold (alcuni step possono essere saltati)."""
+    if n_bars <= train_w + test_w or step <= 0:
+        return 1
+    return max(1, (n_bars - train_w - test_w) // step + 1)
+
+
+def _atomic_write_training_progress(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(path)
+
+
 def _print_fold_table(result: WalkForwardResult) -> None:
     print(f"{'Fold':>5}  {'Train bars':>11}  {'Test bars':>10}  {'Train acc':>10}  {'Test acc':>9}")
     print("-" * 55)
@@ -317,6 +346,17 @@ def train_single_timeframe(
             f"Barre insufficienti ({len(bars)}) per train={args.train_window} + test={args.test_window}."
         )
         log.warning("train_timeframe_skipped", symbol=args.symbol, timeframe=timeframe, reason=msg)
+        _atomic_write_training_progress(
+            training_progress_path(args.model_dir),
+            {
+                "status": "error",
+                "symbol": args.symbol,
+                "timeframe": timeframe,
+                "phase": "skipped",
+                "message": msg,
+                "updated_at_utc": datetime.now(UTC).isoformat(),
+            },
+        )
         return TimeframeTrainReport(
             timeframe=timeframe,
             success=False,
@@ -337,12 +377,74 @@ def train_single_timeframe(
     print(f"  train_window={ml_cfg.train_window_bars}  test_window={ml_cfg.test_window_bars}  step={ml_cfg.step_bars}")
     print()
 
-    result, model = trainer.run(bars)
+    n_bars = len(bars)
+    est_folds = _estimate_max_walk_forward_folds(
+        n_bars,
+        ml_cfg.train_window_bars,
+        ml_cfg.test_window_bars,
+        ml_cfg.step_bars,
+    )
+    prog_path = training_progress_path(args.model_dir)
+    _atomic_write_training_progress(
+        prog_path,
+        {
+            "status": "walk_forward",
+            "symbol": args.symbol,
+            "timeframe": timeframe,
+            "phase": "starting",
+            "total_bars": n_bars,
+            "estimated_folds_upper_bound": est_folds,
+            "folds_completed": 0,
+            "progress_pct_approx": 0.0,
+            "updated_at_utc": datetime.now(UTC).isoformat(),
+        },
+    )
+
+    def on_fold_complete(fold: WalkForwardFold) -> None:
+        done = fold.fold_index + 1
+        pct = min(100.0, 100.0 * done / max(est_folds, 1))
+        payload: dict[str, Any] = {
+            "status": "walk_forward",
+            "symbol": args.symbol,
+            "timeframe": timeframe,
+            "phase": "fold",
+            "total_bars": n_bars,
+            "fold_index": fold.fold_index,
+            "folds_completed": done,
+            "estimated_folds_upper_bound": est_folds,
+            "progress_pct_approx": round(pct, 1),
+            "train_end_bar": fold.train_end,
+            "test_accuracy_last": round(float(fold.test_accuracy), 4),
+            "elapsed_sec": round(time.perf_counter() - t0, 1),
+            "updated_at_utc": datetime.now(UTC).isoformat(),
+        }
+        _atomic_write_training_progress(prog_path, payload)
+        log.info(
+            "train_walk_forward_fold",
+            symbol=args.symbol,
+            timeframe=timeframe,
+            fold_index=fold.fold_index,
+            folds_completed=done,
+            test_accuracy=round(float(fold.test_accuracy), 4),
+        )
+
+    result, model = trainer.run(bars, on_fold_complete=on_fold_complete)
 
     if not result.folds:
         msg = "Nessun fold prodotto: dati insufficienti."
         log.error("train_timeframe_failed", symbol=args.symbol, timeframe=timeframe, reason=msg)
         print(f"ERROR: {msg}", file=sys.stderr)
+        _atomic_write_training_progress(
+            prog_path,
+            {
+                "status": "error",
+                "symbol": args.symbol,
+                "timeframe": timeframe,
+                "phase": "no_folds",
+                "message": msg,
+                "updated_at_utc": datetime.now(UTC).isoformat(),
+            },
+        )
         return TimeframeTrainReport(
             timeframe=timeframe,
             success=False,
@@ -368,6 +470,20 @@ def train_single_timeframe(
         )
         log.warning("train_timeframe_below_threshold", symbol=args.symbol, timeframe=timeframe, message=msg)
         print(f"WARNING: {msg}", file=sys.stderr)
+        _atomic_write_training_progress(
+            prog_path,
+            {
+                "status": "warning",
+                "symbol": args.symbol,
+                "timeframe": timeframe,
+                "phase": "below_min_accuracy",
+                "message": msg,
+                "n_folds": len(result.folds),
+                "mean_test_accuracy": float(result.mean_test_accuracy),
+                "best_test_accuracy": float(result.best_test_accuracy),
+                "updated_at_utc": datetime.now(UTC).isoformat(),
+            },
+        )
         return TimeframeTrainReport(
             timeframe=timeframe,
             success=False,
@@ -471,6 +587,25 @@ def train_single_timeframe(
         telemetry_is_active=telemetry_is_active,
     )
 
+    _atomic_write_training_progress(
+        prog_path,
+        {
+            "status": "timeframe_complete",
+            "symbol": args.symbol,
+            "timeframe": timeframe,
+            "phase": "model_saved",
+            "model_version": snapshot.version,
+            "artifact_path": str(artifact_path),
+            "n_folds": len(result.folds),
+            "mean_test_accuracy": float(result.mean_test_accuracy),
+            "best_test_accuracy": float(result.best_test_accuracy),
+            "duration_sec": duration_sec,
+            "telemetry_is_active": telemetry_is_active,
+            "progress_pct_approx": 100.0,
+            "updated_at_utc": datetime.now(UTC).isoformat(),
+        },
+    )
+
     return TimeframeTrainReport(
         timeframe=timeframe,
         success=True,
@@ -536,7 +671,22 @@ def main() -> None:
     )
 
     reports: list[TimeframeTrainReport] = []
-    for tf in timeframes:
+    prog_base = training_progress_path(args.model_dir)
+    for idx, tf in enumerate(timeframes):
+        _atomic_write_training_progress(
+            prog_base,
+            {
+                "status": "batch",
+                "phase": "timeframe_loading",
+                "symbol": args.symbol,
+                "timeframes": timeframes,
+                "timeframe_index": idx,
+                "timeframes_total": len(timeframes),
+                "current_timeframe": tf,
+                "promote_timeframe": promote_tf,
+                "updated_at_utc": datetime.now(UTC).isoformat(),
+            },
+        )
         if args.source == "csv":
             assert args.file is not None
             csv_path = resolve_csv_path(args.file, tf, multi=multi)
@@ -605,11 +755,46 @@ def main() -> None:
         log.info("train_report_written", path=str(out_path.resolve()))
 
     if ok_count == 0:
+        _atomic_write_training_progress(
+            prog_base,
+            {
+                "status": "error",
+                "phase": "batch_failed",
+                "symbol": args.symbol,
+                "message": "nessun training completato con successo",
+                "timeframes": timeframes,
+                "updated_at_utc": datetime.now(UTC).isoformat(),
+            },
+        )
         print("ERROR: nessun training completato con successo.", file=sys.stderr)
         sys.exit(1)
     if fail_count:
+        _atomic_write_training_progress(
+            prog_base,
+            {
+                "status": "warning",
+                "phase": "batch_partial",
+                "symbol": args.symbol,
+                "ok": ok_count,
+                "failed": fail_count,
+                "timeframes": timeframes,
+                "updated_at_utc": datetime.now(UTC).isoformat(),
+            },
+        )
         sys.exit(1)
 
+    _atomic_write_training_progress(
+        prog_base,
+        {
+            "status": "batch_complete",
+            "phase": "done",
+            "symbol": args.symbol,
+            "timeframes": timeframes,
+            "ok": ok_count,
+            "promote_timeframe": promote_tf,
+            "updated_at_utc": datetime.now(UTC).isoformat(),
+        },
+    )
     print("Fatto. Puoi avviare paper o live con il modello desiderato (versione in data/models).")
 
 

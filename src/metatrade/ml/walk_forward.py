@@ -19,6 +19,7 @@ on the next `test_window_bars` bars.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from metatrade.core.contracts.market import Bar
@@ -80,11 +81,18 @@ class WalkForwardTrainer:
     def __init__(self, config: MLConfig | None = None) -> None:
         self._config = config or MLConfig()
 
-    def run(self, bars: list[Bar]) -> tuple[WalkForwardResult, MLClassifier | None]:
+    def run(
+        self,
+        bars: list[Bar],
+        *,
+        on_fold_complete: Callable[[WalkForwardFold], None] | None = None,
+    ) -> tuple[WalkForwardResult, MLClassifier | None]:
         """Execute walk-forward training over the bar series.
 
         Args:
             bars: Full historical bar series (oldest first).
+            on_fold_complete: Optional hook invoked after each successful fold
+                (after append to ``result.folds``). Useful for progress files / UI.
 
         Returns:
             (result, final_model) where:
@@ -153,6 +161,8 @@ class WalkForwardTrainer:
             )
             result.folds.append(fold)
             final_model = classifier
+            if on_fold_complete is not None:
+                on_fold_complete(fold)
 
             if test_accuracy > best_accuracy:
                 best_accuracy = test_accuracy
