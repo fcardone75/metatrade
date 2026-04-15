@@ -322,11 +322,27 @@ class MT5BrokerAdapter(IBrokerAdapter):
         # RETURN is always supported by MT5 for market orders
         return _MT5_FILLING_RETURN
 
+    def _symbol_digits(self, symbol: str) -> int:
+        """Return the number of decimal places for *symbol* prices (default 5)."""
+        mt5 = _get_mt5()
+        info = mt5.symbol_info(symbol)
+        if info is not None:
+            return int(info.digits)
+        return 5
+
     def _build_mt5_request(self, order: Order) -> dict:
         """Build an MQL5 trade request dict from an Order."""
         is_buy = order.side == OrderSide.BUY
         action = _MT5_TRADE_ACTION_DEAL
         order_type = _MT5_ORDER_TYPE_BUY if is_buy else _MT5_ORDER_TYPE_SELL
+
+        # MT5 requires prices normalised to the symbol's tick size (digits).
+        # Passing raw Python float arithmetic results (e.g. 1.1798970657790784)
+        # causes retcode=10016 (TRADE_RETCODE_INVALID_STOPS).
+        digits = self._symbol_digits(order.symbol)
+
+        def _norm(price: Decimal) -> float:
+            return round(float(price), digits)
 
         request: dict = {
             "action": action,
@@ -339,10 +355,10 @@ class MT5BrokerAdapter(IBrokerAdapter):
             "type_filling": self._get_filling_mode(order.symbol),
         }
         if order.price is not None:
-            request["price"] = float(order.price)
+            request["price"] = _norm(order.price)
         if order.stop_loss is not None:
-            request["sl"] = float(order.stop_loss)
+            request["sl"] = _norm(order.stop_loss)
         if order.take_profit is not None:
-            request["tp"] = float(order.take_profit)
+            request["tp"] = _norm(order.take_profit)
 
         return request

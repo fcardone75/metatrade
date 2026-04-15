@@ -28,6 +28,25 @@ BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 
+def _parse_date_param(value: str, *, end_of_day: bool) -> datetime:
+    """Parse an ISO date/datetime string to a UTC-aware datetime.
+
+    If only a date (YYYY-MM-DD) is given, returns start-of-day (00:00:00) or
+    end-of-day (23:59:59) depending on ``end_of_day``.
+    """
+    value = value.strip()
+    formats = ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"]
+    for fmt in formats:
+        try:
+            dt = datetime.strptime(value, fmt)
+            if end_of_day and fmt == "%Y-%m-%d":
+                dt = dt.replace(hour=23, minute=59, second=59)
+            return dt.replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    raise HTTPException(status_code=400, detail=f"Data non riconosciuta: {value!r}. Usa YYYY-MM-DD.")
+
+
 def _build_decision_progress(
     *,
     sessions: list[dict[str, Any]],
@@ -344,6 +363,144 @@ def create_app() -> FastAPI:
         """Reset the kill switch — re-enables trading on the next bar."""
         telemetry.write_kill_command(level=0, reason="Reset from dashboard", activated_by="dashboard")
         return telemetry.read_kill_command()
+
+    # ── Trade Journal endpoints ───────────────────────────────────────────────
+
+    @app.get("/api/journal/trades")
+    async def journal_trades(
+        symbol: str | None = None,
+        run_mode: str | None = None,
+        from_date: str | None = Query(default=None, description="ISO date or datetime, e.g. 2026-01-01"),
+        to_date: str | None = Query(default=None, description="ISO date or datetime, e.g. 2026-04-15"),
+        closed_only: bool = True,
+        limit: int = Query(default=200, ge=1, le=2000),
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Return closed (or all) trades from the local journal, newest first.
+
+        Dates are interpreted as UTC; time component defaults to start/end of day.
+        """
+        from_ts: int | None = None
+        to_ts: int | None = None
+        if from_date:
+            dt = _parse_date_param(from_date, end_of_day=False)
+            from_ts = int(dt.timestamp())
+        if to_date:
+            dt = _parse_date_param(to_date, end_of_day=True)
+            to_ts = int(dt.timestamp())
+        return telemetry.list_trades(
+            from_ts=from_ts,
+            to_ts=to_ts,
+            symbol=symbol,
+            run_mode=run_mode,
+            closed_only=closed_only,
+            limit=limit,
+            offset=offset,
+        )
+
+    @app.get("/api/journal/summary")
+    async def journal_summary(
+        period: str = Query(default="daily", description="daily | weekly | monthly"),
+        symbol: str | None = None,
+        run_mode: str | None = None,
+        limit: int = Query(default=90, ge=1, le=365),
+    ) -> list[dict[str, Any]]:
+        """Return P&L aggregated by the requested time period, newest first."""
+        if period not in ("daily", "weekly", "monthly"):
+            raise HTTPException(status_code=400, detail="period must be daily|weekly|monthly")
+        return telemetry.get_periodic_summary(
+            period=period,
+            symbol=symbol,
+            run_mode=run_mode,
+            limit=limit,
+        )
+
+    @app.get("/api/journal/stats")
+    async def journal_stats(
+        symbol: str | None = None,
+        run_mode: str | None = None,
+        from_date: str | None = Query(default=None, description="ISO date, e.g. 2026-01-01"),
+        to_date: str | None = Query(default=None, description="ISO date, e.g. 2026-04-15"),
+    ) -> dict[str, Any]:
+        """Return aggregate statistics for all closed trades in the given window."""
+        from_ts: int | None = None
+        to_ts: int | None = None
+        if from_date:
+            from_ts = int(_parse_date_param(from_date, end_of_day=False).timestamp())
+        if to_date:
+            to_ts = int(_parse_date_param(to_date, end_of_day=True).timestamp())
+        return telemetry.get_trade_summary(
+            from_ts=from_ts,
+            to_ts=to_ts,
+            symbol=symbol,
+            run_mode=run_mode,
+        )
+
+    @app.post("/api/journal/sync-mt5")
+    async def journal_sync_mt5(
+        request: Request,
+        days_back: int = Body(default=90, ge=1, le=365, embed=True),
+    ) -> dict[str, Any]:
+        """Import closed deals from MT5 history into the local trade journal.
+
+        Only imports deals with type 'DEAL_TYPE_SELL' or 'DEAL_TYPE_BUY' that
+        represent position closes (entry='out' or 'in/out').  Idempotent —
+        already-imported deals (matched by broker_order_id) are updated in-place.
+
+        Returns the number of records imported.
+        """
+        if not client_is_local(request):
+            raise HTTPException(status_code=403, detail="Sync consentita solo da localhost")
+        deals = mt5.get_closed_deals(limit=5000)
+        if not deals:
+            return {"imported": 0, "skipped": 0, "message": "Nessun deal trovato in MT5"}
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
+        cutoff_ts = int(cutoff.timestamp())
+        imported = 0
+        skipped = 0
+        for deal in deals:
+            deal_time = deal.get("time") or deal.get("time_utc") or 0
+            if deal_time < cutoff_ts:
+                skipped += 1
+                continue
+            # Only process out-leg deals (position close)
+            entry = deal.get("entry", "")
+            if entry not in ("out", "in/out", 1, 2):
+                skipped += 1
+                continue
+            broker_id = str(deal.get("deal") or deal.get("ticket") or "")
+            symbol = deal.get("symbol") or "UNKNOWN"
+            direction = "LONG" if deal.get("type") in (0, "DEAL_TYPE_BUY") else "SHORT"
+            lot_size = float(deal.get("volume") or 0)
+            price_close = float(deal.get("price") or 0)
+            profit = float(deal.get("profit") or 0)
+            commission = float(deal.get("commission") or 0)
+            swap = float(deal.get("swap") or 0)
+            close_dt = datetime.fromtimestamp(float(deal_time), tz=timezone.utc)
+            trade_id = f"mt5-{broker_id}" if broker_id else f"mt5-{deal_time}"
+            telemetry.record_closed_trade(
+                trade_id=trade_id,
+                session_id=None,
+                symbol=symbol,
+                run_mode="LIVE",
+                direction=direction,
+                lot_size=lot_size,
+                entry_price=float(deal.get("price_open") or price_close),
+                entry_time_utc=datetime.fromtimestamp(
+                    float(deal.get("time_open") or deal_time), tz=timezone.utc
+                ),
+                exit_price=price_close,
+                exit_time_utc=close_dt,
+                pnl_currency=profit,
+                commission=commission,
+                swap=swap,
+                exit_reason=str(deal.get("reason") or "mt5"),
+                broker_order_id=broker_id,
+                details={k: deal.get(k) for k in ("comment", "magic", "position_id") if deal.get(k)},
+            )
+            imported += 1
+        return {"imported": imported, "skipped": skipped}
 
     @app.get("/api/bars")
     async def bars(

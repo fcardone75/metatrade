@@ -176,6 +176,34 @@ CREATE TABLE IF NOT EXISTS kill_switch_command (
 )
 """
 
+CREATE_TRADE_JOURNAL_TABLE = """
+CREATE TABLE IF NOT EXISTS trade_journal (
+    trade_id         TEXT PRIMARY KEY,
+    session_id       TEXT,
+    symbol           TEXT NOT NULL,
+    run_mode         TEXT NOT NULL,
+    direction        TEXT NOT NULL,
+    lot_size         REAL NOT NULL,
+    entry_price      REAL NOT NULL,
+    entry_time_utc   BIGINT NOT NULL,
+    exit_price       REAL,
+    exit_time_utc    BIGINT,
+    stop_loss        REAL,
+    take_profit      REAL,
+    pnl_pips         REAL,
+    pnl_currency     REAL,
+    commission       REAL NOT NULL DEFAULT 0,
+    swap             REAL NOT NULL DEFAULT 0,
+    net_pnl          REAL,
+    exit_reason      TEXT,
+    broker_order_id  TEXT,
+    details          TEXT
+)
+"""
+
+CREATE_TRADE_JOURNAL_IDX = "CREATE INDEX IF NOT EXISTS idx_trade_journal_entry ON trade_journal(entry_time_utc DESC)"
+CREATE_TRADE_JOURNAL_SYMBOL_IDX = "CREATE INDEX IF NOT EXISTS idx_trade_journal_symbol ON trade_journal(symbol, entry_time_utc DESC)"
+
 CREATE_SESSION_IDX = "CREATE INDEX IF NOT EXISTS idx_dashboard_sessions_started_at ON dashboard_sessions(started_at DESC)"
 CREATE_ACCOUNT_IDX = "CREATE INDEX IF NOT EXISTS idx_dashboard_account_ts ON dashboard_account_snapshots(ts DESC)"
 CREATE_DECISION_IDX = "CREATE INDEX IF NOT EXISTS idx_dashboard_decisions_ts ON dashboard_decisions(ts DESC)"
@@ -243,11 +271,14 @@ class TelemetryStore:
             CREATE_MODULE_THRESHOLDS_TABLE,
             CREATE_RULE_REPUTATIONS_TABLE,
             CREATE_KILL_SWITCH_COMMAND_TABLE,
+            CREATE_TRADE_JOURNAL_TABLE,
             CREATE_SESSION_IDX,
             CREATE_ACCOUNT_IDX,
             CREATE_DECISION_IDX,
             CREATE_ORDER_IDX,
             CREATE_TRAINING_IDX,
+            CREATE_TRADE_JOURNAL_IDX,
+            CREATE_TRADE_JOURNAL_SYMBOL_IDX,
         ]
         for statement in statements:
             self._conn.execute(statement)
@@ -794,6 +825,244 @@ class TelemetryStore:
         if row is None:
             return {"level": 0, "reason": "", "activated_by": "", "updated_at": 0.0}
         return dict(row)
+
+    # ── Trade Journal ─────────────────────────────────────────────────────────
+
+    def record_closed_trade(
+        self,
+        *,
+        trade_id: str,
+        session_id: str | None,
+        symbol: str,
+        run_mode: str,
+        direction: str,
+        lot_size: float,
+        entry_price: float,
+        entry_time_utc: datetime,
+        exit_price: float | None = None,
+        exit_time_utc: datetime | None = None,
+        stop_loss: float | None = None,
+        take_profit: float | None = None,
+        pnl_pips: float | None = None,
+        pnl_currency: float | None = None,
+        commission: float = 0.0,
+        swap: float = 0.0,
+        exit_reason: str | None = None,
+        broker_order_id: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        """Insert or update a trade record in the journal.
+
+        Can be called:
+        - At trade open (exit_price=None) to record entry immediately.
+        - At trade close (all fields populated) to record the full round-trip.
+        - Via upsert to update an existing entry on close.
+        """
+        assert self._conn is not None
+        net_pnl: float | None = None
+        if pnl_currency is not None:
+            net_pnl = pnl_currency - commission - swap
+        self._conn.execute(
+            """
+            INSERT INTO trade_journal
+                (trade_id, session_id, symbol, run_mode, direction, lot_size,
+                 entry_price, entry_time_utc, exit_price, exit_time_utc,
+                 stop_loss, take_profit, pnl_pips, pnl_currency,
+                 commission, swap, net_pnl, exit_reason, broker_order_id, details)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(trade_id) DO UPDATE SET
+                exit_price      = COALESCE(excluded.exit_price, exit_price),
+                exit_time_utc   = COALESCE(excluded.exit_time_utc, exit_time_utc),
+                pnl_pips        = COALESCE(excluded.pnl_pips, pnl_pips),
+                pnl_currency    = COALESCE(excluded.pnl_currency, pnl_currency),
+                commission      = excluded.commission,
+                swap            = excluded.swap,
+                net_pnl         = COALESCE(excluded.net_pnl, net_pnl),
+                exit_reason     = COALESCE(excluded.exit_reason, exit_reason),
+                broker_order_id = COALESCE(excluded.broker_order_id, broker_order_id),
+                details         = COALESCE(excluded.details, details)
+            """,
+            (
+                trade_id,
+                session_id,
+                symbol,
+                run_mode,
+                direction,
+                lot_size,
+                entry_price,
+                _ts(entry_time_utc),
+                exit_price,
+                _ts(exit_time_utc) if exit_time_utc else None,
+                stop_loss,
+                take_profit,
+                pnl_pips,
+                pnl_currency,
+                commission,
+                swap,
+                net_pnl,
+                exit_reason,
+                broker_order_id,
+                json.dumps(_serialize(details or {})),
+            ),
+        )
+        self._conn.commit()
+
+    def list_trades(
+        self,
+        *,
+        from_ts: int | None = None,
+        to_ts: int | None = None,
+        symbol: str | None = None,
+        run_mode: str | None = None,
+        closed_only: bool = True,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Return trades from the journal, newest first."""
+        assert self._conn is not None
+        conditions: list[str] = []
+        params: list[Any] = []
+        if from_ts is not None:
+            conditions.append("entry_time_utc >= ?")
+            params.append(from_ts)
+        if to_ts is not None:
+            conditions.append("entry_time_utc <= ?")
+            params.append(to_ts)
+        if symbol:
+            conditions.append("symbol = ?")
+            params.append(symbol)
+        if run_mode:
+            conditions.append("run_mode = ?")
+            params.append(run_mode)
+        if closed_only:
+            conditions.append("exit_time_utc IS NOT NULL")
+        query = "SELECT * FROM trade_journal"
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        query += " ORDER BY entry_time_utc DESC LIMIT ? OFFSET ?"
+        params += [limit, offset]
+        return [dict(row) for row in self._conn.execute(query, tuple(params)).fetchall()]
+
+    def get_trade_summary(
+        self,
+        *,
+        from_ts: int | None = None,
+        to_ts: int | None = None,
+        symbol: str | None = None,
+        run_mode: str | None = None,
+    ) -> dict[str, Any]:
+        """Aggregate statistics for closed trades in the requested period."""
+        assert self._conn is not None
+        conditions = ["exit_time_utc IS NOT NULL"]
+        params: list[Any] = []
+        if from_ts is not None:
+            conditions.append("entry_time_utc >= ?")
+            params.append(from_ts)
+        if to_ts is not None:
+            conditions.append("entry_time_utc <= ?")
+            params.append(to_ts)
+        if symbol:
+            conditions.append("symbol = ?")
+            params.append(symbol)
+        if run_mode:
+            conditions.append("run_mode = ?")
+            params.append(run_mode)
+        where = " WHERE " + " AND ".join(conditions)
+        row = self._conn.execute(
+            f"""
+            SELECT
+                COUNT(*)                                        AS total_trades,
+                SUM(CASE WHEN net_pnl > 0 THEN 1 ELSE 0 END)  AS winning_trades,
+                SUM(CASE WHEN net_pnl < 0 THEN 1 ELSE 0 END)  AS losing_trades,
+                SUM(CASE WHEN net_pnl = 0 THEN 1 ELSE 0 END)  AS breakeven_trades,
+                ROUND(SUM(net_pnl), 4)                          AS total_net_pnl,
+                ROUND(SUM(pnl_currency), 4)                     AS total_gross_pnl,
+                ROUND(SUM(commission), 4)                       AS total_commission,
+                ROUND(SUM(swap), 4)                             AS total_swap,
+                ROUND(AVG(net_pnl), 4)                          AS avg_net_pnl,
+                ROUND(AVG(CASE WHEN net_pnl > 0 THEN net_pnl END), 4) AS avg_win,
+                ROUND(AVG(CASE WHEN net_pnl < 0 THEN net_pnl END), 4) AS avg_loss,
+                ROUND(MAX(net_pnl), 4)                          AS best_trade,
+                ROUND(MIN(net_pnl), 4)                          AS worst_trade,
+                ROUND(SUM(pnl_pips), 2)                         AS total_pips,
+                ROUND(AVG(pnl_pips), 2)                         AS avg_pips
+            FROM trade_journal
+            {where}
+            """,
+            tuple(params),
+        ).fetchone()
+        result = dict(row) if row else {}
+        total = result.get("total_trades") or 0
+        winning = result.get("winning_trades") or 0
+        result["win_rate"] = round(winning / total, 4) if total > 0 else None
+        avg_win = result.get("avg_win") or 0.0
+        avg_loss = abs(result.get("avg_loss") or 0.0)
+        result["profit_factor"] = round(avg_win / avg_loss, 4) if avg_loss > 0 else None
+        return result
+
+    def get_periodic_summary(
+        self,
+        *,
+        period: str = "daily",
+        symbol: str | None = None,
+        run_mode: str | None = None,
+        limit: int = 90,
+    ) -> list[dict[str, Any]]:
+        """Return P&L aggregated by day / week / month (newest first).
+
+        ``period`` must be one of: 'daily', 'weekly', 'monthly'.
+        """
+        assert self._conn is not None
+        if period == "daily":
+            group_expr = "strftime('%Y-%m-%d', datetime(entry_time_utc, 'unixepoch'))"
+            label = "date"
+        elif period == "weekly":
+            group_expr = "strftime('%Y-W%W', datetime(entry_time_utc, 'unixepoch'))"
+            label = "week"
+        elif period == "monthly":
+            group_expr = "strftime('%Y-%m', datetime(entry_time_utc, 'unixepoch'))"
+            label = "month"
+        else:
+            raise ValueError(f"period must be daily|weekly|monthly, got {period!r}")
+
+        conditions = ["exit_time_utc IS NOT NULL"]
+        params: list[Any] = []
+        if symbol:
+            conditions.append("symbol = ?")
+            params.append(symbol)
+        if run_mode:
+            conditions.append("run_mode = ?")
+            params.append(run_mode)
+        where = " WHERE " + " AND ".join(conditions)
+        rows = self._conn.execute(
+            f"""
+            SELECT
+                {group_expr}                                        AS period,
+                COUNT(*)                                            AS trades,
+                SUM(CASE WHEN net_pnl > 0 THEN 1 ELSE 0 END)       AS wins,
+                SUM(CASE WHEN net_pnl < 0 THEN 1 ELSE 0 END)       AS losses,
+                ROUND(SUM(net_pnl), 4)                              AS net_pnl,
+                ROUND(SUM(pnl_pips), 2)                             AS pips,
+                ROUND(SUM(commission + swap), 4)                    AS fees
+            FROM trade_journal
+            {where}
+            GROUP BY period
+            ORDER BY period DESC
+            LIMIT ?
+            """,
+            (*params, limit),
+        ).fetchall()
+        results = []
+        for row in rows:
+            d = dict(row)
+            d[label] = d.pop("period")
+            trades = d.get("trades") or 0
+            wins = d.get("wins") or 0
+            d["win_rate"] = round(wins / trades, 4) if trades > 0 else None
+            results.append(d)
+        return results
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
 
     def _extract_model_version(self, signals: list[AnalysisSignal]) -> str | None:
         for signal in signals:
