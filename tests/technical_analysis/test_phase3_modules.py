@@ -637,101 +637,145 @@ class TestStochasticRsiModuleValidation:
 
 
 class TestStochasticRsiSignals:
-    def _make_oversold_bars(self, n: int) -> list[Bar]:
-        """Bars that drop sharply to create an oversold condition."""
-        prices = [1.1200 - i * 0.0010 for i in range(n)]
-        return [
-            make_bar(p, high_extra=0.0002, low_extra=0.0002, i=i)
-            for i, p in enumerate(prices)
-        ]
+    def _make_bullish_cross_bars(self, n: int) -> list[Bar]:
+        """Alternating warm-up then decline + big bounce forces oversold K/D crossover.
 
-    def _make_overbought_bars(self, n: int) -> list[Bar]:
-        """Bars that rise sharply to create an overbought condition."""
-        prices = [1.1000 + i * 0.0010 for i in range(n)]
+        Phase 1 (first 16 bars): alternating ±0.0010 keeps RSI near 50.
+        Phase 2 (next n-17 bars): steady decline drives RSI into the low
+          single digits while remaining non-zero (avoiding the k_raw=0.5
+          neutral-flat edge case).
+        Last bar: +0.0300 spike → RSI jumps, raw %K → 1.0; with smooth_k=2
+          (SMA) K[-1]=0.5 while K[-2]=0 and D[-1]=0.25 while D[-2]=0,
+          yielding a bullish K-above-D crossover in the oversold zone.
+        """
+        prices: list[float] = []
+        for i in range(16):
+            prices.append(1.1200 + 0.0010 if i % 2 == 0 else 1.1200 - 0.0010)
+        for _ in range(n - 17):
+            prices.append(prices[-1] - 0.0015)
+        prices.append(prices[-1] + 0.0300)   # big bounce at last bar
         return [
             make_bar(p, high_extra=0.0002, low_extra=0.0002, i=i)
             for i, p in enumerate(prices)
         ]
 
     def _make_bearish_cross_bars(self, n: int) -> list[Bar]:
-        """Prices that rise to overbought then reverse, creating a bearish K/D cross."""
-        # Rise to overbought, then drop at the end
-        halfway = n - 5
-        prices = [1.1000 + i * 0.0015 for i in range(halfway)]
-        prices += [prices[-1] - i * 0.0020 for i in range(5)]
+        """Alternating warm-up then rise + big drop forces overbought K/D crossover.
+
+        Phase 1 (first 16 bars): alternating keeps RSI near 50.
+        Phase 2 (next n-17 bars): steady rise drives RSI into the high
+          nineties while remaining non-unity.
+        Last bar: −0.0300 spike → RSI drops, raw %K → 0.0; K[-1]=0.5
+          while K[-2]=1 and D[-1]=0.75 while D[-2]=1, yielding a bearish
+          K-below-D crossover in the overbought zone.
+        """
+        prices: list[float] = []
+        for i in range(16):
+            prices.append(1.1000 + 0.0010 if i % 2 == 0 else 1.1000 - 0.0010)
+        for _ in range(n - 17):
+            prices.append(prices[-1] + 0.0015)
+        prices.append(prices[-1] - 0.0300)   # big drop at last bar
         return [
             make_bar(p, high_extra=0.0002, low_extra=0.0002, i=i)
-            for i, p in enumerate(prices[:n])
+            for i, p in enumerate(prices)
         ]
 
-    def test_buy_signal_possible_with_oversold_conditions(self) -> None:
-        """Verify oversold+bullish-cross path can be reached (no exception)."""
+    def test_buy_signal_produced_from_oversold_crossover(self) -> None:
+        """Bullish K/D crossover from oversold zone yields BUY direction."""
         m = StochasticRsiModule(
             rsi_period=5, stoch_period=3, smooth_k=2, smooth_d=2,
-            oversold=0.40, overbought=0.85
+            oversold=0.40, overbought=0.85,
         )
         n = m.min_bars + 20
-        bars = self._make_oversold_bars(n)
+        bars = self._make_bullish_cross_bars(n)
         sig = m.analyse(bars, NOW)
-        # We just need no crash; signal is HOLD or BUY
-        assert sig.direction in (SignalDirection.BUY, SignalDirection.HOLD)
+        assert sig.direction == SignalDirection.BUY
+        assert 0.55 <= sig.confidence <= 0.85
 
-    def test_sell_signal_possible_with_overbought_conditions(self) -> None:
-        """Verify overbought+bearish-cross path can be reached (no exception)."""
+    def test_sell_signal_produced_from_overbought_crossover(self) -> None:
+        """Bearish K/D crossover from overbought zone yields SELL direction."""
         m = StochasticRsiModule(
             rsi_period=5, stoch_period=3, smooth_k=2, smooth_d=2,
-            oversold=0.20, overbought=0.60
+            oversold=0.20, overbought=0.60,
         )
         n = m.min_bars + 20
-        bars = self._make_overbought_bars(n)
+        bars = self._make_bearish_cross_bars(n)
         sig = m.analyse(bars, NOW)
-        assert sig.direction in (SignalDirection.SELL, SignalDirection.HOLD)
+        assert sig.direction == SignalDirection.SELL
+        assert 0.55 <= sig.confidence <= 0.85
 
 
 # ── Additional coverage for swing_level_module ───────────────────────────────
 
 class TestSwingLevelSignals:
-    def _make_near_support_bars(self, n: int) -> list[Bar]:
-        """Price pattern with a clear swing low, current price near it."""
-        prices = []
-        # Create V-shape: down then back up
-        for i in range(n // 2):
-            prices.append(1.1200 - i * 0.0010)
-        # Bounce back close to the swing low level
-        for i in range(n - n // 2):
-            prices.append(1.1200 - (n // 2) * 0.0010 + i * 0.0003)
-        # Current price ends near the original swing low
+    def _make_swing_low_bars(self, n: int) -> list[Bar]:
+        """V-shape price series: confirmed swing low at bar 8, last 3 bars near it.
+
+        With lookback=3 the swing at index 8 is confirmed by bars 5-7 (higher
+        lows on the left) and bars 9-11 (higher lows on the right).  The last
+        3 bars close at 1.1001, which is only 6 pips above the swing-low price
+        of 1.0995 — well within atr_touch_mult=5 × ATR≈0.0030 = 0.0150.
+        """
+        prices: list[float] = []
+        # bars 0-7: declining (no swing low — each bar lower than the previous)
+        for i in range(8):
+            prices.append(1.1200 - i * 0.0025)
+        # bar 8: clear minimum — swing low confirmed by surrounding bars
+        prices.append(1.1000)
+        # bars 9-11: recovering (higher lows confirm bar 8 as a swing low)
+        prices.extend([1.1015, 1.1030, 1.1045])
+        # bars 12 .. n-4: trending higher, well above the swing low
+        for i in range(n - 15):
+            prices.append(1.1045 + (i + 1) * 0.0010)
+        # last 3 bars (excluded from safe_bars): return near the swing low
+        prices.extend([1.1003, 1.1002, 1.1001])
+        assert len(prices) == n, f"bar count mismatch: {len(prices)} != {n}"
         return [
             make_bar(p, high_extra=0.0005, low_extra=0.0005, i=i)
-            for i, p in enumerate(prices[:n])
+            for i, p in enumerate(prices)
         ]
 
-    def _make_near_resistance_bars(self, n: int) -> list[Bar]:
-        """Price pattern with a clear swing high, current near it."""
-        prices = []
-        # Inverted V: up then back down
-        for i in range(n // 2):
-            prices.append(1.1000 + i * 0.0010)
-        # Pull back toward the swing high
-        for i in range(n - n // 2):
-            prices.append(1.1000 + (n // 2) * 0.0010 - i * 0.0003)
+    def _make_swing_high_bars(self, n: int) -> list[Bar]:
+        """Inverted-V price series: confirmed swing high at bar 8, last 3 bars near it.
+
+        With lookback=3, bar 8 is confirmed as a swing high by bars 5-7
+        (lower highs on the left) and bars 9-11 (lower highs on the right).
+        The last 3 bars close at 1.1199, which is only 6 pips below the
+        swing-high price of 1.1205 — well within atr_touch_mult=5 × ATR.
+        """
+        prices: list[float] = []
+        # bars 0-7: rising (no swing high — each bar higher)
+        for i in range(8):
+            prices.append(1.1000 + i * 0.0025)
+        # bar 8: clear maximum — swing high confirmed by surrounding bars
+        prices.append(1.1200)
+        # bars 9-11: declining (lower highs confirm bar 8 as a swing high)
+        prices.extend([1.1185, 1.1170, 1.1155])
+        # bars 12 .. n-4: trending lower, well below the swing high
+        for i in range(n - 15):
+            prices.append(1.1155 - (i + 1) * 0.0010)
+        # last 3 bars (excluded from safe_bars): approach the swing high
+        prices.extend([1.1197, 1.1198, 1.1199])
+        assert len(prices) == n, f"bar count mismatch: {len(prices)} != {n}"
         return [
             make_bar(p, high_extra=0.0005, low_extra=0.0005, i=i)
-            for i, p in enumerate(prices[:n])
+            for i, p in enumerate(prices)
         ]
 
-    def test_near_support_can_produce_buy(self) -> None:
-        m = SwingLevelModule(lookback=3, atr_touch_mult=2.0, max_levels=5)
+    def test_near_support_produces_buy(self) -> None:
+        """Last bar within touch_dist of a confirmed swing low → BUY."""
+        m = SwingLevelModule(lookback=3, atr_touch_mult=5.0, max_levels=5)
         n = m.min_bars + 10
-        bars = self._make_near_support_bars(n)
+        bars = self._make_swing_low_bars(n)
         sig = m.analyse(bars, NOW)
-        assert sig.direction in (SignalDirection.BUY, SignalDirection.HOLD)
-        assert 0.0 <= sig.confidence <= 1.0
+        assert sig.direction == SignalDirection.BUY
+        assert 0.58 <= sig.confidence <= m._confidence_cap
 
-    def test_near_resistance_can_produce_sell(self) -> None:
-        m = SwingLevelModule(lookback=3, atr_touch_mult=2.0, max_levels=5)
+    def test_near_resistance_produces_sell(self) -> None:
+        """Last bar within touch_dist of a confirmed swing high → SELL."""
+        m = SwingLevelModule(lookback=3, atr_touch_mult=5.0, max_levels=5)
         n = m.min_bars + 10
-        bars = self._make_near_resistance_bars(n)
+        bars = self._make_swing_high_bars(n)
         sig = m.analyse(bars, NOW)
-        assert sig.direction in (SignalDirection.SELL, SignalDirection.HOLD)
-        assert 0.0 <= sig.confidence <= 1.0
+        assert sig.direction == SignalDirection.SELL
+        assert 0.58 <= sig.confidence <= m._confidence_cap
