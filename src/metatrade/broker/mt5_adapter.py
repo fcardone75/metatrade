@@ -47,7 +47,13 @@ _MT5_ORDER_TYPE_BUY_LIMIT = 2
 _MT5_ORDER_TYPE_SELL_LIMIT = 3
 _MT5_ORDER_TYPE_BUY_STOP = 4
 _MT5_ORDER_TYPE_SELL_STOP = 5
-_MT5_FILLING_FOK = 1               # Fill or Kill (most common for FX)
+# type_filling values for mt5.order_send()
+_MT5_FILLING_FOK = 0               # Fill or Kill  (ORDER_FILLING_FOK)
+_MT5_FILLING_IOC = 1               # Immediate or Cancel (ORDER_FILLING_IOC)
+_MT5_FILLING_RETURN = 2            # Return remainder (ORDER_FILLING_RETURN)
+# symbol_info().filling_mode bitmask
+_MT5_FILL_FLAG_FOK = 1             # broker supports FOK
+_MT5_FILL_FLAG_IOC = 2             # broker supports IOC
 _MT5_RETCODE_DONE = 10009          # Success
 _MT5_RETCODE_DONE_PARTIAL = 10010  # Partial fill
 
@@ -246,6 +252,24 @@ class MT5BrokerAdapter(IBrokerAdapter):
                 code="MT5_NOT_CONNECTED",
             )
 
+    def _get_filling_mode(self, symbol: str) -> int:
+        """Return the best supported type_filling value for *symbol*.
+
+        MT5 brokers advertise supported filling modes via
+        ``symbol_info().filling_mode`` (bitmask: bit0=FOK, bit1=IOC).
+        Preference order: FOK → IOC → RETURN (always accepted as fallback).
+        """
+        mt5 = _get_mt5()
+        info = mt5.symbol_info(symbol)
+        if info is not None:
+            filling_flags: int = info.filling_mode
+            if filling_flags & _MT5_FILL_FLAG_FOK:
+                return _MT5_FILLING_FOK
+            if filling_flags & _MT5_FILL_FLAG_IOC:
+                return _MT5_FILLING_IOC
+        # RETURN is always supported by MT5 for market orders
+        return _MT5_FILLING_RETURN
+
     def _build_mt5_request(self, order: Order) -> dict:
         """Build an MQL5 trade request dict from an Order."""
         is_buy = order.side == OrderSide.BUY
@@ -260,7 +284,7 @@ class MT5BrokerAdapter(IBrokerAdapter):
             "deviation": self._deviation,
             "magic": self._magic_number,
             "comment": order.comment or "metatrade",
-            "type_filling": _MT5_FILLING_FOK,
+            "type_filling": self._get_filling_mode(order.symbol),
         }
         if order.price is not None:
             request["price"] = float(order.price)
