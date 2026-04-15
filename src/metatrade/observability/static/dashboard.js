@@ -16,6 +16,14 @@ let lastUiPollSec = null;
 
 // ── Formatters ─────────────────────────────────────────────────────────────
 function fmt2(v)   { return (v == null || isNaN(+v)) ? "—" : (+v).toFixed(2); }
+/** Prezzi di quotazione (open, SL, TP, close): più decimali così SL/TP non coincidono visivamente. */
+function fmtPx(v) {
+  if (v == null || isNaN(+v)) return "—";
+  const n = +v;
+  const a = Math.abs(n);
+  if (a >= 50) return n.toFixed(3);
+  return n.toFixed(5);
+}
 function fmtPct(v) { return (v == null || isNaN(+v)) ? "—" : `${(+v * 100).toFixed(1)}%`; }
 function fmtConf(v){ return (v == null || isNaN(+v)) ? "—" : (+v).toFixed(2); }
 function fmtTs(ts) {
@@ -208,11 +216,26 @@ async function getJson(url) {
 }
 
 // ── Charts ──────────────────────────────────────────────────────────────────
-function upsertLine(chart, ctx, labels, data, label, color) {
+function _yTickMoney(v) {
+  const x = Number(v);
+  return Number.isFinite(x) ? x.toFixed(2) : "";
+}
+function _yTickPrice(v) {
+  const x = Number(v);
+  if (!Number.isFinite(x)) return "";
+  return Math.abs(x) < 50 ? x.toFixed(5) : x.toFixed(3);
+}
+
+function upsertLine(chart, ctx, labels, data, label, color, opts = {}) {
+  const priceAxis = opts.priceAxis === true;
+  const yTick = priceAxis ? _yTickPrice : _yTickMoney;
   if (chart) {
     chart.data.labels = labels;
     chart.data.datasets[0].data = data;
     chart.data.datasets[0].label = label;
+    if (chart.options?.scales?.y?.ticks) {
+      chart.options.scales.y.ticks.callback = yTick;
+    }
     chart.update("none");
     return chart;
   }
@@ -225,6 +248,17 @@ function upsertLine(chart, ctx, labels, data, label, color) {
       animation: false,
       plugins: {
         legend: { labels: { color: "#94a3b8", font: { size: 11 } } },
+        tooltip: {
+          callbacks: {
+            label(ctx) {
+              const y = ctx.parsed.y !== undefined ? ctx.parsed.y : ctx.raw;
+              const t = priceAxis && Number.isFinite(y)
+                ? (Math.abs(y) < 50 ? y.toFixed(5) : y.toFixed(3))
+                : (Number.isFinite(y) ? y.toFixed(2) : String(y));
+              return `${ctx.dataset.label || ""}: ${t}`;
+            }
+          }
+        },
         zoom: {
           pan: { enabled: true, mode: "x", modifierKey: "shift" },
           zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: "x" }
@@ -232,7 +266,7 @@ function upsertLine(chart, ctx, labels, data, label, color) {
       },
       scales: {
         x: { ticks: { color: "#475569", font: { size: 10 }, maxTicksLimit: 10 }, grid: { color: "#111827" } },
-        y: { ticks: { color: "#475569", font: { size: 10 } }, grid: { color: "#111827" } }
+        y: { ticks: { color: "#475569", font: { size: 10 }, callback: yTick }, grid: { color: "#111827" } }
       }
     }
   });
@@ -443,11 +477,11 @@ async function refreshOverview() {
       <td><strong>${escHtml(row.symbol ?? "—")}</strong></td>
       <td>${dirBadge(row.type === 0 ? "BUY" : "SELL")}</td>
       <td>${fmt2(row.volume)}</td>
-      <td>${fmt2(row.price_open)}</td>
-      <td>${fmt2(row.price_current)}</td>
+      <td>${fmtPx(row.price_open)}</td>
+      <td>${fmtPx(row.price_current)}</td>
       <td class="${+row.profit >= 0 ? "positive" : "negative"}">${fmt2(row.profit)}</td>
-      <td class="muted">${fmt2(row.sl)}</td>
-      <td class="muted">${fmt2(row.tp)}</td>
+      <td class="muted">${fmtPx(row.sl)}</td>
+      <td class="muted">${fmtPx(row.tp)}</td>
       <td><button class="btn-close-pos" data-ticket="${row.ticket}" title="Chiudi posizione a mercato">✕ Chiudi</button></td>
     </tr>`);
 
@@ -575,7 +609,8 @@ async function refreshBars() {
     barsChart, document.getElementById("bars-chart"),
     rows.map(r => new Date(r.ts).toLocaleTimeString("it-IT")),
     rows.map(r => r.close),
-    `${symbolInput.value} close`, "#818cf8"
+    `${symbolInput.value} close`, "#818cf8",
+    { priceAxis: true }
   );
 }
 
@@ -654,7 +689,7 @@ async function refreshClosedDeals() {
       <td><strong>${escHtml(row.symbol ?? "—")}</strong></td>
       <td>${dirBadge(side)}</td>
       <td>${fmt2(row.volume)}</td>
-      <td>${fmt2(row.price)}</td>
+      <td>${fmtPx(row.price)}</td>
       <td class="${pnlClass}">${fmt2(pnl)}</td>
       <td class="muted">${row.swap ? fmt2(row.swap) : "—"}</td>
       <td class="muted">${row.commission ? fmt2(row.commission) : "—"}</td>
