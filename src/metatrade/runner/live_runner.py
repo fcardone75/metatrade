@@ -14,14 +14,13 @@ The live runner is intentionally thin — most logic lives in BaseRunner.
 
 from __future__ import annotations
 
-import logging
-from datetime import datetime, timezone
-from decimal import Decimal
+from datetime import datetime
 
 from metatrade.broker.interface import IBrokerAdapter
 from metatrade.core.contracts.market import Bar
 from metatrade.core.contracts.risk import RiskDecision, RiskVeto
-from metatrade.core.enums import OrderSide, OrderStatus, RunMode
+from metatrade.core.enums import RunMode
+from metatrade.core.log import get_logger
 from metatrade.execution.order_manager import OrderManager
 from metatrade.observability.store import TelemetryStore
 from metatrade.runner.base import BaseRunner
@@ -29,7 +28,7 @@ from metatrade.runner.config import RunnerConfig
 from metatrade.technical_analysis.interface import ITechnicalModule
 
 
-log = logging.getLogger(__name__)
+log = get_logger(__name__)
 
 
 class LiveRunner(BaseRunner):
@@ -103,37 +102,57 @@ class LiveRunner(BaseRunner):
 
         Raises:
             RuntimeError: If on_bar() is called before connect().
+
+        This method is designed to never propagate exceptions to the caller.
+        Any error mid-bar is logged and the method returns None, keeping the
+        runner alive so open positions continue to be managed.
         """
         if not self._connected:
             raise RuntimeError(
                 "LiveRunner.on_bar() called without calling connect() first."
             )
 
-        self._bar_buffer.append(bar)
-        if len(self._bar_buffer) > 500:
-            self._bar_buffer = self._bar_buffer[-500:]
+        try:
+            self._bar_buffer.append(bar)
+            if len(self._bar_buffer) > 500:
+                self._bar_buffer = self._bar_buffer[-500:]
 
-        # Pull current account state from broker
-        account = self._broker.get_account()
-        balance = account.balance
-        equity = account.equity
-        free_margin = account.free_margin
-        open_positions = account.open_positions_count
+            # Pull current account state from broker
+            account = self._broker.get_account()
+            balance = account.balance
+            equity = account.equity
+            free_margin = account.free_margin
+            open_positions = account.open_positions_count
 
-        result = self.process_bar(
-            bars=self._bar_buffer,
-            account_balance=balance,
-            account_equity=equity,
-            free_margin=free_margin,
-            timestamp_utc=bar.timestamp_utc,
-            open_positions=open_positions,
-            run_mode=RunMode.LIVE,
-        )
+            result = self.process_bar(
+                bars=self._bar_buffer,
+                account_balance=balance,
+                account_equity=equity,
+                free_margin=free_margin,
+                timestamp_utc=bar.timestamp_utc,
+                open_positions=open_positions,
+                run_mode=RunMode.LIVE,
+            )
 
-        if result is not None and result.approved and result.position_size is not None:
-            self._submit_live_order(result, bar.timestamp_utc)
+            if result is not None and result.approved and result.position_size is not None:
+                self._submit_live_order(result, bar.timestamp_utc)
 
-        return result
+            return result
+
+        except Exception as exc:
+            # Never kill the runner over a single bar — open positions must
+            # keep being managed. Log and return None to the caller.
+            try:
+                log.error(
+                    "on_bar_unhandled_exception",
+                    symbol=bar.symbol,
+                    timestamp=bar.timestamp_utc.isoformat(),
+                    error=str(exc),
+                    exc_info=True,
+                )
+            except Exception:  # noqa: BLE001
+                pass  # logging itself must not kill the runner
+            return None
 
     def _submit_live_order(
         self,
@@ -145,28 +164,35 @@ class LiveRunner(BaseRunner):
         Args:
             decision:      Approved risk decision.
             timestamp_utc: UTC timestamp for order creation.
+
+        This method swallows all exceptions — a failed submission must never
+        kill the runner while positions may already be open.
         """
         try:
             order = self._order_manager.build_order(decision, timestamp_utc)
             self._order_manager.submit(order)
             ps = decision.position_size
             log.info(
-                "Submitted live order: id=%s side=%s lot=%.2f sl=%s tp=%s",
-                order.order_id,
-                decision.side.value,
-                float(ps.lot_size) if ps else 0.0,
-                ps.stop_loss_price if ps else None,
-                ps.take_profit_price if ps else None,
-            )
-        except Exception as exc:
-            # OrderManager already records order_failed in telemetry and re-raises.
-            # Log here for the console; the dashboard "Ordini" section will show it.
-            log.error(
-                "live_order_submission_failed",
+                "live_order_submitted",
+                order_id=str(order.order_id),
                 side=decision.side.value if decision.side else "?",
                 symbol=decision.symbol,
-                error=str(exc),
+                lots=float(ps.lot_size) if ps else 0.0,
+                sl=str(ps.stop_loss_price) if ps else None,
+                tp=str(ps.take_profit_price) if ps else None,
             )
+        except Exception as exc:
+            # OrderManager already records order_failed in telemetry.
+            # Log here for the console; never re-raise.
+            try:
+                log.error(
+                    "live_order_submission_failed",
+                    side=decision.side.value if decision.side else "?",
+                    symbol=decision.symbol,
+                    error=str(exc),
+                )
+            except Exception:  # noqa: BLE001
+                pass  # logging itself must not kill the runner
 
     def reset_buffer(self) -> None:
         """Clear the internal bar buffer (e.g. after a weekend gap)."""

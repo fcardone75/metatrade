@@ -557,3 +557,131 @@ class TestLiveRunner:
         runner.on_bar(make_bar(1.1, i=0))
         # Either order was submitted or risk vetoed — just check it ran without error
         assert runner.stats.bars_processed == 1
+
+    # ── Resilience: on_bar must never propagate exceptions ────────────────────
+
+    def test_on_bar_returns_none_when_get_account_raises(self) -> None:
+        """If the broker throws during get_account(), on_bar swallows and returns None."""
+        broker = _make_mock_broker()
+        broker.get_account.side_effect = RuntimeError("connection lost")
+        runner = self._runner(broker=broker)
+        runner.connect()
+        result = runner.on_bar(make_bar(1.1, i=0))
+        assert result is None
+
+    def test_on_bar_continues_processing_after_exception(self) -> None:
+        """After a failed bar, the next bar is processed normally."""
+        broker = _make_mock_broker()
+        call_count = 0
+
+        def flaky_account():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("transient network error")
+            return _make_mock_broker().get_account.return_value
+
+        broker.get_account.side_effect = flaky_account
+        runner = self._runner(broker=broker)
+        runner.connect()
+        result_bad  = runner.on_bar(make_bar(1.1, i=0))
+        result_good = runner.on_bar(make_bar(1.1, i=1))
+        assert result_bad is None
+        # Second bar must reach process_bar (bars_processed increments even on error
+        # because buffer append happens before get_account)
+        assert runner.stats.bars_processed >= 1
+
+    def test_on_bar_returns_none_when_process_bar_raises(self) -> None:
+        """Exception in process_bar pipeline does not propagate."""
+        from unittest.mock import patch
+        runner = self._runner()
+        runner.connect()
+        with patch.object(runner, "process_bar", side_effect=ValueError("bad signal")):
+            result = runner.on_bar(make_bar(1.1, i=0))
+        assert result is None
+
+    # ── Resilience: _submit_live_order must never propagate exceptions ────────
+
+    def test_submit_live_order_swallows_order_rejected_error(self) -> None:
+        """OrderRejectedError from the broker is caught, not re-raised."""
+        from metatrade.core.errors import OrderRejectedError
+        from metatrade.execution.order_manager import OrderManager
+
+        broker = _make_mock_broker()
+        order_manager = MagicMock(spec=OrderManager)
+        order_manager.build_order.return_value = MagicMock(order_id="x")
+        order_manager.submit.side_effect = OrderRejectedError(
+            message="MT5 order rejected: retcode=10019 comment=No money",
+            code="MT5_ORDER_REJECTED",
+        )
+        runner = LiveRunner(make_runner_config(), [StubHoldModule()], broker, order_manager=order_manager)
+        runner.connect()
+
+        # Build a minimal approved RiskDecision to pass to _submit_live_order
+        from metatrade.core.contracts.risk import RiskDecision, PositionSizeResult
+        from metatrade.core.enums import OrderSide
+        ps = PositionSizeResult(
+            lot_size=D("0.01"),
+            risk_amount=D("10.00"),
+            risk_pct=0.01,
+            stop_loss_price=D("1.09000"),
+            stop_loss_pips=D("20.0"),
+            take_profit_price=D("1.11000"),
+            pip_value=D("10.0"),
+            method="fixed_fractional",
+        )
+        decision = RiskDecision(
+            approved=True,
+            symbol="EURUSD",
+            side=OrderSide.BUY,
+            position_size=ps,
+            timestamp_utc=NOW,
+        )
+        # Must not raise
+        runner._submit_live_order(decision, NOW)
+
+    def test_submit_live_order_swallows_unexpected_exception(self) -> None:
+        """Any unexpected exception in order submission is swallowed."""
+        from metatrade.execution.order_manager import OrderManager
+        from metatrade.core.contracts.risk import RiskDecision, PositionSizeResult
+        from metatrade.core.enums import OrderSide
+
+        broker = _make_mock_broker()
+        order_manager = MagicMock(spec=OrderManager)
+        order_manager.build_order.side_effect = RuntimeError("unexpected crash")
+        runner = LiveRunner(make_runner_config(), [StubHoldModule()], broker, order_manager=order_manager)
+        runner.connect()
+
+        ps = PositionSizeResult(
+            lot_size=D("0.01"),
+            risk_amount=D("10.00"),
+            risk_pct=0.01,
+            stop_loss_price=D("1.09000"),
+            stop_loss_pips=D("20.0"),
+            take_profit_price=None,
+            pip_value=D("10.0"),
+            method="fixed_fractional",
+        )
+        decision = RiskDecision(
+            approved=True,
+            symbol="EURUSD",
+            side=OrderSide.BUY,
+            position_size=ps,
+            timestamp_utc=NOW,
+        )
+        runner._submit_live_order(decision, NOW)  # must not raise
+
+    def test_logger_uses_structlog_keyword_args(self) -> None:
+        """Verify the module-level logger is structlog, not stdlib logging.
+
+        stdlib logging.Logger._log() does not accept arbitrary keyword args,
+        which was the root cause of the original crash.
+        """
+        import metatrade.runner.live_runner as lr_mod
+        import structlog
+        # get_logger returns a BoundLogger proxy; calling bind() is the
+        # structlog-specific API not present on stdlib Logger.
+        assert hasattr(lr_mod.log, "bind"), (
+            "live_runner.log must be a structlog logger — stdlib Logger "
+            "does not support keyword args like side=, symbol="
+        )
