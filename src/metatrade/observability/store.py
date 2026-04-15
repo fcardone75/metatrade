@@ -154,6 +154,18 @@ CREATE TABLE IF NOT EXISTS module_thresholds (
 )
 """
 
+CREATE_RULE_REPUTATIONS_TABLE = """
+CREATE TABLE IF NOT EXISTS rule_reputations (
+    rule_id         TEXT NOT NULL,
+    symbol          TEXT NOT NULL DEFAULT '*',
+    weight          REAL NOT NULL DEFAULT 50.0,
+    eval_count      INTEGER NOT NULL DEFAULT 0,
+    mean_score      REAL NOT NULL DEFAULT 0.5,
+    last_eval_ts    BIGINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (rule_id, symbol)
+)
+"""
+
 CREATE_SESSION_IDX = "CREATE INDEX IF NOT EXISTS idx_dashboard_sessions_started_at ON dashboard_sessions(started_at DESC)"
 CREATE_ACCOUNT_IDX = "CREATE INDEX IF NOT EXISTS idx_dashboard_account_ts ON dashboard_account_snapshots(ts DESC)"
 CREATE_DECISION_IDX = "CREATE INDEX IF NOT EXISTS idx_dashboard_decisions_ts ON dashboard_decisions(ts DESC)"
@@ -219,6 +231,7 @@ class TelemetryStore:
             CREATE_TRAINING_RUNS_TABLE,
             CREATE_MODEL_ARTIFACTS_TABLE,
             CREATE_MODULE_THRESHOLDS_TABLE,
+            CREATE_RULE_REPUTATIONS_TABLE,
             CREATE_SESSION_IDX,
             CREATE_ACCOUNT_IDX,
             CREATE_DECISION_IDX,
@@ -670,6 +683,42 @@ class TelemetryStore:
         assert self._conn is not None
         rows = self._conn.execute(
             "SELECT * FROM module_thresholds ORDER BY module_id ASC"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    # ── Rule reputations ──────────────────────────────────────────────────────
+
+    def upsert_rule_reputation(
+        self,
+        rule_id: str,
+        symbol: str,
+        weight: float,
+        eval_count: int,
+        mean_score: float,
+        last_eval_ts: int,
+    ) -> None:
+        """Insert or update the reputation state for a rule (optionally per-symbol)."""
+        assert self._conn is not None
+        self._conn.execute(
+            """
+            INSERT INTO rule_reputations
+                (rule_id, symbol, weight, eval_count, mean_score, last_eval_ts)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(rule_id, symbol) DO UPDATE SET
+                weight        = excluded.weight,
+                eval_count    = excluded.eval_count,
+                mean_score    = excluded.mean_score,
+                last_eval_ts  = excluded.last_eval_ts
+            """,
+            (rule_id, symbol, weight, eval_count, mean_score, last_eval_ts),
+        )
+        self._conn.commit()
+
+    def list_rule_reputations(self) -> list[dict[str, Any]]:
+        """Return all rule reputation records ordered by rule_id, symbol."""
+        assert self._conn is not None
+        rows = self._conn.execute(
+            "SELECT * FROM rule_reputations ORDER BY rule_id ASC, symbol ASC"
         ).fetchall()
         return [dict(row) for row in rows]
 

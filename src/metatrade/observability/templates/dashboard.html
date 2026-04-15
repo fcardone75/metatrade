@@ -159,6 +159,31 @@
       </article>
     </section>
 
+    <section class="grid tables reputations-section">
+      <article class="card full-width">
+        <h2>Reputazione Regole di Uscita</h2>
+        <p class="section-desc">
+          Pesi per regola aggiornati via EMA dopo ogni trade chiuso.
+          Peso iniziale 50, range [5–95].  Cold-start blend attivo per le prime 10 valutazioni.
+        </p>
+        <div class="table-wrap">
+          <table id="reputations-table">
+            <thead>
+              <tr>
+                <th>Regola</th>
+                <th>Symbol</th>
+                <th>Peso attuale</th>
+                <th>Valutazioni</th>
+                <th>Score medio</th>
+                <th>Ultima valutazione</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </article>
+    </section>
+
     <section class="grid tables">
       <article class="card">
         <h2>Posizioni MT5 Aperte</h2>

@@ -417,6 +417,47 @@ async function refreshThresholds() {
   });
 }
 
+async function refreshReputations() {
+  const rows = await fetchJSON("/api/rule-reputations");
+
+  function weightBar(weight) {
+    const pct = Math.max(0, Math.min(100, weight));
+    let color = "#888";
+    if (weight >= 65) color = "#4caf50";
+    else if (weight >= 50) color = "#8bc34a";
+    else if (weight >= 35) color = "#ff9800";
+    else color = "#f44336";
+    return `
+      <div class="threshold-bar-wrap" title="weight ${weight.toFixed(1)}">
+        <div class="threshold-bar-track">
+          <div class="threshold-bar-fill" style="width:${pct}%; background:${color};"></div>
+          <div class="threshold-bar-default" style="left:50%;"></div>
+        </div>
+        <span class="threshold-val">${weight.toFixed(1)}</span>
+      </div>`;
+  }
+
+  renderTable("reputations-table", rows, (row) => {
+    const weight = Number(row.weight ?? 50);
+    const meanScore = row.mean_score !== null && row.mean_score !== undefined
+      ? Number(row.mean_score).toFixed(3)
+      : "—";
+    const lastEval = row.last_eval_ts && row.last_eval_ts > 0
+      ? new Date(row.last_eval_ts * 1000).toLocaleString()
+      : "<span class='muted'>—</span>";
+    const symbol = row.symbol === "*" ? "<span class='muted'>globale</span>" : escapeHtml(row.symbol);
+    return `
+      <tr>
+        <td><code>${escapeHtml(row.rule_id)}</code></td>
+        <td>${symbol}</td>
+        <td>${weightBar(weight)}</td>
+        <td>${row.eval_count ?? 0}</td>
+        <td>${meanScore}</td>
+        <td class="muted">${lastEval}</td>
+      </tr>`;
+  });
+}
+
 async function refreshAll() {
   try {
     await Promise.all([
@@ -425,6 +466,7 @@ async function refreshAll() {
       refreshTraining(),
       refreshEquityCurve(),
       refreshThresholds(),
+      refreshReputations(),
     ]);
     setText("last-refresh", `Aggiornato ${new Date().toLocaleTimeString()}`);
   } catch (error) {

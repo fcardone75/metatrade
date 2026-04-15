@@ -210,6 +210,20 @@ def create_app() -> FastAPI:
             row["accuracy_pct"] = round(correct / evals * 100, 1) if evals > 0 else None
         return rows
 
+    @app.get("/api/rule-reputations")
+    async def rule_reputations() -> list[dict[str, Any]]:
+        """Return the current reputation state for every exit rule.
+
+        Each entry contains:
+          rule_id        — stable rule identifier (e.g. "trailing_stop")
+          symbol         — "*" for global, or a specific Forex pair
+          weight         — current raw weight in [5, 95]
+          eval_count     — number of closed trades used to update this rule
+          mean_score     — EMA of contribution scores (0.5 = neutral)
+          last_eval_ts   — Unix timestamp of the last update (0 if never)
+        """
+        return telemetry.list_rule_reputations()
+
     @app.get("/api/bars")
     async def bars(
         symbol: str = Query(default=market_cfg.symbols[0] if market_cfg.symbols else "EURUSD"),

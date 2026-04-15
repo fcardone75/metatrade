@@ -424,3 +424,27 @@ th {
   border-radius: 3px;
   white-space: nowrap;
 }
+
+/* Rule reputations section */
+.reputations-section {
+  grid-column: 1 / -1;
+}
+
+.reputations-section .full-width {
+  grid-column: 1 / -1;
+}
+
+#reputations-table td code {
+  font-size: 0.78rem;
+  background: #1e293b;
+  padding: 2px 6px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
+.section-desc {
+  font-size: 0.82rem;
+  color: #94a3b8;
+  margin: 0 0 0.75rem 0;
+  line-height: 1.4;
+}
