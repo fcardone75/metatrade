@@ -104,9 +104,15 @@ class RiskManager:
         self._maybe_auto_kill(account, timestamp_utc)
 
         # 3. Position sizing
+        # Use equity (balance + credit + floating PnL) rather than raw balance.
+        # On demo accounts the deposit may be zero and all funds come from
+        # broker credit — equity is the only reliable measure of true capital.
+        # During live drawdown equity falls naturally, reducing position size
+        # without any extra logic.
+        sizing_capital = max(account.equity, account.balance)
         try:
             size = self._sizer.calculate(
-                balance=account.balance,
+                balance=sizing_capital,
                 entry_price=entry_price,
                 sl_price=sl_price,
                 side=side,
