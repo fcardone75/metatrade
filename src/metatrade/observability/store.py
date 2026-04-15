@@ -574,6 +574,29 @@ class TelemetryStore:
         )
         self._conn.commit()
 
+    def count_open_sessions(self) -> int:
+        """Sessioni con ``ended_at IS NULL`` (runner non ha chiamato ``finish_session``)."""
+        assert self._conn is not None
+        row = self._conn.execute(
+            "SELECT COUNT(*) FROM dashboard_sessions WHERE ended_at IS NULL",
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+    def close_open_sessions(self, *, status: str = "interrupted") -> int:
+        """Imposta ``ended_at`` e ``status`` per tutte le sessioni ancora aperte (cleanup dopo kill -9)."""
+        assert self._conn is not None
+        now = _ts(_utc_now())
+        cur = self._conn.execute(
+            """
+            UPDATE dashboard_sessions
+            SET ended_at = ?, status = ?
+            WHERE ended_at IS NULL
+            """,
+            (now, status),
+        )
+        self._conn.commit()
+        return int(cur.rowcount or 0)
+
     def list_sessions(self, *, limit: int = 20, active_only: bool = False) -> list[dict[str, Any]]:
         assert self._conn is not None
         query = "SELECT * FROM dashboard_sessions"

@@ -105,6 +105,7 @@ def create_app() -> FastAPI:
             {
                 "title": obs_cfg.title,
                 "refresh_seconds": obs_cfg.refresh_seconds,
+                "observability_port": obs_cfg.port,
                 "default_symbol": (
                     active_session.get("symbol")
                     if active_session and active_session.get("symbol")
@@ -143,8 +144,10 @@ def create_app() -> FastAPI:
             latest_decision=latest_decision,
             latest_snapshot=latest_snapshot,
         )
+        open_sessions_count = telemetry.count_open_sessions()
         return {
             "sessions": sessions,
+            "open_sessions_count": open_sessions_count,
             "latest_snapshot": latest_snapshot,
             "latest_decision": latest_decision,
             "latest_training": latest_training,
@@ -153,6 +156,16 @@ def create_app() -> FastAPI:
             "mt5_positions": mt5_positions,
             "decision_progress": decision_progress,
         }
+
+    @app.post("/api/sessions/close-open")
+    async def close_open_sessions(
+        status: str = Query(default="interrupted", description="Nuovo status per le sessioni chiuse"),
+    ) -> dict[str, Any]:
+        """Chiude in DB tutte le sessioni ancora senza ``ended_at`` (es. dopo kill del processo)."""
+        if status not in ("interrupted", "completed", "stopped"):
+            raise HTTPException(status_code=400, detail="status non consentito")
+        n = telemetry.close_open_sessions(status=status)
+        return {"closed": n, "status": status}
 
     @app.get("/api/sessions")
     async def sessions(limit: int = 20, active_only: bool = False) -> list[dict[str, Any]]:

@@ -541,3 +541,68 @@ th {
 }
 
 .btn-ks-reset:hover { background: #14532d; border-color: #166534; }
+
+/* ── Servizi locali (stop processi / DB orfani) ─────────────────────────── */
+
+.ops-panel {
+  margin-bottom: 20px;
+}
+
+.ops-panel-desc {
+  margin: 0 0 12px;
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+.ops-panel .command-block {
+  margin: 0 0 14px;
+  padding: 14px 16px;
+  background: #0b1220;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  color: #e2e8f0;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ops-panel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.btn-ops {
+  padding: 8px 14px;
+  border: 1px solid #475569;
+  border-radius: 6px;
+  background: #1e293b;
+  color: #e2e8f0;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn-ops:hover {
+  background: #334155;
+  border-color: #64748b;
+}
+
+.btn-ops-primary {
+  border-color: #0369a1;
+  background: #0c4a6e;
+  color: #bae6fd;
+}
+
+.btn-ops-primary:hover {
+  background: #075985;
+  border-color: #0284c7;
+}
+
+#close-sessions-msg {
+  margin: 10px 0 0;
+  font-size: 0.82rem;
+}

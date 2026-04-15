@@ -4,7 +4,7 @@
         walk-forward walk-forward-no-ml walk-forward-mt5 \
         paper paper-no-ml \
         live live-confirmed live-no-ml \
-        run-dashboard \
+        run-dashboard stop-services \
         kill kill-emergency reset-kill
 
 # ── Configurable defaults (override on the command line) ──────────────────────
@@ -15,6 +15,22 @@ CSV_FILE  ?= data/$(SYMBOL)_$(TIMEFRAME).csv
 MODEL_DIR ?= data/models
 BALANCE   ?= 10000
 
+# Paper / live runners (optional; see targets paper, live-confirmed)
+WARMUP_BARS          ?= 200
+POLL_INTERVAL        ?=
+MODEL_VERSION        ?=
+# Imposta NO_D1=1 o NO_NEWS=1 per abilitare i flag corrispondenti
+NO_D1                ?=
+NO_NEWS              ?=
+FINNHUB_KEY          ?=
+MAX_RISK_PCT         ?= 0.01
+DAILY_LOSS_LIMIT_PCT ?= 0.05
+KILL_DRAWDOWN_PCT    ?= 0.10
+MAX_OPEN_POSITIONS   ?= 1
+# Argomenti extra verso run_live.py / run_paper.py (es. --magic-number 20240602)
+LIVE_EXTRA           ?=
+PAPER_EXTRA          ?=
+
 # ─────────────────────────────────────────────────────────────────────────────
 
 help:   ## Show this help
@@ -24,7 +40,9 @@ help:   ## Show this help
 	@echo "  Configurable variables (pass on command line):"
 	@echo "    SYMBOL=$(SYMBOL)  TIMEFRAME=$(TIMEFRAME)  BARS=$(BARS)"
 	@echo "    CSV_FILE=$(CSV_FILE)  MODEL_DIR=$(MODEL_DIR)  BALANCE=$(BALANCE)"
-	@echo "    FOLDS=$(FOLDS)  TRAIN_PCT=$(TRAIN_PCT)  TIMEFRAMES=$(TIMEFRAMES)"
+	@echo "    FOLDS=$(FOLDS)  TRAIN_PCT=$(TRAIN_PCT)  TIMEFRAMES=$(TIMEFRAMES)  PROMOTE_TF=$(PROMOTE_TF)"
+	@echo "    Paper/live: WARMUP_BARS=$(WARMUP_BARS)  POLL_INTERVAL=$(POLL_INTERVAL)  MODEL_VERSION=$(MODEL_VERSION)"
+	@echo "    NO_D1=$(NO_D1)  NO_NEWS=$(NO_NEWS)  MAX_RISK_PCT=$(MAX_RISK_PCT)  LIVE_EXTRA=...  PAPER_EXTRA=..."
 
 # ── Development ───────────────────────────────────────────────────────────────
 
@@ -154,16 +172,32 @@ walk-forward-mt5:   ## Walk-forward validation fetching data live from MT5
 
 # ── Paper trading ─────────────────────────────────────────────────────────────
 
-paper:   ## Paper trading — live MT5 data, simulated fills  (SYMBOL=EURUSD)
+paper:   ## Paper trading — live MT5 data, simulated fills
 	python scripts/run_paper.py \
 		--symbol $(SYMBOL) \
 		--timeframe $(TIMEFRAME) \
-		--model-dir $(MODEL_DIR)
+		--model-dir $(MODEL_DIR) \
+		--warmup-bars $(WARMUP_BARS) \
+		--max-risk-pct $(MAX_RISK_PCT) \
+		$(if $(strip $(POLL_INTERVAL)),--poll-interval $(POLL_INTERVAL),) \
+		$(if $(strip $(MODEL_VERSION)),--model-version $(MODEL_VERSION),) \
+		$(if $(filter 1,$(NO_D1)),--no-d1,) \
+		$(if $(filter 1,$(NO_NEWS)),--no-news,) \
+		$(if $(strip $(FINNHUB_KEY)),--finnhub-key $(FINNHUB_KEY),) \
+		$(PAPER_EXTRA)
 
 paper-no-ml:   ## Paper trading with technical indicators only (no ML)
 	python scripts/run_paper.py \
 		--symbol $(SYMBOL) \
 		--timeframe $(TIMEFRAME) \
+		--model-dir $(MODEL_DIR) \
+		--warmup-bars $(WARMUP_BARS) \
+		--max-risk-pct $(MAX_RISK_PCT) \
+		$(if $(strip $(POLL_INTERVAL)),--poll-interval $(POLL_INTERVAL),) \
+		$(if $(filter 1,$(NO_D1)),--no-d1,) \
+		$(if $(filter 1,$(NO_NEWS)),--no-news,) \
+		$(if $(strip $(FINNHUB_KEY)),--finnhub-key $(FINNHUB_KEY),) \
+		$(PAPER_EXTRA) \
 		--no-ml
 
 # ── Live trading ──────────────────────────────────────────────────────────────
@@ -172,11 +206,15 @@ live:   ## Show live trading instructions (does NOT start trading)
 	@echo ""
 	@echo "  WARNING: LIVE TRADING places REAL orders with REAL money."
 	@echo ""
-	@echo "  To start live trading, use one of:"
-	@echo "    make live-confirmed SYMBOL=$(SYMBOL) TIMEFRAME=$(TIMEFRAME)"
-	@echo "    make live-no-ml     SYMBOL=$(SYMBOL) TIMEFRAME=$(TIMEFRAME)"
+	@echo "  Esempi (stesso timeframe del modello addestrato):"
+	@echo "    make live-confirmed SYMBOL=EURUSD TIMEFRAME=M1 MODEL_VERSION=v20260414_190200_M1 NO_D1=1 POLL_INTERVAL=10"
+	@echo "    make live-no-ml SYMBOL=EURUSD TIMEFRAME=H1 NO_D1=1"
 	@echo ""
-	@echo "  Always test on paper first: make paper"
+	@echo "  Variabili: WARMUP_BARS, POLL_INTERVAL, MODEL_VERSION, NO_D1=1, NO_NEWS=1,"
+	@echo "    FINNHUB_KEY, MAX_RISK_PCT, DAILY_LOSS_LIMIT_PCT, KILL_DRAWDOWN_PCT,"
+	@echo "    MAX_OPEN_POSITIONS, LIVE_EXTRA (argomenti extra verso run_live.py)"
+	@echo ""
+	@echo "  Prima prova: make paper (stesse variabili, tranne LIVE_EXTRA -> PAPER_EXTRA)"
 	@echo ""
 
 live-confirmed:   ## Start LIVE trading — REAL MONEY (use with care)
@@ -184,19 +222,49 @@ live-confirmed:   ## Start LIVE trading — REAL MONEY (use with care)
 		--symbol $(SYMBOL) \
 		--timeframe $(TIMEFRAME) \
 		--model-dir $(MODEL_DIR) \
+		--warmup-bars $(WARMUP_BARS) \
+		--max-risk-pct $(MAX_RISK_PCT) \
+		--daily-loss-limit-pct $(DAILY_LOSS_LIMIT_PCT) \
+		--kill-drawdown-pct $(KILL_DRAWDOWN_PCT) \
+		--max-open-positions $(MAX_OPEN_POSITIONS) \
+		$(if $(strip $(POLL_INTERVAL)),--poll-interval $(POLL_INTERVAL),) \
+		$(if $(strip $(MODEL_VERSION)),--model-version $(MODEL_VERSION),) \
+		$(if $(filter 1,$(NO_D1)),--no-d1,) \
+		$(if $(filter 1,$(NO_NEWS)),--no-news,) \
+		$(if $(strip $(FINNHUB_KEY)),--finnhub-key $(FINNHUB_KEY),) \
+		$(LIVE_EXTRA) \
 		--confirm
 
 live-no-ml:   ## Start LIVE trading with technical indicators only — REAL MONEY
 	python scripts/run_live.py \
 		--symbol $(SYMBOL) \
 		--timeframe $(TIMEFRAME) \
+		--model-dir $(MODEL_DIR) \
+		--warmup-bars $(WARMUP_BARS) \
+		--max-risk-pct $(MAX_RISK_PCT) \
+		--daily-loss-limit-pct $(DAILY_LOSS_LIMIT_PCT) \
+		--kill-drawdown-pct $(KILL_DRAWDOWN_PCT) \
+		--max-open-positions $(MAX_OPEN_POSITIONS) \
+		$(if $(strip $(POLL_INTERVAL)),--poll-interval $(POLL_INTERVAL),) \
+		$(if $(filter 1,$(NO_D1)),--no-d1,) \
+		$(if $(filter 1,$(NO_NEWS)),--no-news,) \
+		$(if $(strip $(FINNHUB_KEY)),--finnhub-key $(FINNHUB_KEY),) \
+		$(LIVE_EXTRA) \
 		--no-ml \
 		--confirm
 
 # ── Dashboard ─────────────────────────────────────────────────────────────────
 
-run-dashboard:   ## Start FastAPI observability dashboard at http://localhost:8000
+run-dashboard:   ## Start FastAPI observability dashboard (OBSERVABILITY_PORT in .env, default 8080)
 	python scripts/run_dashboard.py
+
+# Suggerimento Windows: liberare la porta prima di run-dashboard
+stop-services:   ## Print commands to stop dashboard + traders (run in PowerShell)
+	@echo "PowerShell (dashboard su porta 8080 + processi run_live/run_paper/run_dashboard):"
+	@echo "  Get-NetTCPConnection -LocalPort 8080 -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $$_.OwningProcess -Force -ErrorAction SilentlyContinue }"
+	@echo "  Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | Where-Object { $$_.CommandLine -match 'run_live|run_paper|run_dashboard' } | ForEach-Object { Stop-Process -Id $$_.ProcessId -Force }"
+	@echo ""
+	@echo "Poi: make run-dashboard   oppure   make live-confirmed ..."
 
 # ── Kill switch ───────────────────────────────────────────────────────────────
 

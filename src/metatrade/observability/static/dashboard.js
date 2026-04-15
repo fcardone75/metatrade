@@ -267,13 +267,20 @@ async function refreshOverview() {
   setText("kpi-training", latestTraining.model_version || latestTraining.status || "-");
   renderLatestDecision(latestDecision);
 
+  const nOpen = overview.open_sessions_count ?? 0;
   if (activeSession) {
-    activeRunInfo.textContent = `Run attivo: ${activeSession.run_mode} ${activeSession.symbol}/${activeSession.timeframe} - modello ${activeSession.model_version || "n/a"}`;
+    let msg = `Run attivo: ${activeSession.run_mode} ${activeSession.symbol}/${activeSession.timeframe} - modello ${activeSession.model_version || "n/a"}`;
+    if (nOpen > 1) {
+      msg += ` | ${nOpen} sessioni ancora "running" in DB (runner fermati senza chiusura — vedi Servizi locali)`;
+    }
+    activeRunInfo.textContent = msg;
     if (!hasInitializedActiveRun) {
       if (activeSession.symbol) symbolInput.value = activeSession.symbol;
       if (activeSession.timeframe) timeframeInput.value = activeSession.timeframe;
       hasInitializedActiveRun = true;
     }
+  } else if (nOpen > 0) {
+    activeRunInfo.textContent = `Nessun run recente in cima alla lista, ma ${nOpen} sessione/i ancora aperte in DB — usa "Chiudi sessioni DB orfane".`;
   } else {
     activeRunInfo.textContent = "Run attivo: nessuna sessione attiva";
   }
@@ -514,6 +521,39 @@ function wireKillSwitchButtons() {
 }
 
 wireKillSwitchButtons();
+
+function wireOpsPanel() {
+  const copyBtn = document.getElementById("btn-copy-stop");
+  const closeBtn = document.getElementById("btn-close-db-sessions");
+  const msgEl = document.getElementById("close-sessions-msg");
+  const pre = document.getElementById("stop-commands");
+  if (copyBtn && pre) {
+    copyBtn.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(pre.textContent);
+        if (msgEl) msgEl.textContent = "Comandi copiati negli appunti.";
+      } catch {
+        if (msgEl) msgEl.textContent = "Selezione manuale: copia dal riquadro grigio.";
+      }
+    });
+  }
+  if (closeBtn) {
+    closeBtn.addEventListener("click", async () => {
+      if (msgEl) msgEl.textContent = "Chiusura in corso...";
+      try {
+        const r = await fetch("/api/sessions/close-open?status=interrupted", { method: "POST" });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.detail || r.statusText || String(r.status));
+        if (msgEl) msgEl.textContent = `Chiuse ${j.closed} sessioni (stato: ${j.status}).`;
+        await refreshOverview();
+      } catch (e) {
+        if (msgEl) msgEl.textContent = `Errore: ${e.message}`;
+      }
+    });
+  }
+}
+
+wireOpsPanel();
 
 async function refreshAll() {
   try {

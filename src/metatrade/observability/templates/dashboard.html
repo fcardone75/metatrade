@@ -57,6 +57,25 @@
       </div>
     </section>
 
+    <section class="ops-panel card">
+      <h2>Servizi locali (fermare dashboard / trader)</h2>
+      <p class="muted ops-panel-desc">
+        Se chiudi il terminale con Ctrl+C o termini il processo, le sessioni in telemetria restano &quot;running&quot;.
+        Usa il pulsante sotto per pulire il database, oppure i comandi PowerShell (porta dashboard: <strong>{{ observability_port }}</strong>).
+      </p>
+      <pre class="command-block" id="stop-commands"># PowerShell (esegui nella cartella del progetto se usi make)
+Get-NetTCPConnection -LocalPort {{ observability_port }} -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
+Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.CommandLine -match 'run_live|run_paper|run_dashboard' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+
+# Makefile (stampa istruzioni)
+make stop-services</pre>
+      <div class="ops-panel-actions">
+        <button type="button" class="btn-ops" id="btn-copy-stop">Copia comandi</button>
+        <button type="button" class="btn-ops btn-ops-primary" id="btn-close-db-sessions">Chiudi sessioni DB orfane</button>
+      </div>
+      <p id="close-sessions-msg" class="muted" role="status"></p>
+    </section>
+
     <section class="grid kpis">
       <article class="card"><h2>Balance</h2><p id="kpi-balance">-</p></article>
       <article class="card"><h2>Equity</h2><p id="kpi-equity">-</p></article>
