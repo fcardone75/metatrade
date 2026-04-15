@@ -21,7 +21,7 @@ from decimal import Decimal
 from metatrade.broker.interface import IBrokerAdapter
 from metatrade.core.contracts.market import Bar
 from metatrade.core.contracts.risk import RiskDecision, RiskVeto
-from metatrade.core.enums import OrderSide, OrderStatus
+from metatrade.core.enums import OrderSide, OrderStatus, RunMode
 from metatrade.execution.order_manager import OrderManager
 from metatrade.observability.store import TelemetryStore
 from metatrade.runner.base import BaseRunner
@@ -118,6 +118,7 @@ class LiveRunner(BaseRunner):
         balance = account.balance
         equity = account.equity
         free_margin = account.free_margin
+        open_positions = account.open_positions_count
 
         result = self.process_bar(
             bars=self._bar_buffer,
@@ -125,6 +126,8 @@ class LiveRunner(BaseRunner):
             account_equity=equity,
             free_margin=free_margin,
             timestamp_utc=bar.timestamp_utc,
+            open_positions=open_positions,
+            run_mode=RunMode.LIVE,
         )
 
         if result is not None and result.approved and result.position_size is not None:
@@ -156,7 +159,14 @@ class LiveRunner(BaseRunner):
                 ps.take_profit_price if ps else None,
             )
         except Exception as exc:
-            log.error("Live order submission failed: %s", exc)
+            # OrderManager already records order_failed in telemetry and re-raises.
+            # Log here for the console; the dashboard "Ordini" section will show it.
+            log.error(
+                "live_order_submission_failed",
+                side=decision.side.value if decision.side else "?",
+                symbol=decision.symbol,
+                error=str(exc),
+            )
 
     def reset_buffer(self) -> None:
         """Clear the internal bar buffer (e.g. after a weekend gap)."""
