@@ -11,6 +11,8 @@ const activeRunInfo   = document.getElementById("active-run-info");
 let equityChart, barsChart;
 let hasInitializedActiveRun = false;
 let decisionProgressTickStarted = false;
+let refreshTimer = null;
+let lastUiPollSec = null;
 
 // ── Formatters ─────────────────────────────────────────────────────────────
 function fmt2(v)   { return (v == null || isNaN(+v)) ? "—" : (+v).toFixed(2); }
@@ -337,6 +339,47 @@ function restoreAccordionState() {
   });
 }
 
+// ── UI polling + runner status ──────────────────────────────────────────────
+
+function scheduleUiRefresh(sec) {
+  const s = Math.max(3, Math.min(Number(sec) || 10, 3600));
+  if (lastUiPollSec === s && refreshTimer) return;
+  lastUiPollSec = s;
+  if (refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = setInterval(refreshAll, s * 1000);
+}
+
+function applyRunnerState(ov) {
+  const r = ov.runner || {};
+  const line = document.getElementById("runner-status-line");
+  const btn = document.getElementById("btn-runner-restart");
+  const msg = document.getElementById("runner-restart-msg");
+  const hint = document.getElementById("ui-refresh-hint");
+
+  if (line) {
+    let t = r.process_running
+      ? `● Runner attivo (PID ${(r.pids || []).join(", ") || "—"})`
+      : "○ Nessun processo run_live / run_paper";
+    if (r.db_orphan) t += " — DB: sessione aperta senza processo";
+    line.textContent = t;
+    line.className = r.process_running ? "sidebar-session runner-ok" : "sidebar-session runner-down";
+  }
+  if (btn) {
+    btn.disabled = !r.can_restart;
+    btn.title = r.can_restart
+      ? "Riavvia l'ultimo comando salvato (nuova console)"
+      : r.process_running
+        ? "Disponibile quando il runner non è in esecuzione"
+        : "Esegui run_live o run_paper una volta per salvare il comando";
+  }
+
+  if (hint && ov.refresh_seconds != null) {
+    hint.textContent =
+      `Aggiornamento dati UI: ogni ${ov.refresh_seconds}s. La barra “Prossima decisione” segue il timeframe (es. M1 = 60s).`;
+  }
+  if (ov.refresh_seconds != null) scheduleUiRefresh(ov.refresh_seconds);
+}
+
 // ── Refresh functions ────────────────────────────────────────────────────────
 
 async function refreshOverview() {
@@ -405,6 +448,8 @@ async function refreshOverview() {
       <td class="muted">${escHtml(row.model_version ?? "—")}</td>
       <td>${statusBadge(row.status)}</td>
     </tr>`);
+
+  applyRunnerState(ov);
 }
 
 async function refreshDecisions() {
@@ -537,8 +582,8 @@ async function refreshReputations() {
 // ── Main refresh ─────────────────────────────────────────────────────────────
 async function refreshAll() {
   try {
+    await refreshOverview();
     await Promise.all([
-      refreshOverview(),
       refreshDecisions(),
       refreshOrders(),
       refreshEquityCurve(),
@@ -574,9 +619,34 @@ document.getElementById("btn-close-db-sessions")?.addEventListener("click", asyn
   }
 });
 
+document.getElementById("btn-runner-restart")?.addEventListener("click", async () => {
+  const msg = document.getElementById("runner-restart-msg");
+  if (msg) {
+    msg.dataset.busy = "1";
+    msg.textContent = "Riavvio in corso…";
+  }
+  try {
+    const r = await fetch("/api/runner/restart", { method: "POST" });
+    const j = await r.json();
+    if (!r.ok) {
+      const detail = j.detail;
+      const errText = Array.isArray(detail)
+        ? detail.map((x) => x.msg || x).join(" ")
+        : (detail || r.statusText);
+      throw new Error(errText);
+    }
+    if (msg) msg.textContent = j.detail || "Avviato.";
+    await refreshOverview();
+  } catch (e) {
+    if (msg) msg.textContent = `Errore: ${e.message}`;
+  } finally {
+    if (msg) delete msg.dataset.busy;
+  }
+});
+
 // ── Init ─────────────────────────────────────────────────────────────────────
 restoreAccordionState();
 wireKillSwitchButtons();
 startProgressTick();
+scheduleUiRefresh(cfg.refreshSeconds);
 refreshAll().then(refreshBars);
-setInterval(refreshAll, cfg.refreshSeconds * 1000);

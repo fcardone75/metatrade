@@ -35,8 +35,18 @@
       </div>
 
       <div class="sidebar-block">
+        <div class="sidebar-label">Runner (live / paper)</div>
+        <p class="muted sidebar-session runner-down" id="runner-status-line">—</p>
+        <button type="button" class="btn-runner-restart" id="btn-runner-restart" disabled title="Esegui run_live o run_paper una volta per salvare il comando">
+          Riavvia ultimo comando
+        </button>
+        <p class="muted sidebar-hint" id="runner-restart-msg" role="status"></p>
+      </div>
+
+      <div class="sidebar-block">
         <div class="sidebar-label">Ultimo aggiornamento</div>
         <p class="muted sidebar-session" id="last-refresh">—</p>
+        <p class="muted sidebar-hint" id="ui-refresh-hint"></p>
       </div>
     </aside>
 

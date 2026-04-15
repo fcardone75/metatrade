@@ -80,6 +80,40 @@ code {
 
 .sidebar-session { font-size: 0.8rem; color: #94a3b8; margin: 0; word-break: break-all; }
 
+.sidebar-hint {
+  font-size: 0.72rem;
+  color: #64748b;
+  margin: 0;
+  line-height: 1.35;
+}
+
+.runner-ok { color: #86efac !important; }
+.runner-down { color: #fca5a5 !important; }
+
+.btn-runner-restart {
+  margin-top: 4px;
+  padding: 6px 10px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  border-radius: 6px;
+  border: 1px solid #334155;
+  background: #1e293b;
+  color: #e2e8f0;
+  cursor: pointer;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.btn-runner-restart:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn-runner-restart:not(:disabled):hover {
+  background: #334155;
+  border-color: #475569;
+}
+
 .sidebar-ks-mini { gap: 8px; }
 
 /* ── Main ────────────────────────────────────────────────────────────────── */

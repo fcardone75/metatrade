@@ -42,6 +42,7 @@ from metatrade.runner.config import RunnerConfig
 from metatrade.runner.module_config import ModuleConfig
 from metatrade.runner.module_builder import build_modules
 from metatrade.runner.paper_runner import PaperRunner
+from metatrade.observability.last_launch import save_last_launch
 from metatrade.observability.store import TelemetryStore
 
 log = get_logger("run_paper")
@@ -151,6 +152,7 @@ def apply_mt5_defaults(args: argparse.Namespace) -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     args = apply_mt5_defaults(args)
+    save_last_launch(mode="paper", script_path=Path(__file__).resolve())
     tf = _TIMEFRAME_MAP[args.timeframe]
     telemetry = TelemetryStore.from_env()
     session_id: str | None = None

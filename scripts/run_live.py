@@ -41,6 +41,7 @@ from metatrade.runner.config import RunnerConfig
 from metatrade.runner.module_config import ModuleConfig
 from metatrade.runner.module_builder import build_modules
 from metatrade.runner.live_runner import LiveRunner
+from metatrade.observability.last_launch import save_last_launch
 from metatrade.observability.store import TelemetryStore
 
 log = get_logger("run_live")
@@ -183,6 +184,7 @@ def main() -> None:
     args = apply_mt5_defaults(args)
     require_confirmation(args)
     validate_mt5_access_mode(args)
+    save_last_launch(mode="live", script_path=Path(__file__).resolve())
     telemetry = TelemetryStore.from_env()
 
     tf = _TIMEFRAME_MAP[args.timeframe]
