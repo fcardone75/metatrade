@@ -123,3 +123,53 @@ class TestTrailingStopRule:
         ctx = make_long_ctx(current_price="1.1000", peak="1.1040", entry_atr="0.0010")
         sig = rule.evaluate(ctx)
         assert sig.action == ExitAction.CLOSE_FULL
+
+    def test_unknown_mode_returns_hold(self):
+        """Unknown mode → _compute_sl returns None → HOLD."""
+        rule = TrailingStopRule(TrailingStopConfig(mode="unknown_mode"))
+        ctx = make_long_ctx(current_price="1.1020", peak="1.1040", entry_atr="0.0010")
+        sig = rule.evaluate(ctx)
+        assert sig.action == ExitAction.HOLD
+
+    def test_atr_computed_from_bars(self):
+        """With enough bars, ATR is computed from actual bar data (not entry_atr)."""
+        from metatrade.core.contracts.market import Bar
+        from datetime import datetime, timezone
+
+        rule = TrailingStopRule(TrailingStopConfig(mode="atr", atr_period=5, atr_mult=2.0))
+
+        # Build 15 bars with consistent ranges
+        bars = []
+        for i in range(15):
+            close = Decimal(str(1.1000 + i * 0.001))
+            high = close + Decimal("0.0005")
+            low = close - Decimal("0.0005")
+            bars.append(Bar(
+                symbol="EURUSD",
+                timeframe="M15",
+                timestamp_utc=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                open=close,
+                high=high,
+                low=low,
+                close=close,
+                volume=100,
+            ))
+
+        ctx = make_long_ctx(
+            entry_price="1.1000",
+            current_price="1.1140",
+            peak="1.1140",
+            entry_atr="0.0010",
+            bars=bars,
+        )
+        sl = rule.suggested_sl(ctx)
+        assert sl is not None
+        assert isinstance(sl, float)
+
+    def test_short_sl_not_hit_holds(self):
+        rule = TrailingStopRule(TrailingStopConfig(mode="atr", atr_mult=2.0))
+        # SHORT peak=1.0960, atr=0.0020, mult=2 → sl=1.0960+0.0040=1.1000
+        # current=1.0990 < sl=1.1000 → not hit → HOLD
+        ctx = make_short_ctx(current_price="1.0990", peak="1.0960", entry_atr="0.0020")
+        sig = rule.evaluate(ctx)
+        assert sig.action == ExitAction.HOLD

@@ -10,260 +10,314 @@
 </head>
 <body>
   <div class="app-shell">
-    <aside class="sidebar" aria-label="Avanzamento verso la prossima decisione">
-      <h2 class="sidebar-title">Prossima decisione</h2>
-      <p class="sidebar-sub" id="dp-timeframe">—</p>
-      <div
-        class="progress-track"
-        id="dp-track"
-        role="progressbar"
-        aria-valuemin="0"
-        aria-valuemax="100"
-        aria-valuenow="0"
-        aria-label="Avanzamento candela"
-      >
-        <div class="progress-fill" id="dp-fill"></div>
+
+    <!-- ── Sidebar ── -->
+    <aside class="sidebar">
+      <div class="sidebar-block">
+        <div class="sidebar-label">Prossima decisione</div>
+        <p class="sidebar-tf muted" id="dp-timeframe">—</p>
+        <div class="progress-track" id="dp-track" role="progressbar"
+             aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <div class="progress-fill" id="dp-fill"></div>
+        </div>
+        <p class="sidebar-remaining" id="dp-remaining">—</p>
+        <p class="sidebar-last muted" id="dp-last">—</p>
       </div>
-      <p class="sidebar-remaining" id="dp-remaining">—</p>
-      <p class="sidebar-last muted" id="dp-last">Ultimo evento: —</p>
-      <p class="sidebar-hint muted" id="dp-hint">
-        Il runner valuta una nuova barra alla chiusura della candela del timeframe della sessione (stima basata su ultimo timestamp telemetria).
-      </p>
+
+      <div class="sidebar-block sidebar-ks-mini" id="sidebar-ks-mini">
+        <div class="sidebar-label">Kill Switch</div>
+        <span class="badge ks-badge ks-level-0" id="sidebar-ks-badge">NONE</span>
+      </div>
+
+      <div class="sidebar-block">
+        <div class="sidebar-label">Sessione attiva</div>
+        <p class="muted sidebar-session" id="active-run-info">—</p>
+      </div>
+
+      <div class="sidebar-block">
+        <div class="sidebar-label">Ultimo aggiornamento</div>
+        <p class="muted sidebar-session" id="last-refresh">—</p>
+      </div>
     </aside>
+
+    <!-- ── Main ── -->
     <main class="page">
-    <header class="hero">
-      <div>
-        <h1>{{ title }}</h1>
-        <p>Stato operativo, KPI trading, modelli ML e sessioni attive.</p>
-        <p id="active-run-info" class="active-run-info">Run attivo: rilevamento in corso...</p>
-      </div>
-      <div class="meta">
-        <span id="last-refresh">Aggiornamento in corso...</span>
-      </div>
-    </header>
 
-    <section class="kill-switch-bar" id="kill-switch-bar">
-      <div class="ks-status">
-        <span class="ks-label">Kill Switch</span>
-        <span class="badge ks-badge" id="ks-badge">—</span>
-        <span class="ks-reason muted" id="ks-reason"></span>
-      </div>
-      <div class="ks-actions">
-        <button class="btn-ks" data-level="1" data-label="TRADE GATE" title="Blocca solo il prossimo singolo trade">TRADE GATE</button>
-        <button class="btn-ks" data-level="2" data-label="SESSION GATE" title="Blocca tutti i nuovi trade fino al reset">SESSION GATE</button>
-        <button class="btn-ks btn-ks-danger" data-level="3" data-label="EMERGENCY HALT" title="Chiude posizioni e ferma il sistema">EMERGENCY HALT</button>
-        <button class="btn-ks btn-ks-danger" data-level="4" data-label="HARD KILL" title="Override manuale — richiede force reset">HARD KILL</button>
-        <button class="btn-ks btn-ks-reset" id="ks-reset-btn" title="Riattiva il trading">RESET</button>
-      </div>
-    </section>
-
-    <section class="ops-panel card">
-      <h2>Servizi locali (fermare dashboard / trader)</h2>
-      <p class="muted ops-panel-desc">
-        Se chiudi il terminale con Ctrl+C o termini il processo, le sessioni in telemetria restano &quot;running&quot;.
-        Usa il pulsante sotto per pulire il database, oppure i comandi PowerShell (porta dashboard: <strong>{{ observability_port }}</strong>).
-      </p>
-      <pre class="command-block" id="stop-commands"># PowerShell (esegui nella cartella del progetto se usi make)
-Get-NetTCPConnection -LocalPort {{ observability_port }} -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
-Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.CommandLine -match 'run_live|run_paper|run_dashboard' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
-
-# Makefile (stampa istruzioni)
-make stop-services</pre>
-      <div class="ops-panel-actions">
-        <button type="button" class="btn-ops" id="btn-copy-stop">Copia comandi</button>
-        <button type="button" class="btn-ops btn-ops-primary" id="btn-close-db-sessions">Chiudi sessioni DB orfane</button>
-      </div>
-      <p id="close-sessions-msg" class="muted" role="status"></p>
-    </section>
-
-    <section class="grid kpis">
-      <article class="card"><h2>Balance</h2><p id="kpi-balance">-</p></article>
-      <article class="card"><h2>Equity</h2><p id="kpi-equity">-</p></article>
-      <article class="card"><h2>PnL Live</h2><p id="kpi-profit">-</p></article>
-      <article class="card"><h2>Posizioni Aperte</h2><p id="kpi-positions">-</p></article>
-      <article class="card"><h2>Modello Attivo</h2><p id="kpi-model">-</p></article>
-      <article class="card"><h2>Ultimo Training</h2><p id="kpi-training">-</p></article>
-    </section>
-
-    <section class="grid charts">
-      <article class="card wide">
-        <div class="section-head">
-          <h2>Equity Curve</h2>
+      <!-- Kill Switch bar -->
+      <div class="kill-switch-bar" id="kill-switch-bar">
+        <div class="ks-status">
+          <span class="ks-label">Kill Switch</span>
+          <span class="badge ks-badge ks-level-0" id="ks-badge">NONE</span>
+          <span class="ks-reason muted" id="ks-reason">Trading attivo</span>
         </div>
-        <div class="chart-frame">
-          <canvas id="equity-chart"></canvas>
+        <div class="ks-actions">
+          <button class="btn-ks" data-level="1" data-label="TRADE GATE"
+                  title="Blocca solo il prossimo trade">TRADE GATE</button>
+          <button class="btn-ks" data-level="2" data-label="SESSION GATE"
+                  title="Blocca tutti i nuovi trade fino al reset">SESSION GATE</button>
+          <button class="btn-ks btn-ks-danger" data-level="3" data-label="EMERGENCY HALT"
+                  title="Chiude posizioni e ferma il sistema">EMERGENCY HALT</button>
+          <button class="btn-ks btn-ks-danger" data-level="4" data-label="HARD KILL"
+                  title="Override manuale">HARD KILL</button>
+          <button class="btn-ks btn-ks-reset" id="ks-reset-btn">RESET</button>
         </div>
-      </article>
-      <article class="card wide">
-        <div class="section-head">
-          <h2>Prezzi</h2>
-          <div class="filters">
-            <label>Symbol <input id="symbol-input" value="{{ default_symbol }}"></label>
-            <label>Periodo
-              <select id="timeframe-input">
-                <option value="M1" {% if default_timeframe == "M1" %}selected{% endif %}>M1</option>
-                <option value="M5" {% if default_timeframe == "M5" %}selected{% endif %}>M5</option>
-                <option value="M15" {% if default_timeframe == "M15" %}selected{% endif %}>M15</option>
-                <option value="M30" {% if default_timeframe == "M30" %}selected{% endif %}>M30</option>
-                <option value="H1" {% if default_timeframe == "H1" %}selected{% endif %}>H1</option>
-                <option value="H4" {% if default_timeframe == "H4" %}selected{% endif %}>H4</option>
-                <option value="D1" {% if default_timeframe == "D1" %}selected{% endif %}>D1</option>
-              </select>
-            </label>
-            <button id="reload-bars">Ricarica</button>
-            <button id="reset-bars-zoom" type="button">Reset Zoom</button>
-          </div>
-        </div>
-        <div class="chart-frame">
-          <canvas id="bars-chart"></canvas>
-        </div>
-      </article>
-    </section>
+      </div>
 
-    <section class="grid insights">
-      <article class="card">
-        <div class="section-head">
-          <h2>Ultima Decisione</h2>
+      <!-- KPI row -->
+      <section class="kpi-row">
+        <div class="kpi-card">
+          <div class="kpi-label">Balance</div>
+          <div class="kpi-value" id="kpi-balance">—</div>
         </div>
-        <div class="decision-summary">
-          <div class="decision-kpis">
+        <div class="kpi-card">
+          <div class="kpi-label">Equity</div>
+          <div class="kpi-value" id="kpi-equity">—</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">PnL aperto</div>
+          <div class="kpi-value" id="kpi-profit">—</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Posizioni</div>
+          <div class="kpi-value" id="kpi-positions">—</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Modello</div>
+          <div class="kpi-value kpi-small" id="kpi-model">—</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Ultimo training</div>
+          <div class="kpi-value kpi-small" id="kpi-training">—</div>
+        </div>
+      </section>
+
+      <!-- ── ACCORDION SECTIONS ── -->
+
+      <!-- 1. Posizioni & Ordini -->
+      <details class="accordion" id="acc-orders" open>
+        <summary class="accordion-header">
+          <span class="acc-title">Posizioni &amp; Ordini</span>
+          <span class="acc-badge" id="acc-orders-badge"></span>
+          <span class="acc-chevron">▾</span>
+        </summary>
+        <div class="accordion-body">
+          <div class="acc-grid-2">
             <div>
-              <span class="label">Direzione</span>
-              <strong id="latest-direction">-</strong>
+              <h3 class="acc-subtitle">Posizioni MT5 aperte</h3>
+              <div class="table-wrap">
+                <table id="positions-table">
+                  <thead>
+                    <tr><th>Symbol</th><th>Tipo</th><th>Lotti</th><th>Open</th><th>Corrente</th><th>PnL</th><th>SL</th><th>TP</th></tr>
+                  </thead>
+                  <tbody><tr><td colspan="8" class="muted tc">Nessuna posizione aperta</td></tr></tbody>
+                </table>
+              </div>
             </div>
             <div>
-              <span class="label">Confidence</span>
-              <strong id="latest-confidence">-</strong>
-            </div>
-            <div>
-              <span class="label">Actionable</span>
-              <strong id="latest-actionable">-</strong>
-            </div>
-            <div>
-              <span class="label">Approved</span>
-              <strong id="latest-approved">-</strong>
+              <h3 class="acc-subtitle">Log ordini <span class="acc-subtitle-hint muted">(ultimi 30)</span></h3>
+              <div class="table-wrap">
+                <table id="orders-table">
+                  <thead>
+                    <tr><th>Ora</th><th>Tipo</th><th>Symbol</th><th>Lato</th><th>Lotti</th><th>Stato</th><th>Dettaglio</th></tr>
+                  </thead>
+                  <tbody><tr><td colspan="7" class="muted tc">Nessun ordine registrato</td></tr></tbody>
+                </table>
+              </div>
             </div>
           </div>
-          <div class="reason-box">
-            <h3>Motivo della scelta</h3>
-            <p id="latest-explanation">Nessuna decisione disponibile.</p>
-          </div>
-          <div class="reason-box">
-            <h3>Perche' e' rimasto in HOLD</h3>
-            <p id="latest-hold-reason">In attesa di una decisione utile.</p>
-          </div>
         </div>
-      </article>
-      <article class="card">
-        <div class="section-head">
-          <h2>Moduli che hanno votato</h2>
-        </div>
-        <div id="signal-breakdown" class="signal-list">
-          <p class="muted">Nessun segnale ancora disponibile.</p>
-        </div>
-      </article>
-    </section>
+      </details>
 
-    <section class="grid thresholds-section">
-      <article class="card wide">
-        <div class="section-head">
-          <h2>Soglie Adattive per Modulo</h2>
-          <p class="section-desc muted">
-            Ogni modulo ha una soglia di confidenza indipendente che si abbassa quando il modulo ha ragione
-            e si alza quando sbaglia. I segnali sotto soglia vengono esclusi dal voto di consenso.
+      <!-- 2. Segnali & Consenso -->
+      <details class="accordion" id="acc-signals" open>
+        <summary class="accordion-header">
+          <span class="acc-title">Segnali &amp; Consenso</span>
+          <span class="acc-badge" id="acc-signals-badge"></span>
+          <span class="acc-chevron">▾</span>
+        </summary>
+        <div class="accordion-body">
+          <div class="acc-grid-2">
+            <!-- Latest decision -->
+            <div>
+              <h3 class="acc-subtitle">Ultima decisione</h3>
+              <div class="decision-kpis">
+                <div><span class="label">Direzione</span><strong id="latest-direction">—</strong></div>
+                <div><span class="label">Confidence</span><strong id="latest-confidence">—</strong></div>
+                <div><span class="label">Actionable</span><strong id="latest-actionable">—</strong></div>
+                <div><span class="label">Approved</span><strong id="latest-approved">—</strong></div>
+              </div>
+              <div class="reason-box mt8">
+                <div class="reason-label">Motivazione</div>
+                <p id="latest-explanation">—</p>
+              </div>
+              <div class="reason-box mt8">
+                <div class="reason-label">Perché HOLD</div>
+                <p id="latest-hold-reason">—</p>
+              </div>
+            </div>
+            <!-- Signal breakdown -->
+            <div>
+              <h3 class="acc-subtitle">Voti moduli</h3>
+              <div id="signal-breakdown" class="signal-list">
+                <p class="muted">Nessun segnale disponibile.</p>
+              </div>
+            </div>
+          </div>
+          <!-- Decisions table -->
+          <div class="mt16">
+            <h3 class="acc-subtitle">Decisioni recenti <span class="acc-subtitle-hint muted">(ultime 20)</span></h3>
+            <div class="table-wrap">
+              <table id="decisions-table">
+                <thead>
+                  <tr><th>Ora</th><th>Dir.</th><th>Conf.</th><th>Esito</th><th>Voto</th><th>Motivo</th><th>Modello</th></tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </details>
+
+      <!-- 3. Grafici -->
+      <details class="accordion" id="acc-charts" open>
+        <summary class="accordion-header">
+          <span class="acc-title">Grafici</span>
+          <span class="acc-chevron">▾</span>
+        </summary>
+        <div class="accordion-body">
+          <div class="acc-grid-2">
+            <div>
+              <h3 class="acc-subtitle">Equity Curve</h3>
+              <div class="chart-frame"><canvas id="equity-chart"></canvas></div>
+            </div>
+            <div>
+              <h3 class="acc-subtitle">
+                Prezzi
+                <span class="chart-filters">
+                  <input id="symbol-input" value="{{ default_symbol }}" class="filter-input">
+                  <select id="timeframe-input" class="filter-select">
+                    <option value="M1" {% if default_timeframe == "M1" %}selected{% endif %}>M1</option>
+                    <option value="M5" {% if default_timeframe == "M5" %}selected{% endif %}>M5</option>
+                    <option value="M15" {% if default_timeframe == "M15" %}selected{% endif %}>M15</option>
+                    <option value="M30" {% if default_timeframe == "M30" %}selected{% endif %}>M30</option>
+                    <option value="H1" {% if default_timeframe == "H1" %}selected{% endif %}>H1</option>
+                    <option value="H4" {% if default_timeframe == "H4" %}selected{% endif %}>H4</option>
+                    <option value="D1" {% if default_timeframe == "D1" %}selected{% endif %}>D1</option>
+                  </select>
+                  <button id="reload-bars" class="filter-btn">↺</button>
+                  <button id="reset-bars-zoom" class="filter-btn">⊡ Zoom</button>
+                </span>
+              </h3>
+              <div class="chart-frame"><canvas id="bars-chart"></canvas></div>
+            </div>
+          </div>
+        </div>
+      </details>
+
+      <!-- 4. Moduli & Soglie adattive -->
+      <details class="accordion" id="acc-thresholds">
+        <summary class="accordion-header">
+          <span class="acc-title">Moduli &amp; Soglie adattive</span>
+          <span class="acc-badge" id="acc-thresholds-badge"></span>
+          <span class="acc-chevron">▾</span>
+        </summary>
+        <div class="accordion-body">
+          <p class="muted acc-desc">
+            Ogni modulo ha una soglia di confidenza indipendente: si abbassa quando il modulo ha ragione, si alza quando sbaglia.
+            I segnali sotto soglia vengono esclusi dal voto di consenso.
           </p>
+          <div class="table-wrap">
+            <table id="thresholds-table">
+              <thead>
+                <tr><th>Modulo</th><th>Soglia</th><th>Valutazioni</th><th>Corrette</th><th>Accuratezza</th><th>Score medio</th><th>Trend</th><th>Aggiornato</th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
         </div>
-        <div class="table-wrap">
-          <table id="thresholds-table">
-            <thead>
-              <tr>
-                <th>Modulo</th>
-                <th>Soglia attuale</th>
-                <th>Valutazioni</th>
-                <th>Corrette</th>
-                <th>Accuratezza</th>
-                <th>Score medio</th>
-                <th>Trend soglia</th>
-                <th>Aggiornato</th>
-              </tr>
-            </thead>
-            <tbody></tbody>
-          </table>
-        </div>
-      </article>
-    </section>
+      </details>
 
-    <section class="grid tables reputations-section">
-      <article class="card full-width">
-        <h2>Reputazione Regole di Uscita</h2>
-        <p class="section-desc">
-          Pesi per regola aggiornati via EMA dopo ogni trade chiuso.
-          Peso iniziale 50, range [5–95].  Cold-start blend attivo per le prime 10 valutazioni.
-        </p>
-        <div class="table-wrap">
-          <table id="reputations-table">
-            <thead>
-              <tr>
-                <th>Regola</th>
-                <th>Symbol</th>
-                <th>Peso attuale</th>
-                <th>Valutazioni</th>
-                <th>Score medio</th>
-                <th>Ultima valutazione</th>
-              </tr>
-            </thead>
-            <tbody></tbody>
-          </table>
+      <!-- 5. Exit Rules & Reputazioni -->
+      <details class="accordion" id="acc-reputations">
+        <summary class="accordion-header">
+          <span class="acc-title">Exit Rules &amp; Reputazioni</span>
+          <span class="acc-chevron">▾</span>
+        </summary>
+        <div class="accordion-body">
+          <p class="muted acc-desc">
+            Pesi per regola aggiornati via EMA dopo ogni trade chiuso. Peso iniziale 50, range [5–95].
+            Cold-start blend attivo per le prime 10 valutazioni.
+          </p>
+          <div class="table-wrap">
+            <table id="reputations-table">
+              <thead>
+                <tr><th>Regola</th><th>Symbol</th><th>Peso</th><th>Valutazioni</th><th>Score medio</th><th>Ultima val.</th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
         </div>
-      </article>
-    </section>
+      </details>
 
-    <section class="grid tables">
-      <article class="card">
-        <h2>Posizioni MT5 Aperte</h2>
-        <div class="table-wrap">
-          <table id="positions-table">
-            <thead>
-              <tr><th>Symbol</th><th>Tipo</th><th>Volume</th><th>Open</th><th>Current</th><th>PnL</th><th>SL</th><th>TP</th></tr>
-            </thead>
-            <tbody></tbody>
-          </table>
+      <!-- 6. ML & Training -->
+      <details class="accordion" id="acc-training">
+        <summary class="accordion-header">
+          <span class="acc-title">ML &amp; Training</span>
+          <span class="acc-chevron">▾</span>
+        </summary>
+        <div class="accordion-body">
+          <div class="table-wrap">
+            <table id="training-table">
+              <thead>
+                <tr><th>Versione</th><th>Symbol</th><th>TF</th><th>Best acc.</th><th>Mean acc.</th><th>Barre</th><th>Stato</th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
         </div>
-      </article>
-      <article class="card">
-        <h2>Decisioni Recenti</h2>
-        <div class="table-wrap">
-          <table id="decisions-table">
-            <thead>
-              <tr><th>Ora</th><th>Direzione</th><th>Confidence</th><th>Esito</th><th>Motivo</th><th>Modello</th></tr>
-            </thead>
-            <tbody></tbody>
-          </table>
+      </details>
+
+      <!-- 7. Sessioni -->
+      <details class="accordion" id="acc-sessions">
+        <summary class="accordion-header">
+          <span class="acc-title">Sessioni</span>
+          <span class="acc-badge" id="acc-sessions-badge"></span>
+          <span class="acc-chevron">▾</span>
+        </summary>
+        <div class="accordion-body">
+          <div class="table-wrap">
+            <table id="sessions-table">
+              <thead>
+                <tr><th>ID sessione</th><th>Modo</th><th>Symbol</th><th>TF</th><th>ML</th><th>Modello</th><th>Stato</th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
         </div>
-      </article>
-      <article class="card">
-        <h2>Training ML</h2>
-        <div class="table-wrap">
-          <table id="training-table">
-            <thead>
-              <tr><th>Versione</th><th>Symbol</th><th>TF</th><th>Best</th><th>Mean</th><th>Barre</th><th>Stato</th></tr>
-            </thead>
-            <tbody></tbody>
-          </table>
+      </details>
+
+      <!-- 8. Tools / Ops -->
+      <details class="accordion" id="acc-tools">
+        <summary class="accordion-header">
+          <span class="acc-title">Tools</span>
+          <span class="acc-chevron">▾</span>
+        </summary>
+        <div class="accordion-body">
+          <p class="muted acc-desc">
+            Se chiudi il terminale con Ctrl+C le sessioni restano "running" nel DB.
+            Usa il pulsante per pulirle, oppure copia i comandi PowerShell
+            (porta dashboard: <strong>{{ observability_port }}</strong>).
+          </p>
+          <pre class="command-block">Get-NetTCPConnection -LocalPort {{ observability_port }} -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
+Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.CommandLine -match 'run_live|run_paper|run_dashboard' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }</pre>
+          <div class="ops-actions">
+            <button type="button" class="btn-secondary" id="btn-copy-stop">Copia comandi</button>
+            <button type="button" class="btn-primary" id="btn-close-db-sessions">Chiudi sessioni DB orfane</button>
+          </div>
+          <p id="close-sessions-msg" class="muted mt8" role="status"></p>
         </div>
-      </article>
-      <article class="card">
-        <h2>Sessioni Attive</h2>
-        <div class="table-wrap">
-          <table id="sessions-table">
-            <thead>
-              <tr><th>Sessione</th><th>Modo</th><th>Symbol</th><th>TF</th><th>ML</th><th>Modello</th><th>Stato</th></tr>
-            </thead>
-            <tbody></tbody>
-          </table>
-        </div>
-      </article>
-    </section>
+      </details>
+
     </main>
   </div>
 

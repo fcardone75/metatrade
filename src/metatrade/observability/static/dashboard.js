@@ -1,145 +1,153 @@
+/* MetaTrade Dashboard — main script */
+"use strict";
+
 const cfg = window.METATRADE_DASHBOARD;
 
-const equityCtx = document.getElementById("equity-chart");
-const barsCtx = document.getElementById("bars-chart");
-const symbolInput = document.getElementById("symbol-input");
-const timeframeInput = document.getElementById("timeframe-input");
-const activeRunInfo = document.getElementById("active-run-info");
-const resetBarsZoomButton = document.getElementById("reset-bars-zoom");
+// ── DOM refs ───────────────────────────────────────────────────────────────
+const symbolInput     = document.getElementById("symbol-input");
+const timeframeInput  = document.getElementById("timeframe-input");
+const activeRunInfo   = document.getElementById("active-run-info");
 
-let equityChart;
-let barsChart;
+let equityChart, barsChart;
 let hasInitializedActiveRun = false;
 let decisionProgressTickStarted = false;
 
-function fmtNumber(value) {
-  if (value === null || value === undefined || Number.isNaN(Number(value))) return "-";
-  return Number(value).toFixed(2);
+// ── Formatters ─────────────────────────────────────────────────────────────
+function fmt2(v)   { return (v == null || isNaN(+v)) ? "—" : (+v).toFixed(2); }
+function fmtPct(v) { return (v == null || isNaN(+v)) ? "—" : `${(+v * 100).toFixed(1)}%`; }
+function fmtConf(v){ return (v == null || isNaN(+v)) ? "—" : (+v).toFixed(2); }
+function fmtTs(ts) {
+  if (!ts) return "—";
+  return new Date(ts * 1000).toLocaleString("it-IT", {
+    day: "2-digit", month: "2-digit", year: "numeric",
+    hour: "2-digit", minute: "2-digit", second: "2-digit"
+  });
 }
 
-function setText(id, value) {
-  document.getElementById(id).textContent = value;
+function setText(id, v) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = v;
 }
 
-function escapeHtml(value) {
-  return String(value ?? "")
+function escHtml(v) {
+  return String(v ?? "")
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
+    .replaceAll('"', "&quot;");
 }
 
-function parseJsonDetails(value) {
-  if (!value) return {};
-  if (typeof value === "object") return value;
-  try {
-    return JSON.parse(value);
-  } catch {
-    return {};
+function parseDetails(v) {
+  if (!v) return {};
+  if (typeof v === "object") return v;
+  try { return JSON.parse(v); } catch { return {}; }
+}
+
+// ── Badges ─────────────────────────────────────────────────────────────────
+function dirBadge(dir) {
+  const d = String(dir || "HOLD").toUpperCase();
+  const cls = d === "BUY" ? "badge-buy" : d === "SELL" ? "badge-sell" : "badge-hold";
+  return `<span class="badge ${cls}">${escHtml(d)}</span>`;
+}
+
+function orderEventBadge(type) {
+  const t = String(type || "").toLowerCase();
+  if (t === "order_failed" || t === "order_rejected") {
+    return `<span class="badge badge-fail">FALLITO</span>`;
   }
-}
-
-function pct(value) {
-  if (value === null || value === undefined || Number.isNaN(Number(value))) return "-";
-  return `${(Number(value) * 100).toFixed(1)}%`;
-}
-
-function fmtConfidence(value) {
-  if (value === null || value === undefined || Number.isNaN(Number(value))) return "-";
-  return `${Number(value).toFixed(2)}`;
-}
-
-function directionBadge(direction) {
-  const normalized = String(direction || "HOLD").toUpperCase();
-  const cssClass = normalized === "BUY"
-    ? "badge-buy"
-    : normalized === "SELL"
-      ? "badge-sell"
-      : "badge-hold";
-  return `<span class="badge ${cssClass}">${escapeHtml(normalized)}</span>`;
-}
-
-function decisionStatus(row) {
-  if (!row) return "-";
-  if (!row.actionable) return "Nessuna operazione";
-  if (row.approved === true || row.approved === 1) return "Operazione approvata";
-  if (row.approved === false || row.approved === 0) {
-    return row.veto_code ? `Bloccata: ${row.veto_code}` : "Bloccata dal risk";
+  if (t === "order_submitted") {
+    return `<span class="badge badge-ok">INVIATO</span>`;
   }
-  return "In valutazione";
+  if (t === "order_filled") {
+    return `<span class="badge badge-ok">ESEGUITO</span>`;
+  }
+  return `<span class="badge badge-neutral">${escHtml(type)}</span>`;
+}
+
+function statusBadge(status) {
+  const s = String(status || "").toLowerCase();
+  if (s === "running") return `<span class="badge badge-ok">running</span>`;
+  if (s === "completed") return `<span class="badge badge-neutral">completed</span>`;
+  return `<span class="badge badge-hold">${escHtml(status)}</span>`;
+}
+
+// ── Decision helpers ────────────────────────────────────────────────────────
+function decisionEsito(row) {
+  if (!row) return "—";
+  if (!row.actionable) return `<span class="muted">Nessuna operazione</span>`;
+  if (row.approved === true || row.approved === 1)
+    return `<span class="badge badge-ok">Approvata</span>`;
+  if (row.approved === false || row.approved === 0)
+    return row.veto_code
+      ? `<span class="badge badge-fail">${escHtml(row.veto_code)}</span>`
+      : `<span class="badge badge-fail">Bloccata</span>`;
+  return "—";
 }
 
 function summarizeHoldReason(row, details) {
   if (!row) return "Nessuna decisione disponibile.";
   const signals = Array.isArray(details.signals) ? details.signals : [];
   if (row.direction !== "HOLD") {
-    if (row.approved === false || row.approved === 0) {
-      return row.veto_reason || row.explanation || "Segnale presente ma fermato dal modulo di rischio.";
-    }
+    if (row.approved === false || row.approved === 0)
+      return row.veto_reason || row.explanation || "Segnale presente ma bloccato dal risk manager.";
     return row.explanation || "L'ultima decisione non era HOLD.";
   }
-  if (!row.actionable) {
-    return row.explanation || `Il consenso non ha superato la soglia minima (${fmtConfidence(row.threshold_used)}).`;
-  }
-  const nonHoldSignals = signals.filter((signal) => signal.direction && signal.direction !== "HOLD");
-  if (nonHoldSignals.length === 0) {
-    return "Tutti i moduli hanno votato HOLD, quindi non e' stato aperto nessun trade.";
-  }
-  if (row.approved === false || row.approved === 0) {
-    return row.veto_reason || "C'era un segnale, ma il risk manager lo ha bloccato.";
-  }
-  return row.explanation || "Il sistema non ha trovato abbastanza evidenza per comprare o vendere.";
+  if (!row.actionable)
+    return row.explanation || `Consenso sotto soglia (${fmtConf(row.threshold_used)}).`;
+  const nonHold = signals.filter(s => s.direction && s.direction !== "HOLD");
+  if (nonHold.length === 0) return "Tutti i moduli hanno votato HOLD.";
+  if (row.approved === false || row.approved === 0)
+    return row.veto_reason || "Segnale presente, ma il risk manager lo ha bloccato.";
+  return row.explanation || "Consenso insufficiente per BUY o SELL.";
 }
 
+// ── Signal breakdown ────────────────────────────────────────────────────────
 function renderSignalBreakdown(details) {
-  const container = document.getElementById("signal-breakdown");
+  const el = document.getElementById("signal-breakdown");
   const signals = Array.isArray(details.signals) ? [...details.signals] : [];
   if (!signals.length) {
-    container.innerHTML = `<p class="muted">Nessun segnale ancora disponibile.</p>`;
+    el.innerHTML = `<p class="muted">Nessun segnale disponibile.</p>`;
     return;
   }
-  signals.sort((a, b) => Number(b.confidence || 0) - Number(a.confidence || 0));
-  container.innerHTML = signals.map((signal) => `
+  signals.sort((a, b) => +b.confidence - +a.confidence);
+  el.innerHTML = signals.map(s => `
     <div class="signal-item">
       <div class="signal-head">
-        <div class="signal-title">${escapeHtml(signal.module_id || "module")}</div>
+        <div class="signal-title"><code>${escHtml(s.module_id || "?")}</code></div>
         <div class="signal-meta">
-          ${directionBadge(signal.direction)}
-          <span class="badge badge-neutral">conf ${fmtConfidence(signal.confidence)}</span>
+          ${dirBadge(s.direction)}
+          <span class="badge badge-neutral">conf ${fmtConf(s.confidence)}</span>
         </div>
       </div>
-      <div class="signal-reason">${escapeHtml(signal.reason || "Nessuna motivazione disponibile.")}</div>
-    </div>
-  `).join("");
+      <div class="signal-reason">${escHtml(s.reason || "—")}</div>
+    </div>`).join("");
 }
 
 function renderLatestDecision(row) {
-  const details = parseJsonDetails(row?.details);
-  setText("latest-direction", row?.direction || "-");
-  setText("latest-confidence", fmtConfidence(row?.aggregate_confidence));
-  setText("latest-actionable", row ? (row.actionable ? "Si" : "No") : "-");
-  setText("latest-approved", row ? (row.approved === null ? "-" : (row.approved ? "Si" : "No")) : "-");
-  setText("latest-explanation", row?.explanation || "Nessuna spiegazione disponibile.");
-  setText("latest-hold-reason", summarizeHoldReason(row, details));
-  renderSignalBreakdown(details);
+  const det = parseDetails(row?.details);
+  setText("latest-direction", row?.direction || "—");
+  setText("latest-confidence", fmtConf(row?.aggregate_confidence));
+  setText("latest-actionable", row ? (row.actionable ? "Sì" : "No") : "—");
+  setText("latest-approved", row
+    ? (row.approved === null || row.approved === undefined ? "—" : row.approved ? "Sì" : "No")
+    : "—");
+  setText("latest-explanation", row?.explanation || "—");
+  setText("latest-hold-reason", summarizeHoldReason(row, det));
+  renderSignalBreakdown(det);
+  // Signal badge on accordion header
+  const badge = document.getElementById("acc-signals-badge");
+  if (badge && row) badge.textContent = row.direction || "";
 }
 
-function fmtDurationSeconds(sec) {
-  if (sec === null || sec === undefined || Number.isNaN(Number(sec))) return "—";
-  const x = Number(sec);
-  if (x < 1) return "meno di 1 s";
+// ── Decision progress (sidebar) ─────────────────────────────────────────────
+function fmtDurSec(sec) {
+  if (sec == null || isNaN(+sec)) return "—";
+  const x = +sec;
+  if (x < 1) return "< 1 s";
   const s = Math.ceil(x);
-  if (s < 60) return `circa ${s} s`;
-  const m = Math.floor(s / 60);
-  const r = s % 60;
-  return r ? `circa ${m} min ${r} s` : `circa ${m} min`;
-}
-
-function basisLabel(basis) {
-  if (basis === "decision") return "ultima decisione";
-  if (basis === "snapshot") return "ultimo snapshot account";
-  return "telemetria";
+  if (s < 60) return `${s} s`;
+  const m = Math.floor(s / 60), r = s % 60;
+  return r ? `${m} min ${r} s` : `${m} min`;
 }
 
 function tickDecisionProgress() {
@@ -147,436 +155,428 @@ function tickDecisionProgress() {
   const fill = document.getElementById("dp-fill");
   const track = document.getElementById("dp-track");
   if (!fill || !track) return;
-
-  if (!s || !s.available) {
+  if (!s?.available) {
     fill.style.width = "0%";
     track.setAttribute("aria-valuenow", "0");
-    setText("dp-timeframe", s?.message || "Timeframe non disponibile");
+    setText("dp-timeframe", s?.message || "—");
     setText("dp-remaining", "—");
-    setText("dp-last", "Ultimo evento: —");
+    setText("dp-last", "—");
     return;
   }
-
-  const tf = s.timeframe || "—";
-  const basis = basisLabel(s.basis);
-  setText("dp-timeframe", `Timeframe: ${tf} · riferimento: ${basis}`);
-
+  setText("dp-timeframe", `${s.timeframe || "—"}`);
   if (s.last_event_ts == null) {
     fill.style.width = "0%";
-    track.setAttribute("aria-valuenow", "0");
-    setText("dp-remaining", "In attesa della prima barra processata...");
-    setText("dp-last", "Ultimo evento: —");
+    setText("dp-remaining", "In attesa della prima barra…");
+    setText("dp-last", "—");
     return;
   }
-
-  const interval = Number(s.interval_seconds);
-  if (!interval || interval <= 0) {
-    fill.style.width = "0%";
-    track.setAttribute("aria-valuenow", "0");
-    setText("dp-remaining", "—");
-    return;
-  }
-
+  const interval = +s.interval_seconds;
   const now = Date.now() / 1000;
   const elapsed = now - s.last_event_ts;
   const k = Math.floor(elapsed / interval);
   const phase = elapsed - k * interval;
   const progress = Math.min(1, Math.max(0, phase / interval));
-  const nextTs = s.last_event_ts + (k + 1) * interval;
-  const remaining = Math.max(0, nextTs - now);
-
+  const remaining = Math.max(0, s.last_event_ts + (k + 1) * interval - now);
   fill.style.width = `${(progress * 100).toFixed(1)}%`;
   track.setAttribute("aria-valuenow", String(Math.round(progress * 100)));
-  setText("dp-remaining", `Stima: ${fmtDurationSeconds(remaining)} alla prossima valutazione`);
-  const lastDate = new Date(s.last_event_ts * 1000).toLocaleString();
-  setText("dp-last", `Ultimo aggiornamento: ${lastDate}`);
+  setText("dp-remaining", `≈ ${fmtDurSec(remaining)}`);
+  setText("dp-last", fmtTs(s.last_event_ts));
 }
 
-function startDecisionProgressTick() {
+function startProgressTick() {
   if (decisionProgressTickStarted) return;
   decisionProgressTickStarted = true;
   setInterval(tickDecisionProgress, 250);
 }
 
+// ── Tables ──────────────────────────────────────────────────────────────────
 function renderTable(id, rows, mapper) {
   const tbody = document.querySelector(`#${id} tbody`);
-  tbody.innerHTML = rows.map(mapper).join("");
+  if (!tbody) return;
+  tbody.innerHTML = rows.length
+    ? rows.map(mapper).join("")
+    : `<tr><td colspan="99" class="muted tc">Nessun dato</td></tr>`;
 }
 
+// ── Fetch helpers ───────────────────────────────────────────────────────────
 async function getJson(url) {
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  return response.json();
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`HTTP ${r.status} ${url}`);
+  return r.json();
 }
 
-function upsertLineChart(chart, ctx, labels, data, label, color) {
+// ── Charts ──────────────────────────────────────────────────────────────────
+function upsertLine(chart, ctx, labels, data, label, color) {
   if (chart) {
     chart.data.labels = labels;
     chart.data.datasets[0].data = data;
     chart.data.datasets[0].label = label;
-    chart.update();
+    chart.update("none");
     return chart;
   }
   return new Chart(ctx, {
     type: "line",
-    data: {
-      labels,
-      datasets: [{ label, data, borderColor: color, backgroundColor: color, tension: 0.2 }]
-    },
+    data: { labels, datasets: [{ label, data, borderColor: color, backgroundColor: "transparent", tension: 0.2, pointRadius: 1 }] },
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      animation: false,
       plugins: {
-        legend: { labels: { color: "#e2e8f0" } },
+        legend: { labels: { color: "#94a3b8", font: { size: 11 } } },
         zoom: {
-          pan: {
-            enabled: true,
-            mode: "x",
-            modifierKey: "shift"
-          },
-          zoom: {
-            wheel: { enabled: true },
-            pinch: { enabled: true },
-            mode: "x"
-          }
+          pan: { enabled: true, mode: "x", modifierKey: "shift" },
+          zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: "x" }
         }
       },
       scales: {
-        x: { ticks: { color: "#94a3b8" } },
-        y: { ticks: { color: "#94a3b8" } }
+        x: { ticks: { color: "#475569", font: { size: 10 }, maxTicksLimit: 10 }, grid: { color: "#111827" } },
+        y: { ticks: { color: "#475569", font: { size: 10 } }, grid: { color: "#111827" } }
       }
     }
   });
 }
 
-async function refreshOverview() {
-  const overview = await getJson("/api/overview");
-  const mt5 = overview.mt5_account || {};
-  const latestTraining = overview.latest_training || {};
-  const model = overview.active_model || {};
-  const activeSession = (overview.sessions || [])[0] || null;
-  const latestDecision = overview.latest_decision || null;
-  window.__dpState = overview.decision_progress || null;
-  tickDecisionProgress();
+// ── Threshold bar ────────────────────────────────────────────────────────────
+const TH_MIN = 0.45, TH_MAX = 0.90, TH_DEF = 0.60;
 
-  setText("kpi-balance", fmtNumber(mt5.balance));
-  setText("kpi-equity", fmtNumber(mt5.equity));
-  setText("kpi-profit", fmtNumber(mt5.profit));
-  setText("kpi-positions", String((overview.mt5_positions || []).length));
-  setText("kpi-model", model.version || "-");
-  setText("kpi-training", latestTraining.model_version || latestTraining.status || "-");
-  renderLatestDecision(latestDecision);
-
-  const nOpen = overview.open_sessions_count ?? 0;
-  if (activeSession) {
-    let msg = `Run attivo: ${activeSession.run_mode} ${activeSession.symbol}/${activeSession.timeframe} - modello ${activeSession.model_version || "n/a"}`;
-    if (nOpen > 1) {
-      msg += ` | ${nOpen} sessioni ancora "running" in DB (runner fermati senza chiusura — vedi Servizi locali)`;
-    }
-    activeRunInfo.textContent = msg;
-    if (!hasInitializedActiveRun) {
-      if (activeSession.symbol) symbolInput.value = activeSession.symbol;
-      if (activeSession.timeframe) timeframeInput.value = activeSession.timeframe;
-      hasInitializedActiveRun = true;
-    }
-  } else if (nOpen > 0) {
-    activeRunInfo.textContent = `Nessun run recente in cima alla lista, ma ${nOpen} sessione/i ancora aperte in DB — usa "Chiudi sessioni DB orfane".`;
-  } else {
-    activeRunInfo.textContent = "Run attivo: nessuna sessione attiva";
-  }
-
-  renderTable("positions-table", overview.mt5_positions || [], (row) => `
-    <tr>
-      <td>${row.symbol ?? "-"}</td>
-      <td>${row.type ?? "-"}</td>
-      <td>${fmtNumber(row.volume)}</td>
-      <td>${fmtNumber(row.price_open)}</td>
-      <td>${fmtNumber(row.price_current)}</td>
-      <td class="${Number(row.profit) >= 0 ? "positive" : "negative"}">${fmtNumber(row.profit)}</td>
-      <td>${fmtNumber(row.sl)}</td>
-      <td>${fmtNumber(row.tp)}</td>
-    </tr>
-  `);
-
-  renderTable("sessions-table", overview.sessions || [], (row) => `
-    <tr>
-      <td>${row.session_id}</td>
-      <td>${row.run_mode}</td>
-      <td>${row.symbol ?? "-"}</td>
-      <td>${row.timeframe ?? "-"}</td>
-      <td>${row.ml_enabled ? "on" : "off"}</td>
-      <td>${row.model_version ?? "-"}</td>
-      <td>${row.status}</td>
-    </tr>
-  `);
+function thresholdBar(t) {
+  const pct = Math.round(((t - TH_MIN) / (TH_MAX - TH_MIN)) * 100);
+  const col = t < TH_DEF ? "#34d399" : t > TH_DEF ? "#f87171" : "#64748b";
+  return `<div class="threshold-bar-wrap" title="${t.toFixed(3)}">
+    <div class="threshold-bar-track">
+      <div class="threshold-bar-fill" style="width:${pct}%;background:${col}"></div>
+      <div class="threshold-bar-default"></div>
+    </div>
+    <span class="threshold-val">${t.toFixed(3)}</span>
+  </div>`;
 }
 
-async function refreshDecisions() {
-  const decisions = await getJson("/api/decisions?limit=20");
-  renderTable("decisions-table", decisions, (row) => `
-    <tr>
-      <td>${new Date(row.ts * 1000).toLocaleString()}</td>
-      <td>${directionBadge(row.direction)}</td>
-      <td>${fmtConfidence(row.aggregate_confidence)}</td>
-      <td>${escapeHtml(decisionStatus(row))}</td>
-      <td class="decision-cell">${escapeHtml(row.explanation || row.veto_reason || "-")}</td>
-      <td>${row.model_version ?? "-"}</td>
-    </tr>
-  `);
+function trendArrow(t) {
+  if (t < TH_DEF - 0.02) return `<span class="trend-down" title="Affidabile">▼</span>`;
+  if (t > TH_DEF + 0.02) return `<span class="trend-up" title="Poco affidabile">▲</span>`;
+  return `<span class="trend-neutral">■</span>`;
 }
 
-async function refreshTraining() {
-  const training = await getJson("/api/training/runs?limit=20");
-  renderTable("training-table", training, (row) => `
-    <tr>
-      <td>${row.model_version ?? "-"}</td>
-      <td>${row.symbol}</td>
-      <td>${row.timeframe}</td>
-      <td>${fmtNumber(row.best_test_accuracy)}</td>
-      <td>${fmtNumber(row.mean_test_accuracy)}</td>
-      <td>${row.bars_fetched ?? "-"}</td>
-      <td>${row.status}</td>
-    </tr>
-  `);
+function weightBar(w) {
+  const pct = Math.max(0, Math.min(100, w));
+  const col = w >= 65 ? "#22c55e" : w >= 50 ? "#86efac" : w >= 35 ? "#fb923c" : "#ef4444";
+  return `<div class="threshold-bar-wrap" title="peso ${w.toFixed(1)}">
+    <div class="threshold-bar-track">
+      <div class="threshold-bar-fill" style="width:${pct}%;background:${col}"></div>
+      <div class="threshold-bar-default" style="left:50%"></div>
+    </div>
+    <span class="threshold-val">${w.toFixed(1)}</span>
+  </div>`;
 }
 
-async function refreshEquityCurve() {
-  const rows = await getJson("/api/account/equity-curve?limit=200");
-  const chronological = [...rows];
-  equityChart = upsertLineChart(
-    equityChart,
-    equityCtx,
-    chronological.map((row) => new Date(row.ts * 1000).toLocaleTimeString()),
-    chronological.map((row) => row.equity),
-    "Equity",
-    "#38bdf8"
-  );
-}
+// ── Kill Switch ──────────────────────────────────────────────────────────────
+const KS_LABELS = { 0: "NONE", 1: "TRADE GATE", 2: "SESSION GATE", 3: "EMERGENCY HALT", 4: "HARD KILL" };
 
-async function refreshBars() {
-  const symbol = encodeURIComponent(symbolInput.value || cfg.defaultSymbol);
-  const timeframe = encodeURIComponent(timeframeInput.value || cfg.defaultTimeframe);
-  const rows = await getJson(`/api/bars?symbol=${symbol}&timeframe=${timeframe}&limit=180`);
-  barsChart = upsertLineChart(
-    barsChart,
-    barsCtx,
-    rows.map((row) => new Date(row.ts).toLocaleTimeString()),
-    rows.map((row) => row.close),
-    `${symbolInput.value}/${timeframeInput.value} close`,
-    "#a78bfa"
-  );
-}
-
-async function refreshThresholds() {
-  const rows = await getJson("/api/module-thresholds");
-
-  // Default threshold used when no evaluations yet
-  const DEFAULT_THRESHOLD = 0.60;
-  const MIN_THRESHOLD = 0.45;
-  const MAX_THRESHOLD = 0.90;
-
-  function thresholdBar(threshold) {
-    const pctPos = Math.round(
-      ((threshold - MIN_THRESHOLD) / (MAX_THRESHOLD - MIN_THRESHOLD)) * 100
-    );
-    const color = threshold < DEFAULT_THRESHOLD
-      ? "#34d399"  // green — below default (module trusted)
-      : threshold > DEFAULT_THRESHOLD
-        ? "#f87171"  // red — above default (module cautious)
-        : "#94a3b8"; // grey — at default
-    return `
-      <div class="threshold-bar-wrap" title="${threshold.toFixed(3)}">
-        <div class="threshold-bar-track">
-          <div class="threshold-bar-fill" style="width:${pctPos}%; background:${color};"></div>
-          <div class="threshold-bar-default"></div>
-        </div>
-        <span class="threshold-val">${threshold.toFixed(3)}</span>
-      </div>`;
-  }
-
-  function trendArrow(threshold) {
-    if (threshold < DEFAULT_THRESHOLD - 0.02) return '<span class="trend-down" title="Soglia bassa: modulo affidabile">&#x25BC;</span>';
-    if (threshold > DEFAULT_THRESHOLD + 0.02) return '<span class="trend-up" title="Soglia alta: modulo poco affidabile">&#x25B2;</span>';
-    return '<span class="trend-neutral" title="Soglia nella norma">&#x25A0;</span>';
-  }
-
-  renderTable("thresholds-table", rows, (row) => {
-    const accuracy = row.accuracy_pct !== null && row.accuracy_pct !== undefined
-      ? `${Number(row.accuracy_pct).toFixed(1)}%`
-      : "<span class='muted'>—</span>";
-    const meanScore = row.mean_score !== null && row.mean_score !== undefined
-      ? Number(row.mean_score).toFixed(3)
-      : "—";
-    const updatedAt = row.updated_at
-      ? new Date(row.updated_at * 1000).toLocaleString()
-      : "—";
-    return `
-      <tr>
-        <td><code>${escapeHtml(row.module_id)}</code></td>
-        <td>${thresholdBar(Number(row.threshold))}</td>
-        <td>${row.eval_count ?? 0}</td>
-        <td>${row.correct_count ?? 0}</td>
-        <td>${accuracy}</td>
-        <td>${meanScore}</td>
-        <td>${trendArrow(Number(row.threshold))}</td>
-        <td class="muted">${updatedAt}</td>
-      </tr>`;
+function applyKsState(data) {
+  const level = +(data.level ?? 0);
+  const label = KS_LABELS[level] ?? "UNKNOWN";
+  ["ks-badge", "sidebar-ks-badge"].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = label;
+    el.className = `badge ks-badge ks-level-${level}`;
   });
-}
-
-async function refreshReputations() {
-  const rows = await fetchJSON("/api/rule-reputations");
-
-  function weightBar(weight) {
-    const pct = Math.max(0, Math.min(100, weight));
-    let color = "#888";
-    if (weight >= 65) color = "#4caf50";
-    else if (weight >= 50) color = "#8bc34a";
-    else if (weight >= 35) color = "#ff9800";
-    else color = "#f44336";
-    return `
-      <div class="threshold-bar-wrap" title="weight ${weight.toFixed(1)}">
-        <div class="threshold-bar-track">
-          <div class="threshold-bar-fill" style="width:${pct}%; background:${color};"></div>
-          <div class="threshold-bar-default" style="left:50%;"></div>
-        </div>
-        <span class="threshold-val">${weight.toFixed(1)}</span>
-      </div>`;
+  const bar = document.getElementById("kill-switch-bar");
+  if (bar) bar.classList.toggle("ks-active", level > 0);
+  const reason = document.getElementById("ks-reason");
+  if (reason) {
+    reason.textContent = level > 0 && data.reason
+      ? `${data.reason}${data.activated_by ? ` — ${data.activated_by}` : ""}`
+      : "Trading attivo";
   }
-
-  renderTable("reputations-table", rows, (row) => {
-    const weight = Number(row.weight ?? 50);
-    const meanScore = row.mean_score !== null && row.mean_score !== undefined
-      ? Number(row.mean_score).toFixed(3)
-      : "—";
-    const lastEval = row.last_eval_ts && row.last_eval_ts > 0
-      ? new Date(row.last_eval_ts * 1000).toLocaleString()
-      : "<span class='muted'>—</span>";
-    const symbol = row.symbol === "*" ? "<span class='muted'>globale</span>" : escapeHtml(row.symbol);
-    return `
-      <tr>
-        <td><code>${escapeHtml(row.rule_id)}</code></td>
-        <td>${symbol}</td>
-        <td>${weightBar(weight)}</td>
-        <td>${row.eval_count ?? 0}</td>
-        <td>${meanScore}</td>
-        <td class="muted">${lastEval}</td>
-      </tr>`;
-  });
 }
-
-// ── Kill switch ────────────────────────────────────────────────────────────
-
-const KS_LEVEL_LABELS = {
-  0: "NONE",
-  1: "TRADE GATE",
-  2: "SESSION GATE",
-  3: "EMERGENCY HALT",
-  4: "HARD KILL",
-};
 
 async function refreshKillSwitch() {
   const data = await getJson("/api/kill-switch");
-  const level = Number(data.level ?? 0);
-  const badge = document.getElementById("ks-badge");
-  const bar = document.getElementById("kill-switch-bar");
-  const reasonEl = document.getElementById("ks-reason");
-
-  badge.textContent = KS_LEVEL_LABELS[level] ?? "UNKNOWN";
-  badge.className = `badge ks-badge ks-level-${level}`;
-  bar.classList.toggle("ks-active", level > 0);
-
-  if (level > 0 && data.reason) {
-    reasonEl.textContent = `${escapeHtml(data.reason)} (${escapeHtml(data.activated_by || "")})`;
-  } else {
-    reasonEl.textContent = "Trading attivo";
-  }
+  applyKsState(data);
 }
 
 function wireKillSwitchButtons() {
-  document.querySelectorAll(".btn-ks[data-level]").forEach((btn) => {
+  document.querySelectorAll(".btn-ks[data-level]").forEach(btn => {
     btn.addEventListener("click", async () => {
-      const level = Number(btn.dataset.level);
+      const level = +btn.dataset.level;
       const label = btn.dataset.label || btn.textContent.trim();
-      if (level >= 3) {
-        const ok = confirm(
-          `Sei sicuro di voler attivare ${label}?\n\nQuesto blocchera' il sistema. Premi OK per confermare.`
-        );
-        if (!ok) return;
-      }
-      const reason = `${label} attivato dalla dashboard`;
+      if (level >= 3 && !confirm(`Confermare attivazione ${label}?\n\nQuesto blocca il sistema.`)) return;
       await fetch("/api/kill-switch/activate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ level, reason }),
+        body: JSON.stringify({ level, reason: `${label} — dashboard` })
       });
       await refreshKillSwitch();
     });
   });
-
-  document.getElementById("ks-reset-btn").addEventListener("click", async () => {
+  document.getElementById("ks-reset-btn")?.addEventListener("click", async () => {
     await fetch("/api/kill-switch/reset", { method: "POST" });
     await refreshKillSwitch();
   });
 }
 
-wireKillSwitchButtons();
+// ── Accordion state (localStorage) ──────────────────────────────────────────
+function saveAccordionState() {
+  const state = {};
+  document.querySelectorAll("details.accordion[id]").forEach(d => {
+    state[d.id] = d.open;
+  });
+  try { localStorage.setItem("mt_accordion", JSON.stringify(state)); } catch {}
+}
 
-function wireOpsPanel() {
-  const copyBtn = document.getElementById("btn-copy-stop");
-  const closeBtn = document.getElementById("btn-close-db-sessions");
-  const msgEl = document.getElementById("close-sessions-msg");
-  const pre = document.getElementById("stop-commands");
-  if (copyBtn && pre) {
-    copyBtn.addEventListener("click", async () => {
-      try {
-        await navigator.clipboard.writeText(pre.textContent);
-        if (msgEl) msgEl.textContent = "Comandi copiati negli appunti.";
-      } catch {
-        if (msgEl) msgEl.textContent = "Selezione manuale: copia dal riquadro grigio.";
-      }
+function restoreAccordionState() {
+  try {
+    const state = JSON.parse(localStorage.getItem("mt_accordion") || "{}");
+    document.querySelectorAll("details.accordion[id]").forEach(d => {
+      if (d.id in state) d.open = state[d.id];
     });
+  } catch {}
+  document.querySelectorAll("details.accordion").forEach(d => {
+    d.addEventListener("toggle", saveAccordionState);
+  });
+}
+
+// ── Refresh functions ────────────────────────────────────────────────────────
+
+async function refreshOverview() {
+  const ov = await getJson("/api/overview");
+  const mt5 = ov.mt5_account || {};
+  const model = ov.active_model || {};
+  const tr = ov.latest_training || {};
+  const sessions = ov.sessions || [];
+  const decision = ov.latest_decision || null;
+
+  window.__dpState = ov.decision_progress || null;
+  tickDecisionProgress();
+
+  setText("kpi-balance",   fmt2(mt5.balance));
+  setText("kpi-equity",    fmt2(mt5.equity));
+  setText("kpi-profit",    fmt2(mt5.profit));
+  setText("kpi-positions", String((ov.mt5_positions || []).length));
+  setText("kpi-model",     model.version || "—");
+  setText("kpi-training",  tr.model_version || tr.status || "—");
+
+  const activeSession = sessions[0] || null;
+  if (activeSession) {
+    activeRunInfo.textContent =
+      `${activeSession.run_mode} · ${activeSession.symbol}/${activeSession.timeframe} · ${activeSession.model_version || "no ML"}`;
+    if (!hasInitializedActiveRun) {
+      if (activeSession.symbol)    symbolInput.value    = activeSession.symbol;
+      if (activeSession.timeframe) timeframeInput.value = activeSession.timeframe;
+      hasInitializedActiveRun = true;
+    }
+  } else {
+    activeRunInfo.textContent = "Nessuna sessione attiva";
   }
-  if (closeBtn) {
-    closeBtn.addEventListener("click", async () => {
-      if (msgEl) msgEl.textContent = "Chiusura in corso...";
-      try {
-        const r = await fetch("/api/sessions/close-open?status=interrupted", { method: "POST" });
-        const j = await r.json();
-        if (!r.ok) throw new Error(j.detail || r.statusText || String(r.status));
-        if (msgEl) msgEl.textContent = `Chiuse ${j.closed} sessioni (stato: ${j.status}).`;
-        await refreshOverview();
-      } catch (e) {
-        if (msgEl) msgEl.textContent = `Errore: ${e.message}`;
-      }
-    });
+
+  // Sessions count badge
+  const sessBadge = document.getElementById("acc-sessions-badge");
+  if (sessBadge) sessBadge.textContent = sessions.length ? String(sessions.length) : "";
+
+  renderLatestDecision(decision);
+
+  // MT5 positions
+  const positions = ov.mt5_positions || [];
+  renderTable("positions-table", positions, row => `
+    <tr>
+      <td><strong>${escHtml(row.symbol ?? "—")}</strong></td>
+      <td>${dirBadge(row.type === 0 ? "BUY" : "SELL")}</td>
+      <td>${fmt2(row.volume)}</td>
+      <td>${fmt2(row.price_open)}</td>
+      <td>${fmt2(row.price_current)}</td>
+      <td class="${+row.profit >= 0 ? "positive" : "negative"}">${fmt2(row.profit)}</td>
+      <td class="muted">${fmt2(row.sl)}</td>
+      <td class="muted">${fmt2(row.tp)}</td>
+    </tr>`);
+
+  // Positions badge
+  const ordBadge = document.getElementById("acc-orders-badge");
+  if (ordBadge) ordBadge.textContent = positions.length ? `${positions.length} pos.` : "";
+
+  // Sessions table
+  renderTable("sessions-table", sessions, row => `
+    <tr>
+      <td><code>${escHtml(row.session_id)}</code></td>
+      <td>${escHtml(row.run_mode)}</td>
+      <td>${escHtml(row.symbol ?? "—")}</td>
+      <td>${escHtml(row.timeframe ?? "—")}</td>
+      <td>${row.ml_enabled ? "✓" : "—"}</td>
+      <td class="muted">${escHtml(row.model_version ?? "—")}</td>
+      <td>${statusBadge(row.status)}</td>
+    </tr>`);
+}
+
+async function refreshDecisions() {
+  const rows = await getJson("/api/decisions?limit=20");
+  renderTable("decisions-table", rows, row => {
+    const voteInfo = row.explanation
+      ? escHtml(row.explanation.length > 50 ? row.explanation.slice(0, 50) + "…" : row.explanation)
+      : "—";
+    return `
+    <tr>
+      <td class="muted" style="white-space:nowrap">${fmtTs(row.ts)}</td>
+      <td>${dirBadge(row.direction)}</td>
+      <td>${fmtConf(row.aggregate_confidence)}</td>
+      <td>${decisionEsito(row)}</td>
+      <td class="muted" style="font-size:0.75rem">${voteInfo}</td>
+      <td class="muted" style="font-size:0.75rem">${escHtml(row.veto_reason || row.explanation?.slice(0,60) || "—")}</td>
+      <td class="muted" style="font-size:0.72rem">${escHtml(row.model_version ?? "—")}</td>
+    </tr>`;
+  });
+}
+
+async function refreshOrders() {
+  const rows = await getJson("/api/orders?limit=30");
+  // Sort newest first (they come desc already)
+  let failCount = 0;
+  renderTable("orders-table", rows, row => {
+    const isFailed = /fail|reject/i.test(row.event_type || "");
+    if (isFailed) failCount++;
+    const det = parseDetails(row.details);
+    const detailStr = isFailed && det.error
+      ? `<span style="color:#fca5a5;font-size:0.75rem">${escHtml(String(det.error).slice(0, 80))}</span>`
+      : escHtml(row.status || "—");
+    return `
+    <tr class="${isFailed ? "row-failed" : "row-submitted"}">
+      <td class="muted" style="white-space:nowrap;font-size:0.75rem">${fmtTs(row.ts)}</td>
+      <td>${orderEventBadge(row.event_type)}</td>
+      <td><strong>${escHtml(row.symbol ?? "—")}</strong></td>
+      <td>${row.side ? dirBadge(row.side) : "—"}</td>
+      <td>${row.lot_size != null ? fmt2(row.lot_size) : "—"}</td>
+      <td>${escHtml(row.status || "—")}</td>
+      <td style="max-width:220px;word-break:break-word">${detailStr}</td>
+    </tr>`;
+  });
+  // Update orders badge with fail count
+  const badge = document.getElementById("acc-orders-badge");
+  if (badge) {
+    if (failCount > 0) {
+      badge.textContent = `${failCount} errori`;
+      badge.style.background = "#7f1d1d";
+      badge.style.color = "#fca5a5";
+    } else if (rows.length > 0) {
+      badge.textContent = `${rows.length} ordini`;
+      badge.style.background = "";
+      badge.style.color = "";
+    }
   }
 }
 
-wireOpsPanel();
+async function refreshEquityCurve() {
+  const rows = await getJson("/api/account/equity-curve?limit=200");
+  const asc = [...rows].reverse();
+  equityChart = upsertLine(
+    equityChart, document.getElementById("equity-chart"),
+    asc.map(r => new Date(r.ts * 1000).toLocaleTimeString("it-IT")),
+    asc.map(r => r.equity),
+    "Equity", "#38bdf8"
+  );
+}
 
+async function refreshBars() {
+  const sym = encodeURIComponent(symbolInput.value || cfg.defaultSymbol);
+  const tf  = encodeURIComponent(timeframeInput.value || cfg.defaultTimeframe);
+  const rows = await getJson(`/api/bars?symbol=${sym}&timeframe=${tf}&limit=180`);
+  barsChart = upsertLine(
+    barsChart, document.getElementById("bars-chart"),
+    rows.map(r => new Date(r.ts).toLocaleTimeString("it-IT")),
+    rows.map(r => r.close),
+    `${symbolInput.value} close`, "#818cf8"
+  );
+}
+
+async function refreshTraining() {
+  const rows = await getJson("/api/training/runs?limit=20");
+  renderTable("training-table", rows, row => `
+    <tr>
+      <td><code>${escHtml(row.model_version ?? "—")}</code></td>
+      <td>${escHtml(row.symbol)}</td>
+      <td>${escHtml(row.timeframe)}</td>
+      <td class="${+row.best_test_accuracy >= 0.55 ? "positive" : "negative"}">${fmt2(row.best_test_accuracy)}</td>
+      <td>${fmt2(row.mean_test_accuracy)}</td>
+      <td class="muted">${row.bars_fetched ?? "—"}</td>
+      <td>${statusBadge(row.status)}</td>
+    </tr>`);
+}
+
+async function refreshThresholds() {
+  const rows = await getJson("/api/module-thresholds");
+  rows.forEach(r => {
+    const n = r.eval_count || 0, c = r.correct_count || 0;
+    r.accuracy_pct = n > 0 ? +(c / n * 100).toFixed(1) : null;
+  });
+  renderTable("thresholds-table", rows, row => `
+    <tr>
+      <td><code>${escHtml(row.module_id)}</code></td>
+      <td>${thresholdBar(+row.threshold)}</td>
+      <td>${row.eval_count ?? 0}</td>
+      <td>${row.correct_count ?? 0}</td>
+      <td>${row.accuracy_pct != null ? `${row.accuracy_pct}%` : `<span class="muted">—</span>`}</td>
+      <td class="muted">${row.mean_score != null ? (+row.mean_score).toFixed(3) : "—"}</td>
+      <td>${trendArrow(+row.threshold)}</td>
+      <td class="muted" style="font-size:0.75rem;white-space:nowrap">${fmtTs(row.updated_at)}</td>
+    </tr>`);
+  const badge = document.getElementById("acc-thresholds-badge");
+  if (badge) badge.textContent = rows.length ? `${rows.length} moduli` : "";
+}
+
+async function refreshReputations() {
+  const rows = await getJson("/api/rule-reputations");
+  renderTable("reputations-table", rows, row => `
+    <tr>
+      <td><code>${escHtml(row.rule_id)}</code></td>
+      <td>${row.symbol === "*" ? `<span class="muted">globale</span>` : escHtml(row.symbol)}</td>
+      <td>${weightBar(+(row.weight ?? 50))}</td>
+      <td>${row.eval_count ?? 0}</td>
+      <td class="muted">${row.mean_score != null ? (+row.mean_score).toFixed(3) : "—"}</td>
+      <td class="muted" style="font-size:0.75rem;white-space:nowrap">${row.last_eval_ts > 0 ? fmtTs(row.last_eval_ts) : "—"}</td>
+    </tr>`);
+}
+
+// ── Main refresh ─────────────────────────────────────────────────────────────
 async function refreshAll() {
   try {
     await Promise.all([
       refreshOverview(),
       refreshDecisions(),
-      refreshTraining(),
+      refreshOrders(),
       refreshEquityCurve(),
       refreshThresholds(),
       refreshReputations(),
+      refreshTraining(),
       refreshKillSwitch(),
     ]);
-    setText("last-refresh", `Aggiornato ${new Date().toLocaleTimeString()}`);
-  } catch (error) {
-    setText("last-refresh", `Errore refresh: ${error.message}`);
+    setText("last-refresh", new Date().toLocaleTimeString("it-IT"));
+  } catch (err) {
+    setText("last-refresh", `Errore: ${err.message}`);
   }
 }
 
-document.getElementById("reload-bars").addEventListener("click", refreshBars);
-resetBarsZoomButton.addEventListener("click", () => {
-  if (barsChart) barsChart.resetZoom();
+// ── Event listeners ──────────────────────────────────────────────────────────
+document.getElementById("reload-bars")?.addEventListener("click", refreshBars);
+document.getElementById("reset-bars-zoom")?.addEventListener("click", () => barsChart?.resetZoom());
+
+// Ops panel
+document.getElementById("btn-copy-stop")?.addEventListener("click", () => {
+  const pre = document.querySelector(".command-block");
+  if (pre) navigator.clipboard.writeText(pre.textContent).catch(() => {});
 });
 
+document.getElementById("btn-close-db-sessions")?.addEventListener("click", async () => {
+  const msg = document.getElementById("close-sessions-msg");
+  try {
+    const r = await fetch("/api/sessions/close-open?status=interrupted", { method: "POST" });
+    const d = await r.json();
+    if (msg) msg.textContent = `${d.closed} sessioni chiuse.`;
+  } catch (e) {
+    if (msg) msg.textContent = `Errore: ${e.message}`;
+  }
+});
+
+// ── Init ─────────────────────────────────────────────────────────────────────
+restoreAccordionState();
+wireKillSwitchButtons();
+startProgressTick();
 refreshAll().then(refreshBars);
 setInterval(refreshAll, cfg.refreshSeconds * 1000);
-startDecisionProgressTick();
