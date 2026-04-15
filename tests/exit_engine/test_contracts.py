@@ -163,3 +163,63 @@ class TestExitDecision:
             timestamp_utc=datetime.now(timezone.utc),
         )
         assert d.is_exit
+
+
+class TestPositionContextValidation:
+    def test_negative_entry_price_raises(self):
+        with pytest.raises(ValueError, match="entry_price must be > 0"):
+            PositionContext(
+                position_id="p1",
+                symbol="EURUSD",
+                side=PositionSide.LONG,
+                entry_price=Decimal("-1.1000"),
+                lot_size=Decimal("0.1"),
+                opened_at_utc=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                current_price=Decimal("1.1010"),
+                current_bar=None,
+                bars_since_entry=[],
+                peak_favorable_price=Decimal("1.1010"),
+            )
+
+
+class TestExitDecisionValidation:
+    def test_naive_timestamp_raises(self):
+        with pytest.raises(ValueError, match="timezone-aware"):
+            ExitDecision(
+                action=ExitAction.HOLD,
+                close_pct=0.0,
+                aggregate_score=0.0,
+                signals=(),
+                explanation="hold",
+                timestamp_utc=datetime(2024, 1, 1),  # naive!
+            )
+
+
+class TestTradeOutcomeProperties:
+    def _make_outcome(self, pnl_pips: float, lot_size: str = "0.1") -> TradeOutcome:
+        return TradeOutcome(
+            position_id="p1",
+            symbol="EURUSD",
+            entry_price=Decimal("1.1000"),
+            exit_price=Decimal(str(1.1000 + pnl_pips * 0.0001)),
+            side=PositionSide.LONG,
+            lot_size=Decimal(lot_size),
+            opened_at_utc=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            closed_at_utc=datetime(2024, 1, 1, 1, tzinfo=timezone.utc),
+            exit_reason="engine",
+            signals_emitted=(),
+            pnl_pips=Decimal(str(pnl_pips)),
+        )
+
+    def test_pnl_currency_calculated(self):
+        oc = self._make_outcome(pnl_pips=20.0)
+        # 20 pips × 0.1 lots × $10/pip/lot = $2
+        assert oc.pnl_currency == Decimal("20") * Decimal("0.1") * Decimal("10")
+
+    def test_was_profitable_positive(self):
+        oc = self._make_outcome(pnl_pips=10.0)
+        assert oc.was_profitable is True
+
+    def test_was_profitable_negative(self):
+        oc = self._make_outcome(pnl_pips=-5.0)
+        assert oc.was_profitable is False

@@ -238,6 +238,37 @@ class TestStopLossManagement:
         if decision.new_stop_loss is not None:
             assert float(decision.new_stop_loss) > 1.1000
 
+    def test_short_sl_not_above_current_price(self):
+        """For SHORT, new SL must be above current price."""
+        cfg = ExitEngineConfig(
+            reputation=ReputationConfig(cold_start_trades=1),
+            trailing_stop=TrailingStopConfig(
+                enabled=True, mode="atr", atr_mult=1.0
+            ),
+            break_even=BreakEvenConfig(enabled=False),
+            time_exit=TimeExitConfig(enabled=False),
+            give_back=GiveBackConfig(enabled=False),
+            partial_exit=PartialExitConfig(enabled=False),
+        )
+        engine = ExitEngine(cfg=cfg)
+        ctx = PositionContext(
+            position_id="short-1",
+            symbol="EURUSD",
+            side=PositionSide.SHORT,
+            entry_price=Decimal("1.1000"),
+            lot_size=Decimal("0.1"),
+            opened_at_utc=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            current_price=Decimal("1.0980"),
+            current_bar=None,
+            bars_since_entry=[None] * 5,
+            peak_favorable_price=Decimal("1.0960"),
+            entry_atr=Decimal("0.0010"),
+            stop_loss=Decimal("1.1100"),
+        )
+        decision = engine.evaluate(ctx)
+        if decision.new_stop_loss is not None:
+            assert float(decision.new_stop_loss) > float(ctx.current_price)
+
     def test_sl_never_above_current_price_for_long(self):
         cfg = ExitEngineConfig(
             reputation=ReputationConfig(cold_start_trades=1),
@@ -257,3 +288,107 @@ class TestStopLossManagement:
         # If a new SL was suggested, it must be below current price
         if decision.new_stop_loss is not None:
             assert float(decision.new_stop_loss) < float(ctx.current_price)
+
+
+class TestExitEngineHelperMethods:
+    def test_extra_rules_extend_rule_list(self):
+        """Extra rules passed to constructor are added to the rule list."""
+        from metatrade.exit_engine.rules.base import IExitRule
+        from metatrade.exit_engine.contracts import ExitSignal
+
+        class DummyRule(IExitRule):
+            @property
+            def rule_id(self) -> str:
+                return "dummy"
+
+            def evaluate(self, ctx) -> ExitSignal:
+                return self._hold("dummy hold")
+
+        engine = ExitEngine(cfg=minimal_cfg(), extra_rules=[DummyRule()])
+        ctx = make_long_ctx()
+        decision = engine.evaluate(ctx)
+        # dummy rule produces a signal, so total signals = 7 defaults + 1 = 8
+        assert len(decision.signals) == 8
+
+    def test_apply_decay_runs_without_error(self):
+        engine = ExitEngine(cfg=minimal_cfg())
+        engine.apply_decay()  # no error
+
+    def test_get_weight_returns_float(self):
+        engine = ExitEngine(cfg=minimal_cfg())
+        w = engine.get_weight("trailing_stop")
+        assert isinstance(w, float)
+
+    def test_all_reputation_states_returns_list(self):
+        engine = ExitEngine(cfg=minimal_cfg())
+        states = engine.all_reputation_states()
+        assert isinstance(states, list)
+
+    def test_rule_exception_does_not_break_evaluate(self):
+        """A rule that raises must be caught, other rules still run."""
+        from metatrade.exit_engine.rules.base import IExitRule
+
+        class BrokenRule(IExitRule):
+            @property
+            def rule_id(self) -> str:
+                return "broken"
+
+            def evaluate(self, ctx):
+                raise RuntimeError("simulated rule failure")
+
+        engine = ExitEngine(cfg=minimal_cfg(), extra_rules=[BrokenRule()])
+        ctx = make_long_ctx()
+        # Should not raise; broken rule is skipped
+        decision = engine.evaluate(ctx)
+        assert isinstance(decision, ExitDecision)
+
+    def test_aggregate_score_zero_when_no_weights(self):
+        """When total weight is 0, score should return 0.0."""
+        engine = ExitEngine(cfg=minimal_cfg())
+        # Pass empty signals list → total_weight=0 → score=0.0
+        score = engine._aggregate_score([], "EURUSD")
+        assert score == 0.0
+
+
+class TestExitEngineConfigFromDict:
+    def test_from_dict_basic(self):
+        from metatrade.exit_engine.config import ExitEngineConfig
+        d = {
+            "enabled": True,
+            "close_full_threshold": 70.0,
+            "close_partial_threshold": 40.0,
+        }
+        cfg = ExitEngineConfig._from_dict(d)
+        assert cfg.enabled is True
+        assert cfg.close_full_threshold == 70.0
+
+    def test_from_dict_with_sub_configs(self):
+        from metatrade.exit_engine.config import ExitEngineConfig
+        d = {
+            "trailing_stop": {"enabled": False, "mode": "atr"},
+            "break_even": {"enabled": False},
+        }
+        cfg = ExitEngineConfig._from_dict(d)
+        assert cfg.trailing_stop.enabled is False
+
+    def test_from_dict_with_partial_exit_levels(self):
+        from metatrade.exit_engine.config import ExitEngineConfig
+        d = {
+            "partial_exit": {
+                "enabled": True,
+                "levels": [
+                    {"pips": 20.0, "close_pct": 0.33},
+                    {"pips": 40.0, "close_pct": 0.33},
+                ],
+            }
+        }
+        cfg = ExitEngineConfig._from_dict(d)
+        assert len(cfg.partial_exit.levels) == 2
+
+    def test_from_dict_ignores_unknown_sub_keys(self):
+        from metatrade.exit_engine.config import ExitEngineConfig
+        d = {
+            "trailing_stop": {"enabled": True, "unknown_field": "ignored"},
+        }
+        cfg = ExitEngineConfig._from_dict(d)
+        assert cfg.trailing_stop.enabled is True

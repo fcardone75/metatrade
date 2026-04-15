@@ -631,3 +631,82 @@ class TestIntermarketModule:
         m.feed_reference("USDJPY", _bars_from_prices(constant, symbol="USDJPY"))
         sig = m.analyse(primary, _NOW)
         assert sig.direction == SignalDirection.HOLD
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Portfolio-risk contracts: validation
+# ══════════════════════════════════════════════════════════════════════════════
+
+from metatrade.intermarket.contracts import (
+    CurrencyExposure,
+    IntermarketDecision,
+    PairCorrelation as PortfolioPairCorrelation,
+)
+
+
+class TestCurrencyExposureValidation:
+    def test_negative_gross_lots_raises(self) -> None:
+        import pytest
+        from decimal import Decimal
+        with pytest.raises(ValueError, match="gross_lots must be >= 0"):
+            CurrencyExposure(
+                currency="EUR",
+                net_lots=Decimal("0.5"),
+                gross_lots=Decimal("-0.1"),
+            )
+
+
+class TestPairCorrelationValidation:
+    def test_correlation_out_of_range_raises(self) -> None:
+        import pytest
+        with pytest.raises(ValueError, match="correlation must be in"):
+            PortfolioPairCorrelation(
+                symbol_a="EURUSD",
+                symbol_b="GBPUSD",
+                correlation=1.5,
+                abs_correlation=1.5,
+                lookback_bars=100,
+                overlap_bars=90,
+                returns_mode="pct",
+                timestamp_utc=_NOW,
+            )
+
+    def test_overlap_bars_too_small_raises(self) -> None:
+        import pytest
+        with pytest.raises(ValueError, match="overlap_bars must be >= 2"):
+            PortfolioPairCorrelation(
+                symbol_a="EURUSD",
+                symbol_b="GBPUSD",
+                correlation=0.8,
+                abs_correlation=0.8,
+                lookback_bars=100,
+                overlap_bars=1,
+                returns_mode="pct",
+                timestamp_utc=_NOW,
+            )
+
+
+class TestIntermarketDecisionValidation:
+    def test_zero_risk_multiplier_raises(self) -> None:
+        import pytest
+        from decimal import Decimal
+        with pytest.raises(ValueError, match="risk_multiplier must be > 0"):
+            IntermarketDecision(
+                approved=True,
+                risk_multiplier=Decimal("0"),
+                correlated_positions=(),
+                reason="test",
+                warnings=(),
+            )
+
+    def test_empty_reason_raises(self) -> None:
+        import pytest
+        from decimal import Decimal
+        with pytest.raises(ValueError, match="reason cannot be empty"):
+            IntermarketDecision(
+                approved=True,
+                risk_multiplier=Decimal("1.0"),
+                correlated_positions=(),
+                reason="",
+                warnings=(),
+            )

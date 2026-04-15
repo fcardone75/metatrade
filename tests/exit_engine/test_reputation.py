@@ -217,6 +217,114 @@ class TestReputationModel:
         assert ("trailing_stop", "EURUSD") in states
 
 
+class TestApplyDecay:
+    def test_decay_days_zero_returns_immediately(self):
+        """decay_days=0 means no decay — should return without processing."""
+        model = ReputationModel(ReputationConfig(
+            learning_rate=0.99, cold_start_trades=1,
+            decay_days=0,
+        ))
+        sig = _signal("trailing_stop")
+        oc = _outcome([(sig, "1.1020")], pnl_pips=-30.0)
+        model.update(oc)
+        w_before = model.get_weight("trailing_stop")
+        model.apply_decay()  # should be no-op
+        w_after = model.get_weight("trailing_stop")
+        assert w_before == w_after
+
+    def test_decay_skips_state_with_zero_last_eval_ts(self):
+        """States with last_eval_ts=0 are skipped during decay."""
+        model = ReputationModel(ReputationConfig(decay_days=1))
+        # Create state by getting weight (never evaluated → last_eval_ts=0)
+        _ = model.get_weight("trailing_stop")
+        # Manually set a state with last_eval_ts=0 to be tested
+        state = model._get_state("trailing_stop", "*")
+        assert state.last_eval_ts == 0
+        model.apply_decay()  # should not crash; state is skipped
+
+    def test_decay_skips_recently_active_state(self):
+        """States active within decay_days are not decayed."""
+        model = ReputationModel(ReputationConfig(
+            learning_rate=0.99, cold_start_trades=1,
+            decay_days=30,  # 30-day window
+        ))
+        sig = _signal("trailing_stop")
+        oc = _outcome([(sig, "1.1020")], pnl_pips=-30.0)
+        model.update(oc)
+        w_before = model.get_weight("trailing_stop")
+        # Decay with now = just 1 day after last eval (within 30-day window)
+        state = model.all_states()[0]
+        near_future = datetime.fromtimestamp(
+            state.last_eval_ts + 86400, tz=timezone.utc
+        )
+        model.apply_decay(now=near_future)
+        w_after = model.get_weight("trailing_stop")
+        # No decay since inactive_secs < decay_threshold_secs
+        assert w_before == w_after
+
+
+class TestShortSideScoring:
+    def test_short_trade_signals_scored_correctly(self):
+        """SHORT side: pnl_at = (entry - signal_price) / pip_size."""
+        model = ReputationModel(ReputationConfig(learning_rate=0.5, cold_start_trades=1))
+        sig = _signal("trailing_stop")
+        # SHORT trade: entry=1.1000, signal at 1.0985 (+15pip for SHORT)
+        oc = TradeOutcome(
+            position_id="p1",
+            symbol="EURUSD",
+            entry_price=Decimal("1.1000"),
+            exit_price=Decimal("1.0970"),
+            side=PositionSide.SHORT,
+            lot_size=Decimal("0.1"),
+            opened_at_utc=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            closed_at_utc=datetime(2024, 1, 1, 1, tzinfo=timezone.utc),
+            exit_reason="engine",
+            signals_emitted=((sig, Decimal("1.0985")),),
+            pnl_pips=Decimal("30"),
+        )
+        updates = model.update(oc)
+        assert "trailing_stop" in updates
+        assert isinstance(updates["trailing_stop"], float)
+
+
+class TestLoadFromDb:
+    def test_load_from_db_populates_states(self):
+        """_load_from_db restores state from store rows."""
+        mock_store = MagicMock()
+        mock_store.list_rule_reputations.return_value = [
+            {
+                "rule_id": "trailing_stop",
+                "symbol": "*",
+                "weight": 70.0,
+                "eval_count": 5,
+                "mean_score": 0.65,
+                "last_eval_ts": 1700000000,
+            }
+        ]
+        model = ReputationModel(ReputationConfig(), store=mock_store)
+        w = model.get_weight("trailing_stop")
+        # Loaded weight with cold_start blend for n=5, cold=10
+        assert w > 50.0
+
+    def test_load_from_db_handles_store_error(self):
+        """_load_from_db silently skips if store raises."""
+        mock_store = MagicMock()
+        mock_store.list_rule_reputations.side_effect = RuntimeError("db fail")
+        # Should not raise
+        model = ReputationModel(ReputationConfig(), store=mock_store)
+        assert model.get_weight("trailing_stop") == pytest.approx(50.0)
+
+    def test_load_from_db_skips_empty_rule_id(self):
+        """Rows with empty rule_id are skipped."""
+        mock_store = MagicMock()
+        mock_store.list_rule_reputations.return_value = [
+            {"rule_id": "", "symbol": "*", "weight": 80.0}
+        ]
+        model = ReputationModel(ReputationConfig(), store=mock_store)
+        # No state should be created for empty rule_id
+        assert len(model.all_states()) == 0
+
+
 class TestExitScore:
     """Unit tests for the _exit_score static method."""
 

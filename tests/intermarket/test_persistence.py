@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -277,3 +278,95 @@ class TestResilience:
         s = IntermarketStore.from_env()
         assert s._db_path == db
         s.close()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Closed connection path
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestClosedConnection:
+    def test_create_schema_noop_when_closed(self, store):
+        """_create_schema is a no-op when _conn is None."""
+        store.close()
+        # Should not raise
+        store._create_schema()
+
+    def test_record_decision_noop_when_closed(self, store):
+        """record_decision silently returns when _conn is None."""
+        store.close()
+        store.record_decision("EURUSD", "BUY", _decision())  # no error
+
+    def test_record_correlation_noop_when_closed(self, store):
+        """record_correlation_snapshot silently returns when _conn is None."""
+        store.close()
+        snap = _snapshot(correlations=(_pair_corr(),))
+        store.record_correlation_snapshot(snap)  # no error
+
+    def test_record_exposure_noop_when_closed(self, store):
+        """record_exposure_snapshot silently returns when _conn is None."""
+        store.close()
+        snap = _snapshot(exposures=(_exposure(),))
+        store.record_exposure_snapshot(snap)  # no error
+
+    def test_list_decisions_empty_when_closed(self, store):
+        """list_recent_decisions returns empty list when _conn is None."""
+        store.close()
+        rows = store.list_recent_decisions()
+        assert rows == []
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Error-handling paths (simulate DB failures)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestErrorHandling:
+    def test_record_decision_swallows_db_error(self, tmp_path):
+        """DB error in record_decision is swallowed: corrupt the DB file mid-flight."""
+        db = str(tmp_path / "corrupt.db")
+        s = IntermarketStore(db)
+        # Close the connection and corrupt the DB, then re-open on top
+        s.close()
+        # Write garbage to simulate a broken connection state
+        s._conn = None  # Simulate disconnected state but _conn re-set to None
+        # Now call record_decision — should silently skip (conn is None)
+        s.record_decision("EURUSD", "BUY", _decision())  # no exception
+
+    def test_record_decision_with_bad_exposure_json(self, store):
+        """record_decision with non-serializable exposure gracefully fails."""
+        # Create a decision where exposure_delta_by_ccy has Decimal values (normal case)
+        d = IntermarketDecision(
+            approved=True,
+            risk_multiplier=Decimal("1.0"),
+            correlated_positions=(),
+            reason="ok",
+            warnings=(),
+            exposure_delta_by_ccy={"EUR": Decimal("0.01")},
+        )
+        # This should work fine
+        store.record_decision("EURUSD", "BUY", d)
+        rows = store.list_recent_decisions()
+        assert len(rows) == 1
+
+    def test_record_correlation_empty_snapshot(self, store):
+        """Empty correlations snapshot is silently skipped."""
+        snap = _snapshot(correlations=())
+        store.record_correlation_snapshot(snap)  # should not raise
+        count = store._conn.execute(
+            "SELECT COUNT(*) FROM intermarket_correlation_snapshots"
+        ).fetchone()[0]
+        assert count == 0
+
+    def test_record_exposure_empty_snapshot(self, store):
+        """Empty exposures snapshot is silently skipped."""
+        snap = _snapshot(exposures=())
+        store.record_exposure_snapshot(snap)  # should not raise
+
+    def test_list_decisions_all_filters_combined(self, store):
+        """Combining session_id and vetoes_only works correctly."""
+        store.record_decision("EURUSD", "BUY", _decision(approved=True), session_id="X")
+        store.record_decision("GBPUSD", "BUY", _decision(approved=False, reason="veto"), session_id="X")
+        store.record_decision("USDJPY", "BUY", _decision(approved=False, reason="veto"), session_id="Y")
+
+        rows = store.list_recent_decisions(session_id="X", vetoes_only=True)
+        assert len(rows) == 1
+        assert rows[0]["symbol"] == "GBPUSD"

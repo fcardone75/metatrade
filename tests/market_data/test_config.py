@@ -73,3 +73,79 @@ class TestMarketDataConfig:
             MarketDataConfig(price_precision=1)
         with pytest.raises(Exception):
             MarketDataConfig(price_precision=9)
+
+
+# ── BarQuery validation ───────────────────────────────────────────────────────
+
+from datetime import datetime, timezone
+from decimal import Decimal
+
+import pytest
+
+
+def test_bar_query_naive_dates_raises():
+    from metatrade.market_data.models import BarQuery
+    from metatrade.core.enums import Timeframe
+    naive = datetime(2024, 1, 1)
+    with pytest.raises(ValueError, match="timezone-aware"):
+        BarQuery(
+            symbol="EURUSD",
+            timeframe=Timeframe.M15,
+            date_from=naive,
+            date_to=datetime(2024, 1, 2, tzinfo=timezone.utc),
+        )
+
+
+def test_bar_query_date_from_after_date_to_raises():
+    from metatrade.market_data.models import BarQuery
+    from metatrade.core.enums import Timeframe
+    with pytest.raises(ValueError, match="must be < date_to"):
+        BarQuery(
+            symbol="EURUSD",
+            timeframe=Timeframe.M15,
+            date_from=datetime(2024, 1, 2, tzinfo=timezone.utc),
+            date_to=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        )
+
+
+def test_bar_query_empty_symbol_raises():
+    from metatrade.market_data.models import BarQuery
+    from metatrade.core.enums import Timeframe
+    with pytest.raises(ValueError, match="symbol cannot be empty"):
+        BarQuery(
+            symbol="",
+            timeframe=Timeframe.M15,
+            date_from=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            date_to=datetime(2024, 1, 2, tzinfo=timezone.utc),
+        )
+
+
+def test_collection_report_success_rate_no_symbols():
+    from metatrade.market_data.models import CollectionReport
+    report = CollectionReport(started_at_utc=datetime(2024, 1, 1, tzinfo=timezone.utc))
+    assert report.success_rate == 1.0
+
+
+def test_collection_report_success_rate_partial():
+    from metatrade.market_data.models import CollectionReport
+    report = CollectionReport(
+        started_at_utc=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        symbols_requested=["A", "B", "C"],
+        symbols_succeeded=["A", "B"],
+    )
+    assert abs(report.success_rate - 2/3) < 1e-9
+
+
+def test_collection_report_duration_none_when_not_complete():
+    from metatrade.market_data.models import CollectionReport
+    report = CollectionReport(started_at_utc=datetime(2024, 1, 1, tzinfo=timezone.utc))
+    assert report.duration_seconds is None
+
+
+def test_collection_report_duration_when_complete():
+    from metatrade.market_data.models import CollectionReport
+    report = CollectionReport(
+        started_at_utc=datetime(2024, 1, 1, 0, 0, 0, tzinfo=timezone.utc),
+        completed_at_utc=datetime(2024, 1, 1, 0, 1, 30, tzinfo=timezone.utc),
+    )
+    assert abs(report.duration_seconds - 90.0) < 1e-6
