@@ -190,6 +190,26 @@ def create_app() -> FastAPI:
     async def mt5_positions() -> list[dict[str, Any]]:
         return mt5.get_open_positions()
 
+    @app.get("/api/module-thresholds")
+    async def module_thresholds() -> list[dict[str, Any]]:
+        """Return the current adaptive threshold for every tracked module.
+
+        Each entry contains:
+          module_id      — stable module identifier
+          threshold      — current confidence threshold in [0.45, 0.90]
+          eval_count     — total number of evaluations since tracking started
+          correct_count  — evaluations where market moved in signal direction
+          mean_score     — EMA of market-accuracy scores (0.5 = neutral)
+          accuracy_pct   — correct_count / eval_count × 100 (null if no evals)
+          updated_at     — Unix timestamp of last update
+        """
+        rows = telemetry.list_module_thresholds()
+        for row in rows:
+            evals = row.get("eval_count") or 0
+            correct = row.get("correct_count") or 0
+            row["accuracy_pct"] = round(correct / evals * 100, 1) if evals > 0 else None
+        return rows
+
     @app.get("/api/bars")
     async def bars(
         symbol: str = Query(default=market_cfg.symbols[0] if market_cfg.symbols else "EURUSD"),

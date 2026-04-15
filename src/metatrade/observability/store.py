@@ -143,6 +143,17 @@ CREATE TABLE IF NOT EXISTS dashboard_model_artifacts (
 )
 """
 
+CREATE_MODULE_THRESHOLDS_TABLE = """
+CREATE TABLE IF NOT EXISTS module_thresholds (
+    module_id       TEXT PRIMARY KEY,
+    threshold       REAL NOT NULL,
+    eval_count      INTEGER NOT NULL DEFAULT 0,
+    correct_count   INTEGER NOT NULL DEFAULT 0,
+    mean_score      REAL NOT NULL DEFAULT 0.5,
+    updated_at      BIGINT NOT NULL
+)
+"""
+
 CREATE_SESSION_IDX = "CREATE INDEX IF NOT EXISTS idx_dashboard_sessions_started_at ON dashboard_sessions(started_at DESC)"
 CREATE_ACCOUNT_IDX = "CREATE INDEX IF NOT EXISTS idx_dashboard_account_ts ON dashboard_account_snapshots(ts DESC)"
 CREATE_DECISION_IDX = "CREATE INDEX IF NOT EXISTS idx_dashboard_decisions_ts ON dashboard_decisions(ts DESC)"
@@ -207,6 +218,7 @@ class TelemetryStore:
             CREATE_ORDER_EVENTS_TABLE,
             CREATE_TRAINING_RUNS_TABLE,
             CREATE_MODEL_ARTIFACTS_TABLE,
+            CREATE_MODULE_THRESHOLDS_TABLE,
             CREATE_SESSION_IDX,
             CREATE_ACCOUNT_IDX,
             CREATE_DECISION_IDX,
@@ -615,6 +627,49 @@ class TelemetryStore:
         rows = self._conn.execute(
             "SELECT * FROM dashboard_model_artifacts ORDER BY created_at DESC LIMIT ?",
             (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    # ── Adaptive thresholds ───────────────────────────────────────────────────
+
+    def upsert_module_threshold(
+        self,
+        module_id: str,
+        threshold: float,
+        eval_count: int,
+        correct_count: int,
+        mean_score: float,
+    ) -> None:
+        """Insert or update the adaptive threshold record for a module."""
+        assert self._conn is not None
+        self._conn.execute(
+            """
+            INSERT INTO module_thresholds
+                (module_id, threshold, eval_count, correct_count, mean_score, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(module_id) DO UPDATE SET
+                threshold     = excluded.threshold,
+                eval_count    = excluded.eval_count,
+                correct_count = excluded.correct_count,
+                mean_score    = excluded.mean_score,
+                updated_at    = excluded.updated_at
+            """,
+            (
+                module_id,
+                threshold,
+                eval_count,
+                correct_count,
+                mean_score,
+                _ts(_utc_now()),
+            ),
+        )
+        self._conn.commit()
+
+    def list_module_thresholds(self) -> list[dict[str, Any]]:
+        """Return all module threshold records ordered by module_id."""
+        assert self._conn is not None
+        rows = self._conn.execute(
+            "SELECT * FROM module_thresholds ORDER BY module_id ASC"
         ).fetchall()
         return [dict(row) for row in rows]
 

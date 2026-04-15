@@ -19,6 +19,7 @@ from decimal import Decimal
 
 from metatrade.consensus.engine import ConsensusEngine
 from metatrade.consensus.config import ConsensusConfig
+from metatrade.consensus.adaptive_threshold import AdaptiveThresholdManager
 from metatrade.consensus.market_accuracy_tracker import MarketAccuracyTracker
 from metatrade.core.contracts.account import AccountState
 from metatrade.core.contracts.market import Bar
@@ -96,11 +97,23 @@ class BaseRunner:
         )
         self._consensus = ConsensusEngine(consensus_cfg)
 
+        # Adaptive threshold manager — per-module confidence thresholds that
+        # self-adjust based on market accuracy (lower when right, raise when wrong).
+        # Persisted to the TelemetryStore so thresholds survive restarts.
+        self._threshold_mgr = AdaptiveThresholdManager(
+            store=telemetry,
+        )
+
         # Market accuracy tracker — evaluates each signal N bars later and
-        # updates the dynamic weight of the module proportionally to its error.
+        # (1) updates the dynamic weight of the module in the consensus engine,
+        # (2) updates the adaptive threshold for the module.
+        def _on_eval(module_id: str, score: float) -> None:
+            self._consensus.update_performance_scored(module_id, score)
+            self._threshold_mgr.on_eval(module_id, score)
+
         if auto_weight:
             self._tracker: MarketAccuracyTracker | None = MarketAccuracyTracker(
-                update_callback=self._consensus.update_performance_scored,
+                update_callback=_on_eval,
                 forward_bars=weight_forward_bars,
             )
         else:
@@ -146,6 +159,11 @@ class BaseRunner:
     def accuracy_tracker(self) -> MarketAccuracyTracker | None:
         """The market accuracy tracker, or None if auto_weight=False."""
         return self._tracker
+
+    @property
+    def threshold_manager(self) -> AdaptiveThresholdManager:
+        """The adaptive threshold manager for per-module confidence thresholds."""
+        return self._threshold_mgr
 
     def get_module_weight(self, module_id: str) -> float | None:
         """Current dynamic weight for a module (None if auto_weight=False)."""
@@ -272,9 +290,20 @@ class BaseRunner:
         if not signals:
             return None
 
-        # ── Step 1c: Record new signals for future weight evaluation ──────────
+        # ── Step 1c: Record ALL signals for future threshold/weight evaluation ─
+        # We record signals BEFORE filtering so that even excluded signals are
+        # evaluated — this is what drives the threshold to recover when a module
+        # that was filtered out would have been right.
         if self._tracker is not None:
             self._tracker.record_signals(signals, current_close, timestamp_utc)
+
+        # ── Step 1d: Apply per-module adaptive confidence threshold filter ────
+        # Signals whose confidence is below their module's current threshold are
+        # excluded from the consensus vote (but still evaluated in Step 1c above).
+        signals = self._threshold_mgr.filter_signals(signals)
+
+        if not signals:
+            return None
 
         # ── Step 2: Consensus ─────────────────────────────────────────────────
         consensus_result = self._consensus.evaluate(

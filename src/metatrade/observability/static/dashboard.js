@@ -360,6 +360,63 @@ async function refreshBars() {
   );
 }
 
+async function refreshThresholds() {
+  const rows = await getJson("/api/module-thresholds");
+
+  // Default threshold used when no evaluations yet
+  const DEFAULT_THRESHOLD = 0.60;
+  const MIN_THRESHOLD = 0.45;
+  const MAX_THRESHOLD = 0.90;
+
+  function thresholdBar(threshold) {
+    const pctPos = Math.round(
+      ((threshold - MIN_THRESHOLD) / (MAX_THRESHOLD - MIN_THRESHOLD)) * 100
+    );
+    const color = threshold < DEFAULT_THRESHOLD
+      ? "#34d399"  // green — below default (module trusted)
+      : threshold > DEFAULT_THRESHOLD
+        ? "#f87171"  // red — above default (module cautious)
+        : "#94a3b8"; // grey — at default
+    return `
+      <div class="threshold-bar-wrap" title="${threshold.toFixed(3)}">
+        <div class="threshold-bar-track">
+          <div class="threshold-bar-fill" style="width:${pctPos}%; background:${color};"></div>
+          <div class="threshold-bar-default"></div>
+        </div>
+        <span class="threshold-val">${threshold.toFixed(3)}</span>
+      </div>`;
+  }
+
+  function trendArrow(threshold) {
+    if (threshold < DEFAULT_THRESHOLD - 0.02) return '<span class="trend-down" title="Soglia bassa: modulo affidabile">&#x25BC;</span>';
+    if (threshold > DEFAULT_THRESHOLD + 0.02) return '<span class="trend-up" title="Soglia alta: modulo poco affidabile">&#x25B2;</span>';
+    return '<span class="trend-neutral" title="Soglia nella norma">&#x25A0;</span>';
+  }
+
+  renderTable("thresholds-table", rows, (row) => {
+    const accuracy = row.accuracy_pct !== null && row.accuracy_pct !== undefined
+      ? `${Number(row.accuracy_pct).toFixed(1)}%`
+      : "<span class='muted'>—</span>";
+    const meanScore = row.mean_score !== null && row.mean_score !== undefined
+      ? Number(row.mean_score).toFixed(3)
+      : "—";
+    const updatedAt = row.updated_at
+      ? new Date(row.updated_at * 1000).toLocaleString()
+      : "—";
+    return `
+      <tr>
+        <td><code>${escapeHtml(row.module_id)}</code></td>
+        <td>${thresholdBar(Number(row.threshold))}</td>
+        <td>${row.eval_count ?? 0}</td>
+        <td>${row.correct_count ?? 0}</td>
+        <td>${accuracy}</td>
+        <td>${meanScore}</td>
+        <td>${trendArrow(Number(row.threshold))}</td>
+        <td class="muted">${updatedAt}</td>
+      </tr>`;
+  });
+}
+
 async function refreshAll() {
   try {
     await Promise.all([
@@ -367,6 +424,7 @@ async function refreshAll() {
       refreshDecisions(),
       refreshTraining(),
       refreshEquityCurve(),
+      refreshThresholds(),
     ]);
     setText("last-refresh", `Aggiornato ${new Date().toLocaleTimeString()}`);
   } catch (error) {
