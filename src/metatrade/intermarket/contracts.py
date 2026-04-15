@@ -1,18 +1,25 @@
 """Data contracts for intermarket analysis output.
 
-Every detected dependency is represented as a DependencySnapshot — a
-point-in-time description of the statistical relationship between two
-instruments. DependencySnapshot objects are intentionally immutable:
-a new one is produced on each analysis cycle.
+Two distinct layers:
 
-IntermarketAnalysis aggregates all snapshots from a single analysis pass
-into a single directional signal and a flat feature vector for ML use.
+1. Signal-enrichment layer (original):
+   DependencySnapshot, LeadLagResult, IntermarketAnalysis
+   Used by IntermarketModule (ITechnicalModule bridge).
+
+2. Portfolio-risk layer (new):
+   CurrencyCode, CurrencyExposure, PairCorrelation,
+   IntermarketSnapshot, IntermarketDecision
+   Used by IntermarketEngine (inserted between Consensus and RiskManager).
+
+All objects are immutable dataclasses.  Mutable dict fields use
+``field(hash=False, compare=False)`` so that ``frozen=True`` still works.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from decimal import Decimal
 
 
 @dataclass(frozen=True)
@@ -94,3 +101,125 @@ class IntermarketAnalysis:
     features: dict[str, float] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     timestamp_utc: datetime = field(default_factory=lambda: datetime.now())
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Portfolio-risk layer — IntermarketEngine contracts
+# ══════════════════════════════════════════════════════════════════════════════
+
+# CurrencyCode: a plain str alias for readability.
+# Valid values: "EUR", "USD", "GBP", "JPY", "CHF", "AUD", "NZD", "CAD"
+# Kept as str (not Enum) so the set is open for future instruments.
+CurrencyCode = str
+
+
+@dataclass(frozen=True)
+class CurrencyExposure:
+    """Net and gross exposure to a single currency, measured in lots.
+
+    Attributes:
+        currency:    Currency code, e.g. "EUR".
+        net_lots:    Signed sum of lot exposure (+ = net long, - = net short).
+        gross_lots:  Absolute sum of lot exposure (always >= 0).
+    """
+
+    currency: CurrencyCode
+    net_lots: Decimal
+    gross_lots: Decimal
+
+    def __post_init__(self) -> None:
+        if self.gross_lots < Decimal("0"):
+            raise ValueError("CurrencyExposure.gross_lots must be >= 0")
+
+
+@dataclass(frozen=True)
+class PairCorrelation:
+    """Rolling Pearson correlation between two symbols at a point in time.
+
+    Attributes:
+        symbol_a:        First symbol (alphabetically earlier by convention).
+        symbol_b:        Second symbol.
+        correlation:     Signed Pearson r in [-1, 1].
+        abs_correlation: |correlation|, for threshold comparisons.
+        lookback_bars:   Window size requested.
+        overlap_bars:    Actual bars used (may be < lookback_bars).
+        returns_mode:    "log" | "pct" — how returns were computed.
+        timestamp_utc:   When this was computed.
+    """
+
+    symbol_a: str
+    symbol_b: str
+    correlation: float
+    abs_correlation: float
+    lookback_bars: int
+    overlap_bars: int
+    returns_mode: str
+    timestamp_utc: datetime
+
+    def __post_init__(self) -> None:
+        if not (-1.0 - 1e-9 <= self.correlation <= 1.0 + 1e-9):
+            raise ValueError(
+                f"PairCorrelation.correlation must be in [-1, 1], got {self.correlation}"
+            )
+        if self.overlap_bars < 2:
+            raise ValueError(
+                f"PairCorrelation.overlap_bars must be >= 2, got {self.overlap_bars}"
+            )
+
+
+@dataclass(frozen=True)
+class IntermarketSnapshot:
+    """Point-in-time state of cross-pair correlations, currency exposures, and risk clusters.
+
+    Produced by IntermarketEngine.evaluate() for observability and telemetry.
+    All contained types are immutable, so this snapshot is safe to pass
+    across thread/process boundaries without copying.
+    """
+
+    correlations: tuple[PairCorrelation, ...]
+    exposures: tuple[CurrencyExposure, ...]
+    risk_clusters: tuple[frozenset[str], ...]
+    timestamp_utc: datetime
+
+
+@dataclass(frozen=True)
+class IntermarketDecision:
+    """Output of IntermarketEngine for one candidate trade.
+
+    Semantics
+    ---------
+    - ``approved=False``  →  veto: do not open the trade (check ``reason``).
+    - ``approved=True``   →  proceed, scaling lot_size by ``risk_multiplier``.
+    - ``risk_multiplier = 1.0``  →  no size change.
+    - ``risk_multiplier < 1.0``  →  reduce lot_size proportionally.
+
+    Attributes:
+        approved:              Whether the trade is permitted.
+        risk_multiplier:       Decimal multiplier to apply to the base lot size.
+        correlated_positions:  Symbols of open positions that are correlated
+                               with the candidate (empty if none).
+        reason:                Human-readable explanation of the decision.
+        warnings:              Non-blocking observations (e.g. medium correlation).
+        exposure_delta_by_ccy: Currency exposure change if this trade is opened.
+                               Excluded from hash/compare (dict is mutable).
+        snapshot:              Full intermarket snapshot at decision time (optional).
+    """
+
+    approved: bool
+    risk_multiplier: Decimal
+    correlated_positions: tuple[str, ...]
+    reason: str
+    warnings: tuple[str, ...]
+    # dict excluded from hash/compare so frozen=True works correctly
+    exposure_delta_by_ccy: dict[CurrencyCode, Decimal] = field(
+        default_factory=dict, hash=False, compare=False
+    )
+    snapshot: IntermarketSnapshot | None = None
+
+    def __post_init__(self) -> None:
+        if self.risk_multiplier <= Decimal("0"):
+            raise ValueError(
+                f"IntermarketDecision.risk_multiplier must be > 0, got {self.risk_multiplier}"
+            )
+        if not self.reason:
+            raise ValueError("IntermarketDecision.reason cannot be empty")

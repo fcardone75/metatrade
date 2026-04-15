@@ -1,9 +1,11 @@
 .PHONY: help install test test-fast lint lint-fix typecheck clean \
-        train train-csv train-mt5 \
+        train train-csv train-mt5 train-mt5-mtf \
         backtest backtest-no-ml backtest-mt5 \
+        walk-forward walk-forward-no-ml walk-forward-mt5 \
         paper paper-no-ml \
         live live-confirmed live-no-ml \
-        kill reset-kill
+        run-dashboard \
+        kill kill-emergency reset-kill
 
 # ── Configurable defaults (override on the command line) ──────────────────────
 SYMBOL    ?= EURUSD
@@ -22,6 +24,7 @@ help:   ## Show this help
 	@echo "  Configurable variables (pass on command line):"
 	@echo "    SYMBOL=$(SYMBOL)  TIMEFRAME=$(TIMEFRAME)  BARS=$(BARS)"
 	@echo "    CSV_FILE=$(CSV_FILE)  MODEL_DIR=$(MODEL_DIR)  BALANCE=$(BALANCE)"
+	@echo "    FOLDS=$(FOLDS)  TRAIN_PCT=$(TRAIN_PCT)  TIMEFRAMES=$(TIMEFRAMES)"
 
 # ── Development ───────────────────────────────────────────────────────────────
 
@@ -84,6 +87,9 @@ train-mt5-mtf:   ## Train su M5, M15, M30 da MT5 (TIMEFRAMES= override, PROMOTE_
 
 # ── Backtesting ───────────────────────────────────────────────────────────────
 
+FOLDS     ?= 5
+TRAIN_PCT ?= 0.70
+
 backtest:   ## Backtest on CSV data  (CSV_FILE=... SYMBOL=... BALANCE=10000)
 	python scripts/backtest.py \
 		--source csv \
@@ -108,6 +114,41 @@ backtest-mt5:   ## Backtest fetching data live from MT5
 		--symbol $(SYMBOL) \
 		--timeframe $(TIMEFRAME) \
 		--bars $(BARS) \
+		--initial-balance $(BALANCE) \
+		--model-dir $(MODEL_DIR)
+
+# ── Walk-forward validation ───────────────────────────────────────────────────
+
+walk-forward:   ## Walk-forward validation on CSV  (CSV_FILE=... SYMBOL=... FOLDS=5)
+	python scripts/walk_forward_validation.py \
+		--source csv \
+		--file $(CSV_FILE) \
+		--symbol $(SYMBOL) \
+		--timeframe $(TIMEFRAME) \
+		--folds $(FOLDS) \
+		--train-pct $(TRAIN_PCT) \
+		--initial-balance $(BALANCE) \
+		--model-dir $(MODEL_DIR)
+
+walk-forward-no-ml:   ## Walk-forward validation — TA indicators only, no ML
+	python scripts/walk_forward_validation.py \
+		--source csv \
+		--file $(CSV_FILE) \
+		--symbol $(SYMBOL) \
+		--timeframe $(TIMEFRAME) \
+		--folds $(FOLDS) \
+		--train-pct $(TRAIN_PCT) \
+		--initial-balance $(BALANCE) \
+		--no-ml
+
+walk-forward-mt5:   ## Walk-forward validation fetching data live from MT5
+	python scripts/walk_forward_validation.py \
+		--source mt5 \
+		--symbol $(SYMBOL) \
+		--timeframe $(TIMEFRAME) \
+		--bars $(BARS) \
+		--folds $(FOLDS) \
+		--train-pct $(TRAIN_PCT) \
 		--initial-balance $(BALANCE) \
 		--model-dir $(MODEL_DIR)
 
@@ -152,12 +193,18 @@ live-no-ml:   ## Start LIVE trading with technical indicators only — REAL MONE
 		--no-ml \
 		--confirm
 
+# ── Dashboard ─────────────────────────────────────────────────────────────────
+
+run-dashboard:   ## Start FastAPI observability dashboard at http://localhost:8000
+	python scripts/run_dashboard.py
+
 # ── Kill switch ───────────────────────────────────────────────────────────────
 
-kill:   ## Activate kill switch — blocks new orders in running session
-	touch /tmp/metatrade_kill.lock
-	@echo "  Kill switch activated. New orders are blocked."
+kill:   ## Activate SESSION_GATE — blocks all new trades until reset (cross-platform)
+	python scripts/kill_switch_cli.py activate --level 2
+
+kill-emergency:   ## Activate EMERGENCY_HALT — close positions and stop system
+	python scripts/kill_switch_cli.py activate --level 3
 
 reset-kill:   ## Reset kill switch — re-enables order flow
-	rm -f /tmp/metatrade_kill.lock
-	@echo "  Kill switch reset. Order flow restored."
+	python scripts/kill_switch_cli.py reset

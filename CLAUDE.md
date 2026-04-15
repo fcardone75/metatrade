@@ -56,7 +56,7 @@ Posizioni aperte  ──►  ExitEngine.evaluate()  (exit_engine/engine.py)  [NU
 | `execution/` | OrderManager (idempotency guard, lifecycle tracking) |
 | `runner/` | BaseRunner, BacktestRunner, PaperRunner, LiveRunner, ModuleBuilder, RunnerConfig |
 | `ml/` | Feature engineering, Random Forest classifier, walk-forward validation, ModelRegistry |
-| `intermarket/` | Correlazioni, lead-lag, feature builder per strumenti correlati |
+| `intermarket/` | Correlazioni rolling, currency exposure netta, cluster di rischio, lead-lag, regime intermarket, feature builder per strumenti correlati, portfolio constraints cross-pair |
 | `alerting/` | TelegramAlerter (notifiche trade) |
 | `observability/` | FastAPI dashboard, TelemetryStore (SQLite), MT5RuntimeReader |
 | `exit_engine/` | **[NUOVO]** Motore uscite modulare con reputazione adattiva — vedi sezione dedicata |
@@ -64,6 +64,245 @@ Posizioni aperte  ──►  ExitEngine.evaluate()  (exit_engine/engine.py)  [NU
 ---
 
 ## Decisioni di design consolidate
+
+## Estensione Intermarket e Correlation-Aware Portfolio (NUOVO)
+
+### Obiettivo
+Il sistema non deve più ragionare solo sulla singola coppia/timeframe, ma anche sul **contesto cross-pair**. Nel forex, più segnali apparentemente distinti possono in realtà rappresentare la stessa scommessa macro su una valuta dominante (es. USD forte o debole). Per questo il motore deve stimare correlazioni, esposizione per valuta e rischio aggregato prima di autorizzare nuovi trade.
+
+### Principi operativi
+- Le correlazioni **non sono segnali di ingresso primari**: sono un filtro di portafoglio, sizing e de-duplicazione del rischio.
+- Le correlazioni devono essere **rolling e regime-aware**: mai hardcoded come verità fissa.
+- Il sistema deve distinguere tra:
+  - **correlazione tra coppie** (es. EURUSD ↔ GBPUSD)
+  - **esposizione per valuta** (es. long EURUSD = short USD + long EUR)
+  - **conflitto tra segnali** su coppie che condividono una o più valute.
+- Il layer intermarket deve stare **tra ConsensusEngine e RiskManager**, così da influenzare approvazione, veto e lot sizing senza sporcare la logica dei moduli tecnici.
+
+### Nuovo flusso decisionale
+```text
+Market Data Feed (MT5 / CSV)
+        │  Bar chiuse (OHLCV)
+        ▼
+   BaseRunner.process_bar()
+        │
+        ├─ 1. ITechnicalModule × N  →  AnalysisSignal[]
+        ├─ 2. AdaptiveThresholdManager  →  filtra segnali sotto soglia
+        ├─ 3. ConsensusEngine  →  ConsensusResult
+        ├─ 4. IntermarketEngine  →  IntermarketDecision
+        │      - rolling correlation matrix
+        │      - currency exposure map
+        │      - cluster risk / duplicate idea detection
+        │      - lead-lag / confirmation features
+        │
+        ├─ 5. RiskManager  →  RiskDecision finale
+        │      - approvazione / veto
+        │      - lot sizing corretto per rischio correlato
+        │
+        └─ 6. IBrokerAdapter  →  ordine inviato al broker
+```
+
+### Scopo dell'IntermarketEngine
+L'`IntermarketEngine` ha quattro responsabilità:
+
+1. **Correlation filter**  
+   Calcola una matrice di correlazione rolling tra le coppie abilitate, su rendimenti logaritmici o percentuali, per timeframe configurabile.
+
+2. **Currency exposure accounting**  
+   Traduce ogni posizione e ogni segnale in esposizione netta per valuta base/quote. Esempio:
+   - long `EURUSD` = `+EUR`, `-USD`
+   - short `GBPJPY` = `-GBP`, `+JPY`
+
+3. **Duplicate-risk detection**  
+   Se più trade rappresentano la stessa idea economica, il motore li accorpa come rischio condiviso. Esempio:
+   - long `EURUSD`
+   - long `GBPUSD`
+   - short `USDCHF`
+   possono essere trattati come esposizione concentrata contro USD.
+
+4. **Intermarket features**  
+   Espone feature opzionali ai moduli tecnici/ML, per esempio:
+   - forza relativa delle valute
+   - dispersione intra-basket
+   - divergenza tra coppie correlate
+   - lead-lag tra strumenti
+   - conferma cross-pair del regime corrente
+
+### Nuovi contratti di dominio
+Aggiungere i seguenti concetti al dominio:
+
+- `CurrencyCode` — enum/string value object (`EUR`, `USD`, `GBP`, `JPY`, `CHF`, `AUD`, `NZD`, `CAD`)
+- `CurrencyExposure` — esposizione netta per valuta e intensità normalizzata
+- `PairCorrelation` — correlazione rolling tra due simboli con finestra, timeframe e timestamp
+- `IntermarketSnapshot` — stato corrente di correlazioni, esposizioni, cluster di rischio e regime
+- `IntermarketDecision` — output dell'IntermarketEngine con:
+  - `approved: bool`
+  - `risk_multiplier: Decimal`
+  - `exposure_delta_by_ccy: dict[CurrencyCode, Decimal]`
+  - `correlated_positions: list[str]`
+  - `reason: str`
+  - `warnings: tuple[str, ...]`
+
+### Nuovi package / file
+```text
+src/metatrade/intermarket/
+├── __init__.py
+├── contracts.py          # CurrencyExposure, PairCorrelation, IntermarketSnapshot, IntermarketDecision
+├── config.py             # IntermarketConfig
+├── engine.py             # IntermarketEngine
+├── correlation.py        # RollingCorrelationService
+├── exposure.py           # CurrencyExposureService
+├── clustering.py         # RiskClusterBuilder
+├── lead_lag.py           # LeadLagAnalyzer (opzionale)
+├── regime.py             # IntermarketRegimeDetector (opzionale)
+└── persistence.py        # storage metriche intermarket
+
+tests/intermarket/
+├── __init__.py
+├── test_correlation.py
+├── test_exposure.py
+├── test_engine.py
+└── test_clustering.py
+```
+
+### Configurazione proposta (YAML)
+```yaml
+intermarket:
+  enabled: true
+  symbols:
+    - EURUSD
+    - GBPUSD
+    - USDCHF
+    - USDJPY
+    - AUDUSD
+    - NZDUSD
+    - USDCAD
+    - EURGBP
+    - EURJPY
+    - GBPJPY
+  correlation:
+    returns_mode: log               # log | pct
+    lookback_bars: 200
+    timeframe: M15
+    min_overlap_bars: 150
+    recalc_every_bars: 1
+    strong_threshold: 0.80
+    medium_threshold: 0.60
+  exposure:
+    max_net_exposure_per_currency: 2.0
+    max_gross_exposure_per_currency: 3.0
+    normalize_by_volatility: true
+  portfolio:
+    max_correlated_positions_per_cluster: 2
+    duplicate_idea_abs_corr: 0.75
+    block_opposite_signals_on_shared_base: true
+    block_new_trade_if_cluster_dd_exceeded: true
+    cluster_daily_drawdown_pct: 0.03
+  risk_adjustment:
+    scale_down_medium_corr: 0.75
+    scale_down_high_corr: 0.50
+    veto_if_same_idea_and_same_direction: true
+    veto_if_currency_exposure_limit_exceeded: true
+  features:
+    enable_relative_strength: true
+    enable_dispersion: true
+    enable_lead_lag: false
+    enable_regime_flags: true
+```
+
+### Regole decisionali iniziali
+Regole semplici, conservative e implementabili subito:
+
+1. **Veto per eccesso di esposizione valuta**  
+   Se il nuovo trade farebbe superare `max_net_exposure_per_currency`, il trade viene rifiutato.
+
+2. **Riduzione size per rischio correlato**  
+   Se il trade è correlato a posizioni già aperte:
+   - `abs(corr) >= 0.80` → applica `risk_multiplier = 0.50`
+   - `0.60 <= abs(corr) < 0.80` → applica `risk_multiplier = 0.75`
+   - sotto `0.60` → nessuna penalità
+
+3. **Blocca trade duplicati**  
+   Se una nuova operazione rappresenta la stessa idea economica di un trade già aperto e ha direzione coerente con esso, il sistema può aprire solo se non supera i limiti di cluster e di esposizione. In alternativa, veto diretto.
+
+4. **Blocca conflitti inutili**  
+   Se il sistema è già fortemente esposto long su una valuta, un trade nuovo che ne aumenta ancora il rischio deve essere scalato o rifiutato; se invece riduce rischio aggregato, può essere favorito.
+
+5. **Cluster drawdown protection**  
+   Le coppie fortemente correlate appartengono allo stesso cluster di rischio. Se il cluster supera il limite di drawdown giornaliero, nessun nuovo trade del cluster viene autorizzato.
+
+### Multi-pair trading: decisione architetturale
+Il sistema deve poter lavorare su **più coppie contemporaneamente**, ma non come insieme di strategie indipendenti e scollegate. L'architettura corretta è:
+
+- analisi per simbolo/timeframe
+- consensus locale per simbolo
+- controllo intermarket globale
+- risk manager globale di portafoglio
+- execution controllata da vincoli cross-pair
+
+Questa scelta permette di:
+- aumentare il numero di opportunità
+- migliorare la robustezza del sistema
+- sfruttare informazione cross-pair come contesto
+- evitare falsa diversificazione
+
+### Uso delle altre coppie come feature informative
+Ha senso analizzare anche i modelli delle altre coppie, ma in due modi distinti:
+
+1. **Come strumenti tradabili**  
+   Il sistema può generare segnali e aprire trade su più coppie abilitate.
+
+2. **Come strumenti informativi**  
+   Anche se una coppia non è tradata in quel momento, può contribuire come feature per capire regime, forza relativa e coerenza del movimento.
+
+Esempi:
+- `EURUSD` può essere rafforzato se `GBPUSD` e `AUDUSD` confermano debolezza USD.
+- un breakout su `USDJPY` può essere reso meno credibile se il basket USD non conferma.
+- una divergenza tra `EURUSD` e `GBPUSD` può segnalare rumore locale o rotazione di forza relativa.
+
+### Integrazione con il RiskManager
+Il `RiskManager` resta l'autorità finale sul trade, ma deve ricevere `IntermarketDecision` come input. In particolare:
+- `lot_size_final = lot_size_base × risk_multiplier`
+- se `approved = false` nell'IntermarketDecision, il trade viene vetoed anche se il consenso locale era BUY/SELL
+- il motivo del veto deve essere persistito in telemetry
+
+### Persistenza e osservabilità
+Persistire almeno:
+- matrice rolling di correlazione per finestra/timeframe
+- esposizione netta e lorda per valuta
+- cluster di rischio correnti
+- veto/riduzioni size causati dall'IntermarketEngine
+- PnL per cluster e per valuta
+
+Metriche dashboard consigliate:
+- heatmap correlazioni tra coppie abilitate
+- esposizione netta per valuta
+- trade bloccati per duplicate-risk
+- size ridotte per correlazione
+- drawdown per cluster di rischio
+
+### Trade-off e rischi noti (intermarket)
+| Area | Rischio | Mitigazione |
+|---|---|---|
+| Correlazioni rolling | Instabili tra regimi di mercato | Finestre rolling + recalc frequente + soglie conservative |
+| Troppe coppie | Complessità e overtrading | Universo iniziale ristretto (6-10 pair major) |
+| Falsa precisione | Correlazione non implica causalità | Usare come filtro rischio, non come segnale primario |
+| Dati asincroni | Barre non allineate tra simboli | Normalizer + min_overlap_bars |
+| Esposizione FX | Rischio reale nascosto da pair diverse | CurrencyExposureService centralizzato |
+
+### Raccomandazione di rollout
+Implementare in 3 fasi:
+
+1. **Phase 1 — Risk only**  
+   Correlazioni rolling + currency exposure + veto/riduzione size.
+
+2. **Phase 2 — Portfolio intelligence**  
+   Cluster di rischio, drawdown per cluster, dashboard e metriche.
+
+3. **Phase 3 — Signal enrichment**  
+   Feature intermarket per moduli tecnici e modello ML.
+
+Questa progressione riduce il rischio di overengineering e mantiene il comportamento del sistema spiegabile.
 
 ### Segnali e consensus
 - Ogni `ITechnicalModule.analyse()` restituisce un `AnalysisSignal` con `direction`, `confidence ∈ [0,1]` e `reason`.
@@ -283,6 +522,16 @@ RUNNER_CONSENSUS_THRESHOLD=0.60
 RUNNER_MAX_SPREAD_PIPS=3.0
 RUNNER_SIGNAL_COOLDOWN_BARS=3
 CONSENSUS_THRESHOLD=0.62
+INTERMARKET_ENABLED=true
+INTERMARKET_SYMBOLS=EURUSD,GBPUSD,USDCHF,USDJPY,AUDUSD,NZDUSD,USDCAD,EURGBP,EURJPY,GBPJPY
+INTERMARKET_CORR_LOOKBACK_BARS=200
+INTERMARKET_CORR_TIMEFRAME=M15
+INTERMARKET_STRONG_THRESHOLD=0.80
+INTERMARKET_MEDIUM_THRESHOLD=0.60
+INTERMARKET_MAX_NET_EXPOSURE_PER_CURRENCY=2.0
+INTERMARKET_MAX_GROSS_EXPOSURE_PER_CURRENCY=3.0
+INTERMARKET_MAX_CORRELATED_POSITIONS_PER_CLUSTER=2
+INTERMARKET_DUPLICATE_IDEA_ABS_CORR=0.75
 TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID
 ```
 
@@ -299,3 +548,5 @@ TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID
 | Dati mancanti | Feed interrotto → candele saltate | GapDetector in market_data, fallback a dati cached |
 | Concorrenza | Runner async + DB SQLite | WAL mode abilitato, single event loop |
 | Determinismo | Backtest riproducibile | PRNG con seed fisso (default 42) |
+| Correlazioni cross-pair | Falsa diversificazione e rischio duplicato | IntermarketEngine + exposure map + cluster limits |
+| Multi-pair execution | Overtrading e conflitti tra idee | Veto per duplicate-risk, risk multiplier e cap per cluster |

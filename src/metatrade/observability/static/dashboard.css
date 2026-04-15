@@ -448,3 +448,96 @@ th {
   margin: 0 0 0.75rem 0;
   line-height: 1.4;
 }
+
+/* ── Kill switch bar ─────────────────────────────────────────────────────── */
+
+.kill-switch-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  background: #0e1a2e;
+  border: 1px solid #1f2937;
+  border-radius: 8px;
+  padding: 10px 16px;
+  margin-bottom: 20px;
+}
+
+.kill-switch-bar.ks-active {
+  border-color: #dc2626;
+  background: #1a0e0e;
+}
+
+.ks-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.ks-label {
+  font-size: 0.82rem;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+}
+
+.ks-badge {
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 3px 9px;
+  border-radius: 4px;
+  background: #1f2937;
+  color: #94a3b8;
+}
+
+.ks-badge.ks-level-0 { background: #14532d; color: #86efac; }
+.ks-badge.ks-level-1 { background: #713f12; color: #fcd34d; }
+.ks-badge.ks-level-2 { background: #7c2d12; color: #fdba74; }
+.ks-badge.ks-level-3 { background: #7f1d1d; color: #fca5a5; }
+.ks-badge.ks-level-4 { background: #450a0a; color: #ef4444; }
+
+.ks-reason {
+  font-size: 0.78rem;
+  max-width: 260px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ks-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+
+.btn-ks {
+  padding: 5px 12px;
+  border: 1px solid #374151;
+  border-radius: 5px;
+  background: #1f2937;
+  color: #cbd5e1;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  letter-spacing: 0.04em;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.btn-ks:hover { background: #374151; border-color: #4b5563; }
+
+.btn-ks-danger {
+  border-color: #7f1d1d;
+  color: #fca5a5;
+}
+
+.btn-ks-danger:hover { background: #7f1d1d; border-color: #991b1b; }
+
+.btn-ks-reset {
+  border-color: #14532d;
+  color: #86efac;
+}
+
+.btn-ks-reset:hover { background: #14532d; border-color: #166534; }

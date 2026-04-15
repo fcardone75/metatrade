@@ -458,6 +458,63 @@ async function refreshReputations() {
   });
 }
 
+// ── Kill switch ────────────────────────────────────────────────────────────
+
+const KS_LEVEL_LABELS = {
+  0: "NONE",
+  1: "TRADE GATE",
+  2: "SESSION GATE",
+  3: "EMERGENCY HALT",
+  4: "HARD KILL",
+};
+
+async function refreshKillSwitch() {
+  const data = await getJson("/api/kill-switch");
+  const level = Number(data.level ?? 0);
+  const badge = document.getElementById("ks-badge");
+  const bar = document.getElementById("kill-switch-bar");
+  const reasonEl = document.getElementById("ks-reason");
+
+  badge.textContent = KS_LEVEL_LABELS[level] ?? "UNKNOWN";
+  badge.className = `badge ks-badge ks-level-${level}`;
+  bar.classList.toggle("ks-active", level > 0);
+
+  if (level > 0 && data.reason) {
+    reasonEl.textContent = `${escapeHtml(data.reason)} (${escapeHtml(data.activated_by || "")})`;
+  } else {
+    reasonEl.textContent = "Trading attivo";
+  }
+}
+
+function wireKillSwitchButtons() {
+  document.querySelectorAll(".btn-ks[data-level]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const level = Number(btn.dataset.level);
+      const label = btn.dataset.label || btn.textContent.trim();
+      if (level >= 3) {
+        const ok = confirm(
+          `Sei sicuro di voler attivare ${label}?\n\nQuesto blocchera' il sistema. Premi OK per confermare.`
+        );
+        if (!ok) return;
+      }
+      const reason = `${label} attivato dalla dashboard`;
+      await fetch("/api/kill-switch/activate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ level, reason }),
+      });
+      await refreshKillSwitch();
+    });
+  });
+
+  document.getElementById("ks-reset-btn").addEventListener("click", async () => {
+    await fetch("/api/kill-switch/reset", { method: "POST" });
+    await refreshKillSwitch();
+  });
+}
+
+wireKillSwitchButtons();
+
 async function refreshAll() {
   try {
     await Promise.all([
@@ -467,6 +524,7 @@ async function refreshAll() {
       refreshEquityCurve(),
       refreshThresholds(),
       refreshReputations(),
+      refreshKillSwitch(),
     ]);
     setText("last-refresh", `Aggiornato ${new Date().toLocaleTimeString()}`);
   } catch (error) {

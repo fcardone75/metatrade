@@ -24,7 +24,7 @@ from metatrade.consensus.market_accuracy_tracker import MarketAccuracyTracker
 from metatrade.core.contracts.account import AccountState
 from metatrade.core.contracts.market import Bar
 from metatrade.core.contracts.signal import AnalysisSignal
-from metatrade.core.contracts.risk import RiskDecision
+from metatrade.core.contracts.risk import RiskDecision, RiskVeto
 from metatrade.core.enums import ConsensusMode, SignalDirection, OrderSide, RunMode
 from metatrade.alerting.telegram_alerter import TelegramAlerter
 from metatrade.observability.store import TelemetryStore
@@ -70,6 +70,7 @@ class BaseRunner:
         telemetry: TelemetryStore | None = None,
         session_id: str | None = None,
         timeframe: str | None = None,
+        intermarket_engine: object | None = None,  # IntermarketEngine | None
     ) -> None:
         """
         Args:
@@ -86,6 +87,11 @@ class BaseRunner:
                                   Must match the ML labelling horizon (default 5).
             alerter:              Optional TelegramAlerter for operational alerts.
                                   None (default) = silent, no alerts sent.
+            intermarket_engine:   Optional ``IntermarketEngine`` for cross-pair
+                                  correlation and exposure control.  When set,
+                                  it is evaluated between the consensus step and
+                                  the risk manager.  ``None`` = disabled
+                                  (default, fully backward-compatible).
         """
         self._config = config
         self._modules = modules
@@ -147,6 +153,10 @@ class BaseRunner:
         self._session_id = session_id
         self._timeframe = timeframe
 
+        # ── Intermarket engine (optional) ──────────────────────────────────────
+        # Type hint kept as object to avoid hard import at module level.
+        self._intermarket = intermarket_engine
+
     @property
     def stats(self) -> RunStats:
         return self._stats
@@ -168,6 +178,46 @@ class BaseRunner:
     def get_module_weight(self, module_id: str) -> float | None:
         """Current dynamic weight for a module (None if auto_weight=False)."""
         return self._consensus.get_module_weight(module_id)
+
+    # ── Kill switch DB sync ───────────────────────────────────────────────────
+
+    def _sync_kill_switch_from_db(self) -> None:
+        """Read the shared kill_switch_command from SQLite and sync in-memory state.
+
+        Called once per bar so that a dashboard (or CLI) signal is picked up
+        within one candle.  If level > 0, escalates the in-memory kill switch;
+        if level == 0 and the switch is active, resets it.
+        """
+        if self._telemetry is None:
+            return
+        try:
+            cmd = self._telemetry.read_kill_command()
+        except Exception as exc:
+            log.warning("kill_switch_db_sync_failed", error=str(exc))
+            return
+
+        level = int(cmd.get("level", 0))
+        reason = str(cmd.get("reason", "") or "Kill switch activated via dashboard")
+        activated_by = str(cmd.get("activated_by", "") or "dashboard")
+
+        from metatrade.core.enums import KillSwitchLevel
+        if level > 0:
+            try:
+                ks_level = KillSwitchLevel(level)
+            except ValueError:
+                return
+            if ks_level > self._risk.kill_switch.level:
+                self._risk.kill_switch.activate(
+                    ks_level,
+                    reason=reason,
+                    activated_by=activated_by,
+                )
+        elif self._risk.kill_switch.is_active():
+            try:
+                self._risk.kill_switch.reset(activated_by=activated_by)
+            except Exception:
+                # HARD_KILL requires force_reset; that must be done deliberately
+                pass
 
     # ── Pipeline ──────────────────────────────────────────────────────────────
 
@@ -200,6 +250,9 @@ class BaseRunner:
         """
         if timestamp_utc is None:
             timestamp_utc = datetime.now(timezone.utc)
+
+        # Sync kill switch from shared DB (cross-process signal from dashboard).
+        self._sync_kill_switch_from_db()
 
         self._stats.bars_processed += 1
 
@@ -324,7 +377,66 @@ class BaseRunner:
         else:
             return None
 
-        # ── Step 3b: Drawdown-recovery tracking ───────────────────────────────
+        # ── Step 3b: Intermarket evaluation ──────────────────────────────────
+        # Inserted between consensus and risk.  When no engine is configured
+        # (the common single-symbol case), this block is a no-op.
+        im_risk_mult: Decimal | None = None
+        if self._intermarket is not None:
+            try:
+                from metatrade.intermarket.engine import IntermarketEngine
+                from metatrade.core.contracts.position import Position as _Position
+                if isinstance(self._intermarket, IntermarketEngine):
+                    # Collect open positions from the broker/paper state if
+                    # available.  BaseRunner does not own positions directly,
+                    # so we pass an empty list; subclasses may override via
+                    # _get_open_positions() if they need richer integration.
+                    open_positions: list[_Position] = self._get_open_positions()
+                    # Estimate a nominal lot size for exposure-delta computation.
+                    # We use 0.01 lots as a placeholder — actual sizing happens
+                    # in the risk manager; the intermarket engine only needs the
+                    # direction and a representative magnitude.
+                    _nominal_lot = Decimal("0.01")
+                    im_decision = self._intermarket.evaluate(
+                        symbol=self._config.symbol,
+                        side=side,
+                        lot_size=_nominal_lot,
+                        open_positions=open_positions,
+                        timestamp_utc=timestamp_utc,
+                        session_id=self._session_id,
+                    )
+                    if not im_decision.approved:
+                        self._stats.trades_vetoed += 1
+                        log.info(
+                            "intermarket_veto",
+                            symbol=self._config.symbol,
+                            side=side.value,
+                            reason=im_decision.reason,
+                        )
+                        vetoed = RiskDecision(
+                            approved=False,
+                            symbol=self._config.symbol,
+                            side=side,
+                            timestamp_utc=timestamp_utc,
+                            veto=RiskVeto(
+                                reason=im_decision.reason,
+                                veto_code="INTERMARKET_VETO",
+                                timestamp_utc=timestamp_utc,
+                                context={
+                                    "correlated_positions": list(
+                                        im_decision.correlated_positions
+                                    ),
+                                    "warnings": list(im_decision.warnings),
+                                },
+                            ),
+                        )
+                        self._record_decision(signals, consensus_result, vetoed, run_mode)
+                        return vetoed
+                    im_risk_mult = im_decision.risk_multiplier
+            except Exception as exc:
+                # Never let intermarket evaluation break the trading pipeline.
+                log.warning("intermarket_eval_error", error=str(exc))
+
+        # ── Step 3c: Drawdown-recovery tracking ───────────────────────────────
         # Keep a running peak-equity and detect when we're in recovery mode.
         if account_equity > self._peak_equity:
             self._peak_equity = account_equity
@@ -361,9 +473,10 @@ class BaseRunner:
             timestamp_utc=timestamp_utc,
             spread_pips=current_spread_pips,
             current_atr=current_atr,
+            intermarket_risk_mult=im_risk_mult,
         )
 
-        # ── Step 4b: Apply drawdown-recovery lot-size reduction ───────────────
+        # ── Step 4b: Apply drawdown-recovery lot-size reduction ──────────────
         if decision.approved and in_recovery and decision.position_size is not None:
             mult = Decimal(str(self._config.drawdown_recovery_risk_mult))
             scaled_ps = replace(
@@ -435,6 +548,19 @@ class BaseRunner:
             )
         except Exception as exc:
             log.warning("decision_telemetry_failed: %s", exc)
+
+    def _get_open_positions(self) -> list:
+        """Return currently open positions for intermarket exposure accounting.
+
+        The base implementation returns an empty list, which means the
+        intermarket engine operates with no existing-position context —
+        only the current candidate trade's currency delta is evaluated.
+
+        Subclasses that maintain a position registry (e.g. PaperRunner)
+        can override this to return their actual open-position list.
+        This is a deliberate extension point, not a required override.
+        """
+        return []
 
     def _estimate_sl(
         self,

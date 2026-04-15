@@ -42,6 +42,21 @@
       </div>
     </header>
 
+    <section class="kill-switch-bar" id="kill-switch-bar">
+      <div class="ks-status">
+        <span class="ks-label">Kill Switch</span>
+        <span class="badge ks-badge" id="ks-badge">—</span>
+        <span class="ks-reason muted" id="ks-reason"></span>
+      </div>
+      <div class="ks-actions">
+        <button class="btn-ks" data-level="1" data-label="TRADE GATE" title="Blocca solo il prossimo singolo trade">TRADE GATE</button>
+        <button class="btn-ks" data-level="2" data-label="SESSION GATE" title="Blocca tutti i nuovi trade fino al reset">SESSION GATE</button>
+        <button class="btn-ks btn-ks-danger" data-level="3" data-label="EMERGENCY HALT" title="Chiude posizioni e ferma il sistema">EMERGENCY HALT</button>
+        <button class="btn-ks btn-ks-danger" data-level="4" data-label="HARD KILL" title="Override manuale — richiede force reset">HARD KILL</button>
+        <button class="btn-ks btn-ks-reset" id="ks-reset-btn" title="Riattiva il trading">RESET</button>
+      </div>
+    </section>
+
     <section class="grid kpis">
       <article class="card"><h2>Balance</h2><p id="kpi-balance">-</p></article>
       <article class="card"><h2>Equity</h2><p id="kpi-equity">-</p></article>

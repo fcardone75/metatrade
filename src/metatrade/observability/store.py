@@ -166,6 +166,16 @@ CREATE TABLE IF NOT EXISTS rule_reputations (
 )
 """
 
+CREATE_KILL_SWITCH_COMMAND_TABLE = """
+CREATE TABLE IF NOT EXISTS kill_switch_command (
+    id           INTEGER PRIMARY KEY DEFAULT 1,
+    level        INTEGER NOT NULL DEFAULT 0,
+    reason       TEXT NOT NULL DEFAULT '',
+    activated_by TEXT NOT NULL DEFAULT '',
+    updated_at   REAL NOT NULL DEFAULT 0
+)
+"""
+
 CREATE_SESSION_IDX = "CREATE INDEX IF NOT EXISTS idx_dashboard_sessions_started_at ON dashboard_sessions(started_at DESC)"
 CREATE_ACCOUNT_IDX = "CREATE INDEX IF NOT EXISTS idx_dashboard_account_ts ON dashboard_account_snapshots(ts DESC)"
 CREATE_DECISION_IDX = "CREATE INDEX IF NOT EXISTS idx_dashboard_decisions_ts ON dashboard_decisions(ts DESC)"
@@ -232,6 +242,7 @@ class TelemetryStore:
             CREATE_MODEL_ARTIFACTS_TABLE,
             CREATE_MODULE_THRESHOLDS_TABLE,
             CREATE_RULE_REPUTATIONS_TABLE,
+            CREATE_KILL_SWITCH_COMMAND_TABLE,
             CREATE_SESSION_IDX,
             CREATE_ACCOUNT_IDX,
             CREATE_DECISION_IDX,
@@ -721,6 +732,45 @@ class TelemetryStore:
             "SELECT * FROM rule_reputations ORDER BY rule_id ASC, symbol ASC"
         ).fetchall()
         return [dict(row) for row in rows]
+
+    # ── Kill switch command (cross-process IPC via SQLite) ────────────────────
+
+    def write_kill_command(
+        self,
+        level: int,
+        reason: str,
+        activated_by: str = "system",
+    ) -> None:
+        """Write a kill switch command that the runner will pick up next bar.
+
+        level=0 means reset (re-enable trading).
+        level 1-4 maps to KillSwitchLevel values.
+        """
+        assert self._conn is not None
+        now = _utc_now().timestamp()
+        self._conn.execute(
+            """
+            INSERT INTO kill_switch_command (id, level, reason, activated_by, updated_at)
+            VALUES (1, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                level        = excluded.level,
+                reason       = excluded.reason,
+                activated_by = excluded.activated_by,
+                updated_at   = excluded.updated_at
+            """,
+            (level, reason, activated_by, now),
+        )
+        self._conn.commit()
+
+    def read_kill_command(self) -> dict[str, Any]:
+        """Return the current kill switch command (level 0 = no active command)."""
+        assert self._conn is not None
+        row = self._conn.execute(
+            "SELECT level, reason, activated_by, updated_at FROM kill_switch_command WHERE id = 1"
+        ).fetchone()
+        if row is None:
+            return {"level": 0, "reason": "", "activated_by": "", "updated_at": 0.0}
+        return dict(row)
 
     def _extract_model_version(self, signals: list[AnalysisSignal]) -> str | None:
         for signal in signals:

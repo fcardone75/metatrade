@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -223,6 +223,33 @@ def create_app() -> FastAPI:
           last_eval_ts   — Unix timestamp of the last update (0 if never)
         """
         return telemetry.list_rule_reputations()
+
+    @app.get("/api/kill-switch")
+    async def kill_switch_status() -> dict[str, Any]:
+        """Return the current kill switch command state.
+
+        level 0 = no active command (trading enabled).
+        level 1 = TRADE_GATE, 2 = SESSION_GATE, 3 = EMERGENCY_HALT, 4 = HARD_KILL.
+        """
+        return telemetry.read_kill_command()
+
+    @app.post("/api/kill-switch/activate")
+    async def kill_switch_activate(
+        level: int = Body(..., ge=1, le=4),
+        reason: str = Body(default="Activated from dashboard"),
+    ) -> dict[str, Any]:
+        """Activate the kill switch at the requested level.
+
+        The runner will pick this up within one bar.
+        """
+        telemetry.write_kill_command(level=level, reason=reason, activated_by="dashboard")
+        return telemetry.read_kill_command()
+
+    @app.post("/api/kill-switch/reset")
+    async def kill_switch_reset() -> dict[str, Any]:
+        """Reset the kill switch — re-enables trading on the next bar."""
+        telemetry.write_kill_command(level=0, reason="Reset from dashboard", activated_by="dashboard")
+        return telemetry.read_kill_command()
 
     @app.get("/api/bars")
     async def bars(

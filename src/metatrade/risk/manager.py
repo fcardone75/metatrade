@@ -64,19 +64,23 @@ class RiskManager:
         spread_pips: float | None = None,
         risk_pct: float | None = None,
         current_atr: Decimal | None = None,
+        intermarket_risk_mult: Decimal | None = None,
     ) -> RiskDecision:
         """Evaluate whether a trade is permissible and size it.
 
         Args:
-            symbol:        Forex pair (e.g. "EURUSD").
-            side:          BUY or SELL.
-            entry_price:   Intended entry price.
-            sl_price:      Stop-loss price.
-            account:       Current account snapshot.
-            timestamp_utc: Evaluation timestamp.
-            spread_pips:   Current spread in pips for spread check (optional).
-            risk_pct:      Override config.max_risk_pct for this trade (optional).
-            current_atr:   Current ATR in price units for vol-scaled sizing (optional).
+            symbol:                Forex pair (e.g. "EURUSD").
+            side:                  BUY or SELL.
+            entry_price:           Intended entry price.
+            sl_price:              Stop-loss price.
+            account:               Current account snapshot.
+            timestamp_utc:         Evaluation timestamp.
+            spread_pips:           Current spread in pips for spread check (optional).
+            risk_pct:              Override config.max_risk_pct for this trade (optional).
+            current_atr:           Current ATR in price units for vol-scaled sizing (optional).
+            intermarket_risk_mult: Lot-size multiplier from IntermarketEngine (optional).
+                                   Applied after normal sizing; values < 1.0 reduce the lot size.
+                                   Must be > 0.  ``None`` or ``Decimal("1")`` = no effect.
 
         Returns:
             RiskDecision — approved with PositionSizeResult or vetoed with RiskVeto.
@@ -122,6 +126,19 @@ class RiskManager:
                     timestamp_utc=timestamp_utc,
                 ),
             )
+
+        # 4. Apply intermarket risk multiplier (lot-size scaling from IntermarketEngine)
+        if intermarket_risk_mult is not None and intermarket_risk_mult != Decimal("1"):
+            from dataclasses import replace as _replace
+            scaled_lot = size.lot_size * intermarket_risk_mult
+            if scaled_lot > Decimal("0"):
+                size = _replace(size, lot_size=scaled_lot)
+                log.info(
+                    "intermarket_lot_scaled",
+                    symbol=symbol,
+                    multiplier=str(intermarket_risk_mult),
+                    lot_size_final=str(size.lot_size),
+                )
 
         log.info(
             "risk_approved",
