@@ -263,6 +263,27 @@ def create_app() -> FastAPI:
     async def mt5_positions() -> list[dict[str, Any]]:
         return mt5.get_open_positions()
 
+    @app.get("/api/mt5/history")
+    async def mt5_history(limit: int = Query(default=50, ge=1, le=500)) -> list[dict[str, Any]]:
+        """Closed deals from MT5 history (last 90 days)."""
+        return mt5.get_closed_deals(limit=limit)
+
+    @app.post("/api/mt5/close-position")
+    async def mt5_close_position(
+        request: Request,
+        ticket: int = Body(..., description="MT5 position ticket to close"),
+    ) -> dict[str, Any]:
+        """Close an open MT5 position by ticket (market order, opposite direction)."""
+        if not client_is_local(request):
+            raise HTTPException(status_code=403, detail="Chiusura posizione consentita solo da localhost")
+        result = mt5.close_position(ticket)
+        if not result.get("ok"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Chiusura fallita: retcode={result.get('retcode')} {result.get('comment')}",
+            )
+        return result
+
     @app.get("/api/module-thresholds")
     async def module_thresholds() -> list[dict[str, Any]]:
         """Return the current adaptive threshold for every tracked module.

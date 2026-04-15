@@ -393,12 +393,29 @@ async function refreshOverview() {
   window.__dpState = ov.decision_progress || null;
   tickDecisionProgress();
 
-  setText("kpi-balance",   fmt2(mt5.balance));
-  setText("kpi-equity",    fmt2(mt5.equity));
-  setText("kpi-profit",    fmt2(mt5.profit));
-  setText("kpi-positions", String((ov.mt5_positions || []).length));
-  setText("kpi-model",     model.version || "—");
-  setText("kpi-training",  tr.model_version || tr.status || "—");
+  // Balance from MT5 live account (null when MT5 not connected)
+  const balanceVal = mt5.balance != null ? fmt2(mt5.balance) + " " + (mt5.currency || "") : "—";
+  setText("kpi-balance",      balanceVal);
+  setText("kpi-equity",       mt5.equity   != null ? fmt2(mt5.equity)      + " " + (mt5.currency || "") : "—");
+  setText("kpi-margin-free",  mt5.margin_free != null ? fmt2(mt5.margin_free) + " " + (mt5.currency || "") : "—");
+  setText("kpi-profit",       mt5.profit   != null ? fmt2(mt5.profit)      + " " + (mt5.currency || "") : "—");
+  setText("kpi-positions",    String((ov.mt5_positions || []).length));
+  setText("kpi-model",        model.version || "—");
+  setText("kpi-training",     tr.model_version || tr.status || "—");
+
+  // Source label: show MT5 login/server so user knows it's live
+  const srcEl = document.getElementById("kpi-balance-source");
+  if (srcEl) {
+    srcEl.textContent = mt5.login ? `#${mt5.login}` : (mt5.balance != null ? "MT5" : "non connesso");
+  }
+  const infoEl = document.getElementById("kpi-account-info");
+  if (infoEl) {
+    if (mt5.login) {
+      infoEl.textContent = `MT5 live · account #${mt5.login} · ${mt5.server || ""} · ${mt5.company || ""}`;
+    } else {
+      infoEl.textContent = "MT5 non connesso — balance non disponibile";
+    }
+  }
 
   const activeSession = sessions[0] || null;
   if (activeSession) {
@@ -431,7 +448,38 @@ async function refreshOverview() {
       <td class="${+row.profit >= 0 ? "positive" : "negative"}">${fmt2(row.profit)}</td>
       <td class="muted">${fmt2(row.sl)}</td>
       <td class="muted">${fmt2(row.tp)}</td>
+      <td><button class="btn-close-pos" data-ticket="${row.ticket}" title="Chiudi posizione a mercato">✕ Chiudi</button></td>
     </tr>`);
+
+  // Wire up close buttons
+  document.querySelectorAll(".btn-close-pos").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const ticket = Number(btn.dataset.ticket);
+      if (!confirm(`Chiudere la posizione #${ticket} a mercato?`)) return;
+      btn.disabled = true;
+      btn.textContent = "…";
+      try {
+        const resp = await fetch("/api/mt5/close-position", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ticket }),
+        });
+        if (resp.ok) {
+          btn.textContent = "✓";
+          setTimeout(() => refreshOverview(), 1000);
+        } else {
+          const err = await resp.json().catch(() => ({}));
+          alert("Errore chiusura: " + (err.detail || resp.status));
+          btn.disabled = false;
+          btn.textContent = "✕ Chiudi";
+        }
+      } catch (e) {
+        alert("Errore di rete: " + e);
+        btn.disabled = false;
+        btn.textContent = "✕ Chiudi";
+      }
+    });
+  });
 
   // Positions badge
   const ordBadge = document.getElementById("acc-orders-badge");
@@ -579,6 +627,50 @@ async function refreshReputations() {
     </tr>`);
 }
 
+async function refreshClosedDeals() {
+  const rows = await getJson("/api/mt5/history?limit=50");
+  const tbody = document.querySelector("#closed-deals-table tbody");
+  const msgEl = document.getElementById("closed-deals-msg");
+  if (!tbody) return;
+
+  if (!rows || rows.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="9" class="muted tc">Nessun ordine chiuso trovato</td></tr>';
+    return;
+  }
+
+  if (msgEl) msgEl.style.display = "none";
+  let totalPnl = 0;
+  tbody.innerHTML = rows.map(row => {
+    const pnl = row.profit ?? 0;
+    totalPnl += pnl;
+    const pnlClass = pnl >= 0 ? "positive" : "negative";
+    const side = row.type === 0 ? "BUY" : "SELL";
+    const dt = row.time ? new Date(row.time * 1000).toLocaleString("it-IT", {
+      day: "2-digit", month: "2-digit", year: "2-digit",
+      hour: "2-digit", minute: "2-digit"
+    }) : "—";
+    return `<tr>
+      <td class="muted" style="white-space:nowrap;font-size:0.75rem">${dt}</td>
+      <td><strong>${escHtml(row.symbol ?? "—")}</strong></td>
+      <td>${dirBadge(side)}</td>
+      <td>${fmt2(row.volume)}</td>
+      <td>${fmt2(row.price)}</td>
+      <td class="${pnlClass}">${fmt2(pnl)}</td>
+      <td class="muted">${row.swap ? fmt2(row.swap) : "—"}</td>
+      <td class="muted">${row.commission ? fmt2(row.commission) : "—"}</td>
+      <td class="muted" style="font-size:0.75rem">${escHtml(row.comment ?? "")}</td>
+    </tr>`;
+  }).join("");
+
+  // Summary footer
+  const footClass = totalPnl >= 0 ? "positive" : "negative";
+  tbody.innerHTML += `<tr style="border-top:1px solid #334155;font-weight:600">
+    <td colspan="5" class="muted" style="text-align:right">Totale PnL</td>
+    <td class="${footClass}">${fmt2(totalPnl)}</td>
+    <td colspan="3"></td>
+  </tr>`;
+}
+
 // ── Main refresh ─────────────────────────────────────────────────────────────
 async function refreshAll() {
   try {
@@ -586,6 +678,7 @@ async function refreshAll() {
     await Promise.all([
       refreshDecisions(),
       refreshOrders(),
+      refreshClosedDeals(),
       refreshEquityCurve(),
       refreshThresholds(),
       refreshReputations(),

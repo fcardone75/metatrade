@@ -87,3 +87,99 @@ class MT5RuntimeReader:
             return result
         finally:
             mt5.shutdown()
+
+    def get_closed_deals(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Return recent closed deals from MT5 history (last 90 days, up to *limit* entries)."""
+        from datetime import timedelta
+
+        mt5 = self._initialize()
+        if mt5 is None:
+            return []
+        try:
+            date_to = datetime.now(timezone.utc)
+            date_from = date_to - timedelta(days=90)
+            deals = mt5.history_deals_get(date_from, date_to)
+            if deals is None:
+                return []
+            # Keep only DEAL_ENTRY_OUT (2) = closing deals, skip in/inout if desired
+            # type 0=buy, 1=sell; entry 0=in, 1=out, 2=inout
+            result: list[dict[str, Any]] = []
+            for d in deals:
+                entry = getattr(d, "entry", None)
+                if entry not in (1, 2):   # 1=OUT, 2=INOUT
+                    continue
+                result.append({
+                    "ticket":      getattr(d, "ticket", None),
+                    "order":       getattr(d, "order", None),
+                    "position_id": getattr(d, "position_id", None),
+                    "symbol":      getattr(d, "symbol", None),
+                    "type":        getattr(d, "type", None),   # 0=buy, 1=sell
+                    "volume":      getattr(d, "volume", None),
+                    "price":       getattr(d, "price", None),  # close price
+                    "profit":      getattr(d, "profit", None),
+                    "swap":        getattr(d, "swap", None),
+                    "commission":  getattr(d, "commission", None),
+                    "comment":     getattr(d, "comment", None),
+                    "time":        getattr(d, "time", None),   # Unix timestamp
+                })
+            # Most recent first
+            result.sort(key=lambda x: x["time"] or 0, reverse=True)
+            return result[:limit]
+        finally:
+            mt5.shutdown()
+
+    def close_position(self, ticket: int) -> dict[str, Any]:
+        """Close an open position by ticket using a market order in the opposite direction.
+
+        Returns a dict with keys: ok (bool), retcode (int), comment (str).
+        """
+        mt5 = self._initialize()
+        if mt5 is None:
+            return {"ok": False, "retcode": -1, "comment": "MT5 not available"}
+        try:
+            positions = mt5.positions_get(ticket=ticket)
+            if not positions:
+                return {"ok": False, "retcode": -1, "comment": f"Position {ticket} not found"}
+            pos = positions[0]
+            symbol  = pos.symbol
+            volume  = pos.volume
+            pos_type = pos.type  # 0=BUY, 1=SELL
+
+            # Close: opposite direction
+            # ORDER_TYPE_SELL=1 to close a BUY, ORDER_TYPE_BUY=0 to close a SELL
+            close_type = 1 if pos_type == 0 else 0
+
+            tick = mt5.symbol_info_tick(symbol)
+            if tick is None:
+                return {"ok": False, "retcode": -1, "comment": f"No tick for {symbol}"}
+            price = tick.bid if close_type == 1 else tick.ask
+
+            # Detect supported filling mode
+            filling = 2  # RETURN fallback
+            info = mt5.symbol_info(symbol)
+            if info is not None:
+                flags = info.filling_mode
+                if flags & 1:
+                    filling = 0   # FOK
+                elif flags & 2:
+                    filling = 1   # IOC
+
+            request = {
+                "action":       1,        # TRADE_ACTION_DEAL
+                "symbol":       symbol,
+                "volume":       volume,
+                "type":         close_type,
+                "position":     ticket,
+                "price":        price,
+                "deviation":    20,
+                "type_filling": filling,
+                "comment":      "dashboard close",
+            }
+            result = mt5.order_send(request)
+            if result is None:
+                err = mt5.last_error()
+                return {"ok": False, "retcode": -1, "comment": str(err)}
+            ok = result.retcode in (10009, 10010)
+            return {"ok": ok, "retcode": result.retcode, "comment": result.comment}
+        finally:
+            mt5.shutdown()

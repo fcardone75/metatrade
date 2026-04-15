@@ -76,12 +76,16 @@
       <!-- KPI row -->
       <section class="kpi-row">
         <div class="kpi-card">
-          <div class="kpi-label">Balance</div>
+          <div class="kpi-label">Balance <span class="kpi-source muted" id="kpi-balance-source"></span></div>
           <div class="kpi-value" id="kpi-balance">—</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-label">Equity</div>
           <div class="kpi-value" id="kpi-equity">—</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Free margin</div>
+          <div class="kpi-value" id="kpi-margin-free">—</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-label">PnL aperto</div>
@@ -100,6 +104,7 @@
           <div class="kpi-value kpi-small" id="kpi-training">—</div>
         </div>
       </section>
+      <p class="kpi-account-info muted" id="kpi-account-info"></p>
 
       <!-- ── ACCORDION SECTIONS ── -->
 
@@ -117,9 +122,9 @@
               <div class="table-wrap">
                 <table id="positions-table">
                   <thead>
-                    <tr><th>Symbol</th><th>Tipo</th><th>Lotti</th><th>Open</th><th>Corrente</th><th>PnL</th><th>SL</th><th>TP</th></tr>
+                    <tr><th>Symbol</th><th>Tipo</th><th>Lotti</th><th>Open</th><th>Corrente</th><th>PnL</th><th>SL</th><th>TP</th><th></th></tr>
                   </thead>
-                  <tbody><tr><td colspan="8" class="muted tc">Nessuna posizione aperta</td></tr></tbody>
+                  <tbody><tr><td colspan="9" class="muted tc">Nessuna posizione aperta</td></tr></tbody>
                 </table>
               </div>
             </div>
@@ -133,6 +138,18 @@
                   <tbody><tr><td colspan="7" class="muted tc">Nessun ordine registrato</td></tr></tbody>
                 </table>
               </div>
+            </div>
+          </div>
+          <div class="mt16">
+            <h3 class="acc-subtitle">Ordini chiusi MT5 <span class="acc-subtitle-hint muted">(ultimi 50 · 90 giorni)</span></h3>
+            <div id="closed-deals-msg" class="muted" style="display:none"></div>
+            <div class="table-wrap">
+              <table id="closed-deals-table">
+                <thead>
+                  <tr><th>Data/Ora</th><th>Symbol</th><th>Tipo</th><th>Lotti</th><th>Prezzo chiusura</th><th>PnL</th><th>Swap</th><th>Commissione</th><th>Commento</th></tr>
+                </thead>
+                <tbody><tr><td colspan="9" class="muted tc">Caricamento…</td></tr></tbody>
+              </table>
             </div>
           </div>
         </div>

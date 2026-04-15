@@ -216,12 +216,12 @@ code {
 /* ── KPI row ─────────────────────────────────────────────────────────────── */
 .kpi-row {
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
+  grid-template-columns: repeat(7, 1fr);
   gap: 10px;
 }
 
-@media (max-width: 1200px) { .kpi-row { grid-template-columns: repeat(3, 1fr); } }
-@media (max-width: 700px)  { .kpi-row { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 1400px) { .kpi-row { grid-template-columns: repeat(4, 1fr); } }
+@media (max-width: 900px)  { .kpi-row { grid-template-columns: repeat(2, 1fr); } }
 
 .kpi-card {
   background: #0d1529;
@@ -559,6 +559,35 @@ tr.row-submitted td { color: #cbd5e1; }
 }
 
 .ops-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+
+/* ── KPI account info line ───────────────────────────────────────────────── */
+.kpi-account-info {
+  margin: -6px 0 8px;
+  font-size: 0.72rem;
+  color: #475569;
+}
+
+.kpi-source {
+  font-size: 0.65rem;
+  font-weight: 400;
+  letter-spacing: 0.02em;
+  color: #475569;
+}
+
+/* ── Close position button ───────────────────────────────────────────────── */
+.btn-close-pos {
+  padding: 3px 8px;
+  font-size: 0.72rem;
+  border-radius: 4px;
+  border: 1px solid #7f1d1d;
+  background: transparent;
+  color: #fca5a5;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s;
+}
+.btn-close-pos:hover:not(:disabled) { background: #7f1d1d; color: #fff; }
+.btn-close-pos:disabled { opacity: 0.45; cursor: not-allowed; }
 
 /* ── Responsive ──────────────────────────────────────────────────────────── */
 @media (max-width: 960px) {

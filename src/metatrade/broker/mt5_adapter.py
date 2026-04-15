@@ -22,8 +22,9 @@ map our internal enums to MT5 constants.
 
 from __future__ import annotations
 
+from dataclasses import replace as dc_replace
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 
 from metatrade.core.contracts.account import AccountState
 from metatrade.core.contracts.order import Order
@@ -175,6 +176,7 @@ class MT5BrokerAdapter(IBrokerAdapter):
         self._require_connected()
         mt5 = _get_mt5()
 
+        order = self._clamp_lot_to_margin(order)
         request = self._build_mt5_request(order)
         log.debug("mt5_order_send", request=request)
 
@@ -251,6 +253,56 @@ class MT5BrokerAdapter(IBrokerAdapter):
                 message="MT5BrokerAdapter: not connected — call connect() first",
                 code="MT5_NOT_CONNECTED",
             )
+
+    def _clamp_lot_to_margin(self, order: Order) -> Order:
+        """Scale down lot size if the broker would reject it for insufficient margin.
+
+        Uses mt5.order_calc_margin() to get the exact margin requirement and
+        mt5.account_info().margin_free to get available margin.  When available
+        margin is less than required, the lot size is reduced proportionally and
+        a warning is logged.  The order is returned unchanged if mt5 cannot
+        compute the margin (e.g. symbol not available).
+        """
+        mt5 = _get_mt5()
+        account = mt5.account_info()
+        if account is None:
+            return order
+
+        action = _MT5_ORDER_TYPE_BUY if order.side == OrderSide.BUY else _MT5_ORDER_TYPE_SELL
+        price = float(order.price) if order.price is not None else 0.0
+        if price == 0.0:
+            tick = mt5.symbol_info_tick(order.symbol)
+            if tick is not None:
+                price = tick.ask if order.side == OrderSide.BUY else tick.bid
+
+        required = mt5.order_calc_margin(action, order.symbol, float(order.lot_size), price)
+        if required is None or required <= 0.0:
+            return order
+
+        free = account.margin_free
+        # Keep a 10 % safety buffer on free margin
+        usable = free * 0.90
+        if required <= usable:
+            return order
+
+        # Scale lot size down proportionally
+        scale = usable / required
+        lot_step = Decimal("0.01")
+        new_lots = (
+            (order.lot_size * Decimal(str(scale))) / lot_step
+        ).to_integral_value(rounding=ROUND_DOWN) * lot_step
+        min_lot = Decimal("0.01")
+        new_lots = max(new_lots, min_lot)
+
+        log.warning(
+            "mt5_lot_clamped_for_margin",
+            symbol=order.symbol,
+            original_lots=str(order.lot_size),
+            clamped_lots=str(new_lots),
+            required_margin=round(required, 2),
+            free_margin=round(free, 2),
+        )
+        return dc_replace(order, lot_size=new_lots)
 
     def _get_filling_mode(self, symbol: str) -> int:
         """Return the best supported type_filling value for *symbol*.
