@@ -58,9 +58,12 @@ class RiskConfig(BaseSettings):
     # 0.0 = no spread check.
     max_spread_pips: float = 5.0
 
-    # Minimum free margin as a fraction of balance required before opening a trade.
-    # E.g. 0.20 = must have at least 20% of balance as free margin.
-    min_free_margin_pct: float = 0.20
+    # Minimum free margin as a fraction of equity required before opening a trade.
+    # Guards against extreme over-leverage / margin call territory.
+    # The actual per-order margin check is handled by MT5Adapter._clamp_lot_to_margin,
+    # so this threshold only needs to block truly dangerous margin levels.
+    # E.g. 0.05 = block new trades when free margin < 5% of equity.
+    min_free_margin_pct: float = 0.05
 
     # ── Daily loss limit ─────────────────────────────────────────────────────
 

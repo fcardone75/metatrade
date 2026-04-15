@@ -271,7 +271,7 @@ def create_app() -> FastAPI:
     @app.post("/api/mt5/close-position")
     async def mt5_close_position(
         request: Request,
-        ticket: int = Body(..., description="MT5 position ticket to close"),
+        ticket: int = Body(..., embed=True, description="MT5 position ticket to close"),
     ) -> dict[str, Any]:
         """Close an open MT5 position by ticket (market order, opposite direction)."""
         if not client_is_local(request):

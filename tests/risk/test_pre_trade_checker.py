@@ -115,10 +115,44 @@ class TestPreTradeChecker:
     def test_insufficient_margin_veto(self) -> None:
         cfg = make_config(min_free_margin_pct=0.20)
         checker = PreTradeChecker(cfg)
-        # balance=10000, required free_margin=2000, but only 1000 available
+        # equity=10000, required = 10000 * 0.20 = 2000, but only 1000 available
         account = make_account(
             balance=Decimal("10000"),
+            equity=Decimal("10000"),
             free_margin=Decimal("1000"),
+        )
+        veto = checker.check(account, T0)
+        assert veto is not None
+        assert veto.veto_code == "INSUFFICIENT_MARGIN"
+
+    def test_credit_account_uses_equity_not_balance(self) -> None:
+        """Demo accounts often have equity >> balance (broker credit funds the account).
+        The margin check must use equity so these accounts are not permanently blocked.
+        Without this fix: required = 50 * 0.20 = 10 → passes, but if we happened to
+        require 20% of equity (5000), required would be 1000 → still passes here.
+        The key invariant: reference = max(equity, balance) = equity when equity > balance.
+        """
+        cfg = make_config(min_free_margin_pct=0.05)
+        checker = PreTradeChecker(cfg)
+        # Small deposit (50 USD), rest is broker credit bringing equity to 5000
+        account = make_account(
+            balance=Decimal("50"),
+            equity=Decimal("5000"),
+            free_margin=Decimal("4800"),
+        )
+        veto = checker.check(account, T0)
+        # reference = max(5000, 50) = 5000; required = 5000 * 0.05 = 250
+        # free_margin 4800 > 250 → no veto
+        assert veto is None
+
+    def test_margin_check_triggers_on_equity_when_over_leveraged(self) -> None:
+        """When free_margin is below 5% of equity, new trades are blocked."""
+        cfg = make_config(min_free_margin_pct=0.05)
+        checker = PreTradeChecker(cfg)
+        account = make_account(
+            balance=Decimal("4925"),
+            equity=Decimal("4925"),
+            free_margin=Decimal("100"),  # only 100 left, 5% of 4925 = 246.25
         )
         veto = checker.check(account, T0)
         assert veto is not None

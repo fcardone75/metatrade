@@ -139,18 +139,24 @@ class PreTradeChecker:
     def _check_free_margin(self, account: AccountState, ts: datetime) -> RiskVeto | None:
         if self._cfg.min_free_margin_pct <= 0:
             return None
-        required = account.balance * Decimal(str(self._cfg.min_free_margin_pct))
+        # Use equity (balance + credit + floating PnL) as the reference capital.
+        # Raw balance excludes broker credit, which is the primary capital on most
+        # demo accounts. Equity represents actual purchasing power.
+        reference = max(account.equity, account.balance)
+        required = reference * Decimal(str(self._cfg.min_free_margin_pct))
         if account.free_margin < required:
             return RiskVeto(
                 reason=(
                     f"Insufficient free margin: "
-                    f"{account.free_margin:.2f} < required {required:.2f}"
+                    f"{account.free_margin:.2f} < required {required:.2f} "
+                    f"({self._cfg.min_free_margin_pct:.0%} of equity {reference:.2f})"
                 ),
                 veto_code="INSUFFICIENT_MARGIN",
                 timestamp_utc=ts,
                 context={
                     "free_margin": str(account.free_margin),
                     "required": str(required),
+                    "equity": str(account.equity),
                 },
             )
         return None
