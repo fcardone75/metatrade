@@ -65,6 +65,7 @@ class LiveRunner(BaseRunner):
         self._broker = broker
         self._order_manager = order_manager or OrderManager(
             broker,
+            run_mode=RunMode.LIVE,
             telemetry=telemetry,
             session_id=session_id,
         )

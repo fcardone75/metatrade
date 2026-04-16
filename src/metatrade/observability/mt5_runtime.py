@@ -98,6 +98,14 @@ class MT5RuntimeReader:
         try:
             date_to = datetime.now(timezone.utc)
             date_from = date_to - timedelta(days=90)
+            # Richiede il periodo nello storico terminale (senza questo spesso history_deals_get è vuoto).
+            if hasattr(mt5, "history_select"):
+                if not mt5.history_select(date_from, date_to):
+                    try:
+                        err = mt5.last_error()
+                    except Exception:
+                        err = None
+                    log.warning("mt5_history_select_failed", error=err)
             deals = mt5.history_deals_get(date_from, date_to)
             if deals is None:
                 return []
