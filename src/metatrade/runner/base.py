@@ -71,27 +71,39 @@ class BaseRunner:
         session_id: str | None = None,
         timeframe: str | None = None,
         intermarket_engine: object | None = None,  # IntermarketEngine | None
+        exit_profile_generator: object | None = None,  # ExitProfileCandidateGenerator | None
+        exit_profile_selector: object | None = None,   # ExitProfileSelector | None
     ) -> None:
         """
         Args:
-            config:               RunnerConfig for this session.
-            modules:              List of ITechnicalModule instances.
-            auto_weight:          If True (default), use DYNAMIC_VOTE consensus
-                                  and automatically update module weights based
-                                  on how well each module predicted market
-                                  direction over the next ``weight_forward_bars``
-                                  bars.  Weights are proportional to accuracy:
-                                  a large error reduces the weight more than a
-                                  small one.
-            weight_forward_bars:  Bars ahead used to evaluate signal accuracy.
-                                  Must match the ML labelling horizon (default 5).
-            alerter:              Optional TelegramAlerter for operational alerts.
-                                  None (default) = silent, no alerts sent.
-            intermarket_engine:   Optional ``IntermarketEngine`` for cross-pair
-                                  correlation and exposure control.  When set,
-                                  it is evaluated between the consensus step and
-                                  the risk manager.  ``None`` = disabled
-                                  (default, fully backward-compatible).
+            config:                 RunnerConfig for this session.
+            modules:                List of ITechnicalModule instances.
+            auto_weight:            If True (default), use DYNAMIC_VOTE consensus
+                                    and automatically update module weights based
+                                    on how well each module predicted market
+                                    direction over the next ``weight_forward_bars``
+                                    bars.  Weights are proportional to accuracy:
+                                    a large error reduces the weight more than a
+                                    small one.
+            weight_forward_bars:    Bars ahead used to evaluate signal accuracy.
+                                    Must match the ML labelling horizon (default 5).
+            alerter:                Optional TelegramAlerter for operational alerts.
+                                    None (default) = silent, no alerts sent.
+            intermarket_engine:     Optional ``IntermarketEngine`` for cross-pair
+                                    correlation and exposure control.  When set,
+                                    it is evaluated between the consensus step and
+                                    the risk manager.  ``None`` = disabled
+                                    (default, fully backward-compatible).
+            exit_profile_generator: Optional ``ExitProfileCandidateGenerator``.
+                                    When set together with ``exit_profile_selector``,
+                                    steps 6-7 of the pipeline run after risk
+                                    approval and override the default Chandelier
+                                    SL/TP with the selected exit profile.
+                                    ``None`` = disabled (default, fully
+                                    backward-compatible).
+            exit_profile_selector:  Optional ``ExitProfileSelector``.  Required
+                                    together with ``exit_profile_generator`` to
+                                    enable exit profile selection.
         """
         self._config = config
         self._modules = modules
@@ -156,6 +168,12 @@ class BaseRunner:
         # ── Intermarket engine (optional) ──────────────────────────────────────
         # Type hint kept as object to avoid hard import at module level.
         self._intermarket = intermarket_engine
+
+        # ── Exit profile selection (optional, Steps 6-7) ───────────────────────
+        # Both generator and selector must be set together.  When only one is
+        # provided the feature is effectively disabled (no hard error).
+        self._exit_profile_generator = exit_profile_generator
+        self._exit_profile_selector = exit_profile_selector
 
     @property
     def stats(self) -> RunStats:
@@ -485,6 +503,21 @@ class BaseRunner:
             )
             decision = replace(decision, position_size=scaled_ps)
 
+        # ── Steps 6-7: Exit profile selection ────────────────────────────────
+        # Runs only when both generator and selector are configured.
+        # Overrides the default Chandelier SL/TP computed in Step 4 with the
+        # exit profile chosen by the selector (ML or deterministic fallback).
+        # The lot size is recomputed to preserve the configured risk_pct given
+        # the new SL distance.
+        if decision.approved and self._exit_profile_generator is not None and self._exit_profile_selector is not None:
+            decision = self._apply_exit_profile(
+                decision=decision,
+                bars=bars,
+                account=account,
+                timestamp_utc=timestamp_utc,
+                current_spread_pips=current_spread_pips,
+            )
+
         # ── Step 4c: Update stats, alerter, and cooldown ─────────────────────
         if decision.approved:
             self._stats.trades_executed += 1
@@ -602,6 +635,127 @@ class BaseRunner:
         if side == OrderSide.BUY:
             return entry_price - fallback_distance
         return entry_price + fallback_distance
+
+    def _apply_exit_profile(
+        self,
+        decision: RiskDecision,
+        bars: list[Bar],
+        account: AccountState,
+        timestamp_utc: datetime,
+        current_spread_pips: float | None,
+    ) -> RiskDecision:
+        """Apply exit profile selection (Steps 6-7) to an approved decision.
+
+        Generates exit profile candidates for the current context, selects the
+        best one via the configured selector, then recomputes the lot size to
+        preserve the configured risk fraction with the new SL distance.
+
+        If no valid candidate can be selected, the original decision is returned
+        unchanged — the Chandelier-derived SL/TP from Step 4 remains in effect.
+
+        Args:
+            decision:            Approved RiskDecision from Step 4/5.
+            bars:                Recent bar history.
+            account:             Current AccountState.
+            timestamp_utc:       Bar timestamp.
+            current_spread_pips: Spread in pips (may be None).
+
+        Returns:
+            Updated RiskDecision with the selected exit profile's SL/TP and
+            recomputed lot size, or the original decision when selection fails.
+        """
+        try:
+            from metatrade.ml.exit_profile_contracts import ExitProfileContext
+            from metatrade.ml.exit_profile_candidate_generator import (
+                ExitProfileCandidateGenerator,
+            )
+            from metatrade.ml.exit_profile_selector import ExitProfileSelector
+
+            if not isinstance(self._exit_profile_generator, ExitProfileCandidateGenerator):
+                return decision
+            if not isinstance(self._exit_profile_selector, ExitProfileSelector):
+                return decision
+
+            assert decision.position_size is not None  # guarded by decision.approved
+
+            entry_price = bars[-1].close
+            current_atr = self._compute_current_atr(bars)
+            if current_atr is None:
+                return decision  # not enough bars to compute ATR
+
+            # Determine pip_digits from symbol name (JPY pairs = 2, others = 4)
+            symbol = self._config.symbol
+            pip_digits = 2 if symbol.upper().endswith("JPY") else 4
+
+            start = max(0, len(bars) - 51)
+            recent_highs = tuple(b.high for b in bars[start:])
+            recent_lows  = tuple(b.low  for b in bars[start:])
+
+            ctx = ExitProfileContext(
+                symbol=symbol,
+                side=decision.side,
+                entry_price=entry_price,
+                atr=current_atr,
+                spread_pips=float(current_spread_pips or 0.0),
+                account_balance=account.balance,
+                timestamp_utc=timestamp_utc,
+                pip_digits=pip_digits,
+                recent_highs=recent_highs,
+                recent_lows=recent_lows,
+            )
+
+            candidates = self._exit_profile_generator.generate(ctx)
+            if not candidates:
+                log.debug("exit_profile_no_candidates", symbol=symbol)
+                return decision
+
+            selected = self._exit_profile_selector.select(candidates, ctx)
+            if selected is None:
+                log.debug("exit_profile_selector_returned_none", symbol=symbol)
+                return decision
+
+            profile = selected.candidate
+
+            # Recompute lot size so the configured risk_pct is preserved
+            # with the newly selected SL distance.
+            sizing_capital = max(account.equity, account.balance)
+            try:
+                new_ps = self._risk.recompute_sizing(
+                    balance=sizing_capital,
+                    entry_price=entry_price,
+                    sl_price=profile.sl_price,
+                    side=decision.side,
+                )
+            except ValueError as exc:
+                log.warning(
+                    "exit_profile_recompute_sizing_failed",
+                    error=str(exc),
+                    profile_id=profile.profile_id,
+                )
+                return decision
+
+            # Attach the selected TP (may be None for trailing profiles)
+            new_ps = replace(new_ps, take_profit_price=profile.tp_price)
+
+            log.info(
+                "exit_profile_selected",
+                symbol=symbol,
+                profile_id=profile.profile_id,
+                exit_mode=profile.exit_mode,
+                sl_pips=str(profile.sl_pips),
+                tp_pips=str(profile.tp_pips) if profile.tp_pips else "none",
+                rr=str(profile.risk_reward),
+                confidence=selected.confidence,
+                method=selected.method,
+                lot_size=str(new_ps.lot_size),
+            )
+
+            return replace(decision, position_size=new_ps)
+
+        except Exception as exc:
+            # Never let exit profile selection break the trading pipeline.
+            log.warning("exit_profile_apply_failed", error=str(exc))
+            return decision
 
     def _compute_current_atr(self, bars: list[Bar]) -> Decimal | None:
         """Return the most recent ATR value, or None if insufficient data.

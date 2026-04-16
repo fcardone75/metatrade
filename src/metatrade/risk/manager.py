@@ -162,6 +162,42 @@ class RiskManager:
             position_size=size,
         )
 
+    def recompute_sizing(
+        self,
+        balance: Decimal,
+        entry_price: Decimal,
+        sl_price: Decimal,
+        side: OrderSide,
+        risk_pct: float | None = None,
+        current_atr: Decimal | None = None,
+    ) -> "PositionSizeResult":
+        """Recompute lot size for a new SL price while preserving risk_pct.
+
+        Used by the SL/TP policy selector to resize the position after the
+        selector picks a different stop distance than the default Chandelier SL.
+        Raises ``ValueError`` if the new SL is inconsistent with the side.
+
+        Args:
+            balance:     Account capital (equity or balance).
+            entry_price: Intended entry price.
+            sl_price:    New stop-loss price.
+            side:        BUY or SELL.
+            risk_pct:    Risk fraction override (uses config default when None).
+            current_atr: Current ATR for vol-scaled sizing (None = disabled).
+
+        Returns:
+            ``PositionSizeResult`` with updated lot_size, sl_pips, etc.
+        """
+        from metatrade.core.contracts.risk import PositionSizeResult  # noqa: F401
+        return self._sizer.calculate(
+            balance=balance,
+            entry_price=entry_price,
+            sl_price=sl_price,
+            side=side,
+            risk_pct=risk_pct,
+            current_atr=current_atr,
+        )
+
     def _maybe_auto_kill(self, account: AccountState, ts: datetime) -> None:
         """Auto-activate SESSION_GATE if intraday drawdown exceeds threshold."""
         threshold_pct = self._cfg.auto_kill_drawdown_pct

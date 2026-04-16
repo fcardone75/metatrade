@@ -304,6 +304,52 @@ Implementare in 3 fasi:
 
 Questa progressione riduce il rischio di overengineering e mantiene il comportamento del sistema spiegabile.
 
+### Estensione SL/TP Intelligente e Policy Selection (NUOVO)
+
+#### Obiettivo
+Il sistema non deve limitarsi a uno `stop-loss` e a un `take-profit` fissi o derivati da una sola formula. Deve poter scegliere in modo **contestuale, spiegabile e data-driven** un **profilo iniziale di uscita** e poi adattare la gestione dell'uscita in modo dinamico mentre il trade evolve.
+
+L'approccio raccomandato **non** è:
+- predire direttamente due numeri continui (`SL`, `TP`) come output black-box
+- bloccare sempre il trade con un `TP` rigido all'ingresso
+
+L'approccio corretto è:
+- generare un insieme finito di candidati plausibili di **exit profile**
+- selezionare il profilo iniziale migliore con modello ML o fallback deterministico
+- demandare all'`ExitEngine` la gestione dinamica del trade durante la sua vita
+
+#### Principio architetturale
+Il problema va modellato come:
+
+**"Dato il contesto al tempo `t0`, quale profilo iniziale di uscita massimizza l'outcome atteso corretto per il rischio?"**
+
+non come:
+
+**"Predici direttamente il numero ottimo di pip per SL e TP e lasciali fissi fino alla chiusura"**
+
+Questo approccio è più robusto, spiegabile, testabile e molto meno soggetto a overfitting.
+
+#### Posizionamento nel flusso decisionale
+Il selettore del profilo di uscita deve intervenire **dopo** il consenso locale/intermarket e **prima** dell'invio dell'ordine al broker. L'`ExitEngine` resta poi responsabile della gestione dinamica post-entry.
+
+```text
+Market Data Feed (MT5 / CSV)
+        │
+        ▼
+   BaseRunner.process_bar()
+        │
+        ├─ 1. ITechnicalModule × N  → AnalysisSignal[]
+        ├─ 2. AdaptiveThresholdManager
+        ├─ 3. ConsensusEngine → ConsensusResult
+        ├─ 4. IntermarketEngine → IntermarketDecision
+        ├─ 5. RiskManager → RiskDecision
+        ├─ 6. ExitProfileCandidateGenerator → ExitProfileCandidate[]
+        ├─ 7. ExitProfileSelector → SelectedExitProfile
+        ├─ 8. IBrokerAdapter → ordine con SL iniziale e TP/target mode coerenti
+        └─ 9. ExitEngine.evaluate() → gestione dinamica post-entry
+
+
+
 ### Segnali e consensus
 - Ogni `ITechnicalModule.analyse()` restituisce un `AnalysisSignal` con `direction`, `confidence ∈ [0,1]` e `reason`.
 - Il `ConsensusEngine` aggrega con **DYNAMIC_VOTE** (default): pesi per modulo aggiustati via EMA sull'accuracy storica.
