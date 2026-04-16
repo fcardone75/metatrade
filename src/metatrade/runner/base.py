@@ -893,8 +893,15 @@ class BaseRunner:
                 )
                 return decision
 
-            # Attach the selected TP (may be None for trailing profiles)
-            new_ps = replace(new_ps, take_profit_price=profile.tp_price)
+            # Attach the selected TP.
+            # Trailing profiles have tp_price=None (ExitEngine manages exit
+            # dynamically).  Fall back to the standard TP from the original
+            # PositionSizer result so that MT5 holds a safety-net order: if the
+            # ExitEngine ever stops or crashes, the broker will still close the
+            # position at the configured risk:reward level.
+            fallback_tp = decision.position_size.take_profit_price if decision.position_size else None
+            effective_tp = profile.tp_price if profile.tp_price is not None else fallback_tp
+            new_ps = replace(new_ps, take_profit_price=effective_tp)
 
             log.info(
                 "exit_profile_selected",
@@ -902,11 +909,12 @@ class BaseRunner:
                 profile_id=profile.profile_id,
                 exit_mode=profile.exit_mode,
                 sl_pips=str(profile.sl_pips),
-                tp_pips=str(profile.tp_pips) if profile.tp_pips else "none",
+                tp_pips=str(profile.tp_pips) if profile.tp_pips else "none (fallback to standard)",
                 rr=str(profile.risk_reward),
                 confidence=selected.confidence,
                 method=selected.method,
                 lot_size=str(new_ps.lot_size),
+                tp_is_fallback=profile.tp_price is None,
             )
 
             return replace(decision, position_size=new_ps)
