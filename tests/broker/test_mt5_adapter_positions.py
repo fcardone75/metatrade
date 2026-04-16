@@ -17,6 +17,7 @@ from metatrade.broker.mt5_adapter import (
     _MT5_ORDER_TYPE_BUY,
     _MT5_ORDER_TYPE_SELL,
     _MT5_RETCODE_DONE,
+    _MT5_RETCODE_CHECK_OK,
     _MT5_TRADE_ACTION_DEAL,
     _MT5_TRADE_ACTION_SLTP,
 )
@@ -287,8 +288,8 @@ class TestOrderCheckPreValidation:
     def _send_order(
         self,
         *,
-        check_retcode: int = _MT5_RETCODE_DONE,
-        send_retcode: int = _MT5_RETCODE_DONE,
+        check_retcode: int = _MT5_RETCODE_CHECK_OK,   # order_check() success = 0
+        send_retcode: int = _MT5_RETCODE_DONE,         # order_send()  success = 10009
         volume_step: float = 0.01,
     ):
         from metatrade.core.errors import OrderRejectedError
@@ -347,8 +348,8 @@ class TestOrderCheckPreValidation:
 
     def test_passes_when_order_check_succeeds(self) -> None:
         result, mt5, exc = self._send_order(
-            check_retcode=_MT5_RETCODE_DONE,
-            send_retcode=_MT5_RETCODE_DONE,
+            check_retcode=_MT5_RETCODE_CHECK_OK,   # 0 = order_check OK
+            send_retcode=_MT5_RETCODE_DONE,        # 10009 = order_send OK
         )
         assert exc is None
         assert result is not None

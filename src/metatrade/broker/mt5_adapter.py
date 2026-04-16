@@ -55,8 +55,9 @@ _MT5_FILLING_RETURN = 2            # Return remainder (ORDER_FILLING_RETURN)
 # symbol_info().filling_mode bitmask
 _MT5_FILL_FLAG_FOK = 1             # broker supports FOK
 _MT5_FILL_FLAG_IOC = 2             # broker supports IOC
-_MT5_RETCODE_DONE = 10009          # Success
-_MT5_RETCODE_DONE_PARTIAL = 10010  # Partial fill
+_MT5_RETCODE_DONE = 10009          # order_send() success
+_MT5_RETCODE_DONE_PARTIAL = 10010  # order_send() partial fill
+_MT5_RETCODE_CHECK_OK = 0          # order_check() success (different scale from order_send)
 _MT5_TRADE_ACTION_SLTP = 6         # Modify stop-loss / take-profit of open position
 _MT5_RETCODE_INVALID_VOLUME = 10014
 
@@ -186,8 +187,11 @@ class MT5BrokerAdapter(IBrokerAdapter):
 
         # Pre-flight validation — catches volume / stop / margin issues before
         # they become retcode errors that show up in the dashboard as failures.
+        # order_check() uses retcode=0 for success, NOT 10009 (which is the
+        # order_send() success code).  Using the wrong constant here caused every
+        # order to be incorrectly rejected even when the pre-check passed.
         check = mt5.order_check(request)
-        if check is not None and check.retcode != _MT5_RETCODE_DONE:
+        if check is not None and check.retcode != _MT5_RETCODE_CHECK_OK:
             if check.retcode == _MT5_RETCODE_INVALID_VOLUME:
                 # Re-normalize volume against the live symbol constraints and retry once
                 new_volume = float(self._normalize_volume(
@@ -203,7 +207,7 @@ class MT5BrokerAdapter(IBrokerAdapter):
                     request = dict(request)
                     request["volume"] = new_volume
                     check = mt5.order_check(request)
-            if check is not None and check.retcode != _MT5_RETCODE_DONE:
+            if check is not None and check.retcode != _MT5_RETCODE_CHECK_OK:
                 log.error(
                     "mt5_order_check_failed",
                     retcode=check.retcode,
