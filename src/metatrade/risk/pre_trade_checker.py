@@ -47,20 +47,25 @@ class PreTradeChecker:
         account: AccountState,
         timestamp_utc: datetime,
         spread_pips: float | None = None,
+        max_positions_override: int | None = None,
     ) -> RiskVeto | None:
         """Run all pre-trade checks.
 
         Args:
-            account:       Current account snapshot.
-            timestamp_utc: Evaluation timestamp for the veto record.
-            spread_pips:   Current spread in pips (None = skip spread check).
+            account:                Current account snapshot.
+            timestamp_utc:          Evaluation timestamp for the veto record.
+            spread_pips:            Current spread in pips (None = skip spread check).
+            max_positions_override: Effective position cap computed dynamically by
+                                    the runner (e.g. based on margin health and
+                                    system confidence).  ``None`` = use config
+                                    default.  ``0`` = block all new positions.
 
         Returns:
             RiskVeto if the trade should be blocked, None if approved.
         """
         veto = (
             self._check_kill_switch(timestamp_utc)
-            or self._check_max_positions(account, timestamp_utc)
+            or self._check_max_positions(account, timestamp_utc, max_positions_override)
             or self._check_daily_loss(account, timestamp_utc)
             or self._check_spread(spread_pips, timestamp_utc)
             or self._check_free_margin(account, timestamp_utc)
@@ -86,8 +91,25 @@ class PreTradeChecker:
             )
         return None
 
-    def _check_max_positions(self, account: AccountState, ts: datetime) -> RiskVeto | None:
-        limit = self._cfg.max_open_positions
+    def _check_max_positions(
+        self,
+        account: AccountState,
+        ts: datetime,
+        max_positions_override: int | None = None,
+    ) -> RiskVeto | None:
+        if max_positions_override is not None and max_positions_override == 0:
+            # Dynamic cap of 0 signals a critical condition (margin/drawdown).
+            return RiskVeto(
+                reason="Dynamic position cap: 0 — critical margin or drawdown, no new entries",
+                veto_code="DYNAMIC_CAP_ZERO",
+                timestamp_utc=ts,
+                context={"dynamic_cap": 0},
+            )
+        limit = (
+            max_positions_override
+            if max_positions_override is not None
+            else self._cfg.max_open_positions
+        )
         if limit > 0 and account.open_positions_count >= limit:
             return RiskVeto(
                 reason=(

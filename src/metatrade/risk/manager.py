@@ -65,6 +65,7 @@ class RiskManager:
         risk_pct: float | None = None,
         current_atr: Decimal | None = None,
         intermarket_risk_mult: Decimal | None = None,
+        max_positions_override: int | None = None,
     ) -> RiskDecision:
         """Evaluate whether a trade is permissible and size it.
 
@@ -81,6 +82,9 @@ class RiskManager:
             intermarket_risk_mult: Lot-size multiplier from IntermarketEngine (optional).
                                    Applied after normal sizing; values < 1.0 reduce the lot size.
                                    Must be > 0.  ``None`` or ``Decimal("1")`` = no effect.
+            max_positions_override: Dynamic position cap from the runner (e.g. computed
+                                    from margin health and system confidence).
+                                    ``None`` = use static config.  ``0`` = block all.
 
         Returns:
             RiskDecision — approved with PositionSizeResult or vetoed with RiskVeto.
@@ -90,6 +94,7 @@ class RiskManager:
             account=account,
             timestamp_utc=timestamp_utc,
             spread_pips=spread_pips,
+            max_positions_override=max_positions_override,
         )
         if veto:
             return RiskDecision(

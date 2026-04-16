@@ -189,6 +189,7 @@ class TestClosePositionByTicket:
         mt5 = MagicMock()
         mt5.symbol_info.return_value = SimpleNamespace(
             digits=5, volume_step=0.01, volume_min=0.01, volume_max=100.0,
+            filling_mode=1,
         )
         mt5.order_send.return_value = _send_result(retcode)
         mt5.symbol_info_tick.return_value = SimpleNamespace(ask=1.10010, bid=1.10000)

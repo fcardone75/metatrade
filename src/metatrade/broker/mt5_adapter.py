@@ -279,13 +279,44 @@ class MT5BrokerAdapter(IBrokerAdapter):
                 message="MT5 account_info() returned None",
                 code="MT5_ACCOUNT_INFO_FAILED",
             )
+
+        # MT5 can report negative margin_free when the account is over-margined
+        # (margin call territory).  AccountState rejects negatives, so we clamp
+        # to zero and warn — the PreTradeChecker will veto new entries via the
+        # INSUFFICIENT_MARGIN check without crashing the service.
+        raw_free_margin = float(info.margin_free)
+        raw_used_margin = float(info.margin)
+        if raw_free_margin < 0:
+            log.warning(
+                "mt5_negative_free_margin",
+                raw_free_margin=round(raw_free_margin, 2),
+                action="clamped_to_zero",
+            )
+            raw_free_margin = 0.0
+        if raw_used_margin < 0:
+            log.warning(
+                "mt5_negative_used_margin",
+                raw_used_margin=round(raw_used_margin, 2),
+                action="clamped_to_zero",
+            )
+            raw_used_margin = 0.0
+
+        # Count open positions from the broker's live position list, not from
+        # account_info (which does not expose this count directly in MT5).
+        try:
+            positions = mt5.positions_get() or []
+            open_positions_count = len(positions)
+        except Exception:  # noqa: BLE001
+            open_positions_count = 0
+
         return AccountState(
             balance=Decimal(str(info.balance)),
             equity=Decimal(str(info.equity)),
-            free_margin=Decimal(str(info.margin_free)),
-            used_margin=Decimal(str(info.margin)),
+            free_margin=Decimal(str(raw_free_margin)),
+            used_margin=Decimal(str(raw_used_margin)),
             timestamp_utc=datetime.now(timezone.utc),
             currency=info.currency,
+            open_positions_count=open_positions_count,
             run_mode=self._run_mode,
         )
 

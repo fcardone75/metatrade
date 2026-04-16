@@ -139,6 +139,10 @@ class TestClampLotToMargin:
         mt5_mock.symbol_info_tick.return_value = SimpleNamespace(
             ask=tick_ask, bid=tick_bid
         )
+        mt5_mock.symbol_info.return_value = SimpleNamespace(
+            digits=5, volume_step=0.01, volume_min=0.01, volume_max=100.0,
+            filling_mode=1, stops_level=0, point=0.00001,
+        )
         with patch("metatrade.broker.mt5_adapter._get_mt5", return_value=mt5_mock):
             return adapter._clamp_lot_to_margin(order)
 

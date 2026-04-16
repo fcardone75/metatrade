@@ -197,6 +197,118 @@ class BaseRunner:
         """Current dynamic weight for a module (None if auto_weight=False)."""
         return self._consensus.get_module_weight(module_id)
 
+    def system_confidence(self) -> float:
+        """Aggregate system confidence in [0.0, 1.0].
+
+        Derived from the average dynamic module weight, normalized from the
+        [5, 95] weight range to [0, 1].  Returns 0.5 (neutral) when no
+        modules are loaded or when auto_weight is disabled (weights are None).
+        """
+        weights = [
+            w
+            for m in self._modules
+            if (w := self.get_module_weight(m.module_id)) is not None
+        ]
+        if not weights:
+            return 0.5
+        avg = sum(weights) / len(weights)
+        # 5 → 0.0, 50 → 0.5, 95 → 1.0
+        return max(0.0, min(1.0, (avg - 5.0) / 90.0))
+
+    def _compute_dynamic_position_cap(self, account: AccountState) -> int:
+        """Compute the effective max-open-positions cap for this bar.
+
+        Combines three signals to produce a value in [0, config.max_open_positions]:
+
+        1. **Margin health** — ``free_margin / equity`` ratio.
+           Critical  (< 5 %)  → 0 (block).
+           Tight     (< 20 %) → ×0.33.
+           Moderate  (< 50 %) → ×0.67.
+           Healthy   (≥ 50 %) → ×1.0.
+
+        2. **Drawdown** — peak-to-trough vs ``drawdown_recovery_threshold_pct``.
+           Below threshold          → ×1.0.
+           threshold … 2×threshold  → ×0.5.
+           ≥ 2×threshold            → 0 (block).
+
+        3. **System confidence** — average module weight normalised to [0, 1].
+           < 0.30 (declining)  → ×0.33.
+           < 0.45 (neutral)    → ×0.67.
+           ≥ 0.45 (confident)  → ×1.0.
+
+        Returns:
+            0  → block all new entries (margin critical or severe drawdown).
+            1…max_open_positions → dynamic effective limit.
+        """
+        base = self._config.max_open_positions
+
+        # ── 1. Margin health ─────────────────────────────────────────────────
+        if account.equity > Decimal("0"):
+            margin_ratio = float(account.free_margin / account.equity)
+        else:
+            margin_ratio = 0.0
+
+        if margin_ratio < 0.05:
+            log.warning(
+                "dynamic_cap_margin_critical",
+                margin_ratio=round(margin_ratio, 4),
+                free_margin=float(account.free_margin),
+                equity=float(account.equity),
+            )
+            return 0
+        elif margin_ratio < 0.20:
+            margin_factor = 0.33
+        elif margin_ratio < 0.50:
+            margin_factor = 0.67
+        else:
+            margin_factor = 1.0
+
+        # ── 2. Drawdown ──────────────────────────────────────────────────────
+        threshold = self._config.drawdown_recovery_threshold_pct
+        if self._peak_equity > Decimal("0"):
+            dd_pct = float(
+                (self._peak_equity - account.equity) / self._peak_equity
+            )
+        else:
+            dd_pct = 0.0
+
+        if dd_pct >= 2 * threshold:
+            log.warning(
+                "dynamic_cap_severe_drawdown",
+                dd_pct=round(dd_pct * 100, 2),
+                threshold_pct=round(threshold * 100, 2),
+            )
+            return 0
+        elif dd_pct >= threshold:
+            dd_factor = 0.5
+        else:
+            dd_factor = 1.0
+
+        # ── 3. System confidence ─────────────────────────────────────────────
+        conf = self.system_confidence()
+        if conf < 0.30:
+            conf_factor = 0.33
+        elif conf < 0.45:
+            conf_factor = 0.67
+        else:
+            conf_factor = 1.0
+
+        effective = max(1, int(base * margin_factor * dd_factor * conf_factor))
+        cap = min(effective, base)
+
+        if cap < base:
+            log.debug(
+                "dynamic_cap_reduced",
+                base=base,
+                cap=cap,
+                margin_factor=round(margin_factor, 2),
+                dd_factor=round(dd_factor, 2),
+                conf_factor=round(conf_factor, 2),
+                confidence=round(conf, 3),
+            )
+
+        return cap
+
     # ── Kill switch DB sync ───────────────────────────────────────────────────
 
     def _sync_kill_switch_from_db(self) -> None:
@@ -289,6 +401,10 @@ class BaseRunner:
             run_mode=run_mode,
         )
         self._record_account_snapshot(account)
+
+        # Compute the dynamic position cap once per bar so the risk manager
+        # can use margin health, drawdown, and system confidence together.
+        dynamic_cap = self._compute_dynamic_position_cap(account)
 
         # ── Guard: spread filter ──────────────────────────────────────────────
         # Block new entries when the broker spread is too wide.
@@ -492,6 +608,7 @@ class BaseRunner:
             spread_pips=current_spread_pips,
             current_atr=current_atr,
             intermarket_risk_mult=im_risk_mult,
+            max_positions_override=dynamic_cap,
         )
 
         # ── Step 4b: Apply drawdown-recovery lot-size reduction ──────────────
