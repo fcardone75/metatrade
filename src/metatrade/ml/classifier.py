@@ -105,6 +105,7 @@ class MLClassifier:
             max_iter=self._config.max_iter,
             max_depth=self._config.max_depth,
             random_state=self._config.random_seed,
+            class_weight=self._config.class_weight,
         )
         model.fit(X, y)
 

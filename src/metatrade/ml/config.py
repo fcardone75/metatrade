@@ -29,8 +29,10 @@ class MLConfig(BaseConfig):
     # Number of bars to look ahead when computing labels
     forward_bars: int = Field(default=5, ge=1, le=50)
 
-    # ATR multiplier for label threshold (0 = no-trade zone width)
-    atr_threshold_mult: float = Field(default=1.5, gt=0.0)
+    # ATR multiplier for label threshold (no-trade zone half-width).
+    # 1.5 is appropriate for H1+; on M1/M5 use 0.7-0.9 to avoid
+    # labelling most bars as HOLD (M1 rarely moves 1.5×ATR in 5 bars).
+    atr_threshold_mult: float = Field(default=0.8, gt=0.0)
 
     # ── Model ─────────────────────────────────────────────────────────────────
     # Minimum class accuracy before a model is considered "trained"
@@ -48,6 +50,11 @@ class MLConfig(BaseConfig):
 
     # Max depth of each tree (None = unlimited)
     max_depth: int | None = Field(default=5)
+
+    # Class weight for HistGradientBoostingClassifier.
+    # "balanced" automatically compensates for HOLD-dominated datasets by
+    # up-weighting BUY/SELL samples.  None = uniform weights.
+    class_weight: str | None = Field(default="balanced")
 
     # ── Registry ─────────────────────────────────────────────────────────────
     # Directory where model snapshots are persisted

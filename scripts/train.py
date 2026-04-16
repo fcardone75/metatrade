@@ -148,6 +148,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-depth", type=int, default=5, help="RandomForest max depth")
     p.add_argument("--min-accuracy", type=float, default=0.52, help="Min accuracy to accept model")
     p.add_argument(
+        "--atr-threshold-mult",
+        type=float,
+        default=0.8,
+        help="ATR multiplier for label threshold (no-trade zone). Use 0.7-0.9 for M1/M5, 1.0-1.5 for H1+",
+    )
+    p.add_argument(
         "--model-dir",
         type=Path,
         default=Path("data/models"),
@@ -375,6 +381,7 @@ def train_single_timeframe(
     trainer = WalkForwardTrainer(ml_cfg)
     print(f"\n=== Walk-forward: {args.symbol} {timeframe} ({len(bars)} barre) ===")
     print(f"  train_window={ml_cfg.train_window_bars}  test_window={ml_cfg.test_window_bars}  step={ml_cfg.step_bars}")
+    print(f"  forward_bars={ml_cfg.forward_bars}  atr_threshold_mult={ml_cfg.atr_threshold_mult}  class_weight={ml_cfg.class_weight}")
     print()
 
     n_bars = len(bars)
@@ -462,6 +469,18 @@ def train_single_timeframe(
 
     _print_fold_table(result)
     print()
+
+    # Print label distribution from the best fold's training metrics
+    if model is not None and model.metrics is not None:
+        cd = model.metrics.class_distribution
+        total = sum(cd.values()) or 1
+        labels = {1: "BUY", -1: "SELL", 0: "HOLD"}
+        dist_parts = [
+            f"{labels.get(k, str(k))}={v} ({v/total:.0%})"
+            for k, v in sorted(cd.items())
+        ]
+        print(f"  Class distribution (best fold train): {', '.join(dist_parts)}")
+        print()
 
     if model is None or not model.is_trained:
         msg = (
@@ -665,6 +684,7 @@ def main() -> None:
         test_window_bars=args.test_window,
         step_bars=args.step,
         forward_bars=args.forward_bars,
+        atr_threshold_mult=args.atr_threshold_mult,
         max_iter=args.max_iter,
         max_depth=args.max_depth,
         min_accuracy=args.min_accuracy,
