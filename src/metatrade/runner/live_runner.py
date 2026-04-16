@@ -181,18 +181,10 @@ class LiveRunner(BaseRunner):
                 sl=str(ps.stop_loss_price) if ps else None,
                 tp=str(ps.take_profit_price) if ps else None,
             )
-        except Exception as exc:
-            # OrderManager already records order_failed in telemetry.
-            # Log here for the console; never re-raise.
-            try:
-                log.error(
-                    "live_order_submission_failed",
-                    side=decision.side.value if decision.side else "?",
-                    symbol=decision.symbol,
-                    error=str(exc),
-                )
-            except Exception:  # noqa: BLE001
-                pass  # logging itself must not kill the runner
+        except Exception:
+            # OrderManager already logs order_submission_failed with full context.
+            # Swallow here so the runner stays alive for position management.
+            pass
 
     def reset_buffer(self) -> None:
         """Clear the internal bar buffer (e.g. after a weekend gap)."""

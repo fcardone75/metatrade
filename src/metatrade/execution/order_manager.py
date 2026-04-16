@@ -125,11 +125,9 @@ class OrderManager:
         except Exception as exc:
             rejected = order.with_status(OrderStatus.REJECTED)
             self._orders[order.order_id] = rejected
-            log.error(
-                "order_submission_failed",
-                order_id=order.order_id,
-                error=str(exc),
-            )
+            # The broker adapter (mt5_adapter) already logged the rejection
+            # with full context (retcode, comment, volume, sl, tp).
+            # We only record it in telemetry and re-raise — no duplicate log.
             self._record_order_event(
                 event_type="order_failed",
                 order=order,
