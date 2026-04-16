@@ -54,6 +54,8 @@ class LiveRunner(BaseRunner):
         telemetry: TelemetryStore | None = None,
         session_id: str | None = None,
         timeframe: str | None = None,
+        exit_profile_generator: object | None = None,
+        exit_profile_selector: object | None = None,
     ) -> None:
         super().__init__(
             config,
@@ -61,6 +63,8 @@ class LiveRunner(BaseRunner):
             telemetry=telemetry,
             session_id=session_id,
             timeframe=timeframe,
+            exit_profile_generator=exit_profile_generator,
+            exit_profile_selector=exit_profile_selector,
         )
         self._broker = broker
         self._order_manager = order_manager or OrderManager(

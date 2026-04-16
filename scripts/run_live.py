@@ -102,6 +102,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--no-news", action="store_true", help="Disable news/calendar filter")
     p.add_argument("--no-d1", action="store_true", help="Disable D1 multi-timeframe module (needs 500+ bars)")
     p.add_argument("--finnhub-key", default=None, help="Finnhub API key for live economic calendar")
+    p.add_argument(
+        "--no-exit-profile",
+        action="store_true",
+        help="Disable exit-profile candidate pipeline (use default Chandelier SL/TP only).",
+    )
     # Safety
     p.add_argument(
         "--confirm",
@@ -258,6 +263,15 @@ def main() -> None:
         min_signals=1 if args.no_ml else 2,
     )
 
+    exit_gen = None
+    exit_sel = None
+    if not args.no_exit_profile:
+        from metatrade.ml.exit_profile_candidate_generator import ExitProfileCandidateGenerator
+        from metatrade.ml.exit_profile_selector import ExitProfileSelector
+
+        exit_gen = ExitProfileCandidateGenerator()
+        exit_sel = ExitProfileSelector()
+
     runner = LiveRunner(
         config=runner_cfg,
         modules=modules,
@@ -265,6 +279,8 @@ def main() -> None:
         telemetry=telemetry,
         session_id=session_id,
         timeframe=args.timeframe,
+        exit_profile_generator=exit_gen,
+        exit_profile_selector=exit_sel,
     )
     runner.connect()
 
@@ -283,6 +299,10 @@ def main() -> None:
 
     account = broker.get_account()
     print(f"\nLIVE trading started - {args.symbol}/{args.timeframe}")
+    if exit_gen is not None and exit_sel is not None:
+        print("  Exit profile: ON (candidati SL/TP + selettore deterministico; ML profilo opzionale)")
+    else:
+        print("  Exit profile: OFF (solo SL/TP da risk/Chandelier)")
     print(f"  Account  : {account.login if hasattr(account, 'login') else 'N/A'}")
     print(f"  Balance  : {account.balance}")
     print(f"  Equity   : {account.equity}")
