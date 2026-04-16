@@ -104,6 +104,7 @@ class MT5BrokerAdapter(IBrokerAdapter):
         run_mode: RunMode = RunMode.PAPER,
         deviation: int = 20,
         magic_number: int = 12345,
+        min_stop_pips: float = 10.0,
     ) -> None:
         self._login = login
         self._password = password
@@ -113,6 +114,7 @@ class MT5BrokerAdapter(IBrokerAdapter):
         self._run_mode = run_mode
         self._deviation = deviation
         self._magic_number = magic_number
+        self._min_stop_pips = min_stop_pips
         self._connected = False
 
     # ── IBrokerAdapter ────────────────────────────────────────────────────────
@@ -372,6 +374,118 @@ class MT5BrokerAdapter(IBrokerAdapter):
         )
         return dc_replace(order, lot_size=new_lots)
 
+    # ── Minimum stop distance ─────────────────────────────────────────────────
+
+    def _adjust_stops_for_min_distance(
+        self,
+        order: Order,
+        request: dict,
+        digits: int,
+    ) -> dict:
+        """Ensure SL/TP respect the broker's minimum stop distance.
+
+        MT5 brokers advertise ``symbol_info.stops_level`` (minimum distance
+        between current price and a pending stop, in *points*).  Violating it
+        causes retcode=10016 TRADE_RETCODE_INVALID_STOPS.
+
+        We also apply ``self._min_stop_pips`` as a hard floor on top of
+        ``stops_level``.  This prevents *immediate stop-out*: when ATR is
+        small (e.g. on M1), the calculated SL may sit within spread distance
+        of the fill price, causing MT5 to trigger it on the very next tick.
+
+        The adjustment only *widens* stop distance — it never moves SL/TP in
+        the wrong direction (i.e. past entry price).
+        """
+        if request.get("sl") is None and request.get("tp") is None:
+            return request
+
+        mt5 = _get_mt5()
+        tick = mt5.symbol_info_tick(order.symbol)
+        info = mt5.symbol_info(order.symbol)
+
+        if tick is None or info is None:
+            return request
+
+        point: float = getattr(info, "point", 0.00001)
+        stops_level: int = getattr(info, "stops_level", 0)
+
+        # Minimum distance in price units:
+        #   max(broker stops_level, user-configured min_stop_pips in points)
+        # 1 pip = 0.0001 for 4/5-digit pairs (EURUSD), 0.01 for JPY pairs.
+        # In points: 1 pip = 10 points for 5-digit, 1 point for 3-digit.
+        # Safest approach: compute 1 pip in price units and divide by point.
+        pip_size = 0.0001 if point < 0.001 else 0.01  # 4/5-digit vs JPY
+        pip_points = max(1, round(pip_size / point))
+        min_points = max(stops_level, int(self._min_stop_pips * pip_points))
+        min_distance = min_points * point
+
+        is_buy = order.side == OrderSide.BUY
+        # Reference price: ask for BUY fills, bid for SELL fills
+        ref_price = tick.ask if is_buy else tick.bid
+
+        result = dict(request)
+
+        if is_buy:
+            # BUY SL must be at least min_distance below ref_price
+            if result.get("sl") is not None:
+                max_valid_sl = round(ref_price - min_distance, digits)
+                if result["sl"] > max_valid_sl:
+                    log.warning(
+                        "mt5_sl_adjusted_min_distance",
+                        symbol=order.symbol,
+                        side="BUY",
+                        original_sl=result["sl"],
+                        adjusted_sl=max_valid_sl,
+                        ref_price=round(ref_price, digits),
+                        min_distance_pips=self._min_stop_pips,
+                    )
+                    result["sl"] = max_valid_sl
+            # BUY TP must be at least min_distance above ref_price
+            if result.get("tp") is not None:
+                min_valid_tp = round(ref_price + min_distance, digits)
+                if result["tp"] < min_valid_tp:
+                    log.warning(
+                        "mt5_tp_adjusted_min_distance",
+                        symbol=order.symbol,
+                        side="BUY",
+                        original_tp=result["tp"],
+                        adjusted_tp=min_valid_tp,
+                        ref_price=round(ref_price, digits),
+                        min_distance_pips=self._min_stop_pips,
+                    )
+                    result["tp"] = min_valid_tp
+        else:
+            # SELL SL must be at least min_distance above ref_price
+            if result.get("sl") is not None:
+                min_valid_sl = round(ref_price + min_distance, digits)
+                if result["sl"] < min_valid_sl:
+                    log.warning(
+                        "mt5_sl_adjusted_min_distance",
+                        symbol=order.symbol,
+                        side="SELL",
+                        original_sl=result["sl"],
+                        adjusted_sl=min_valid_sl,
+                        ref_price=round(ref_price, digits),
+                        min_distance_pips=self._min_stop_pips,
+                    )
+                    result["sl"] = min_valid_sl
+            # SELL TP must be at least min_distance below ref_price
+            if result.get("tp") is not None:
+                max_valid_tp = round(ref_price - min_distance, digits)
+                if result["tp"] > max_valid_tp:
+                    log.warning(
+                        "mt5_tp_adjusted_min_distance",
+                        symbol=order.symbol,
+                        side="SELL",
+                        original_tp=result["tp"],
+                        adjusted_tp=max_valid_tp,
+                        ref_price=round(ref_price, digits),
+                        min_distance_pips=self._min_stop_pips,
+                    )
+                    result["tp"] = max_valid_tp
+
+        return result
+
     # ── Filling mode ──────────────────────────────────────────────────────────
 
     def _get_filling_mode(self, symbol: str) -> int:
@@ -433,5 +547,9 @@ class MT5BrokerAdapter(IBrokerAdapter):
             request["sl"] = _norm_price(order.stop_loss)
         if order.take_profit is not None:
             request["tp"] = _norm_price(order.take_profit)
+
+        # Enforce minimum stop distance: pushes SL/TP out if too close to
+        # current price (prevents retcode=10016 and immediate stop-out).
+        request = self._adjust_stops_for_min_distance(order, request, digits)
 
         return request

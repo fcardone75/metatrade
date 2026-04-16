@@ -214,3 +214,159 @@ class TestClampLotToMargin:
         # result.lot_size should be a multiple of 0.01
         remainder = result.lot_size % Decimal("0.01")
         assert remainder == Decimal("0")
+
+
+# ── _adjust_stops_for_min_distance ───────────────────────────────────────────
+
+def _make_symbol_info(*, point: float = 0.00001, stops_level: int = 0, digits: int = 5) -> SimpleNamespace:
+    return SimpleNamespace(point=point, stops_level=stops_level, digits=digits)
+
+
+class TestAdjustStopsForMinDistance:
+    """_adjust_stops_for_min_distance widens SL/TP that are too close to price."""
+
+    def _call(
+        self,
+        order: Order,
+        request: dict,
+        *,
+        ask: float = 1.10010,
+        bid: float = 1.10000,
+        point: float = 0.00001,
+        stops_level: int = 0,
+        min_stop_pips: float = 10.0,
+    ) -> dict:
+        adapter = MT5BrokerAdapter(
+            login=12345, password="pw", server="Demo",
+            min_stop_pips=min_stop_pips,
+        )
+        adapter._connected = True
+        mt5_mock = MagicMock()
+        mt5_mock.symbol_info_tick.return_value = SimpleNamespace(ask=ask, bid=bid)
+        mt5_mock.symbol_info.return_value = _make_symbol_info(point=point, stops_level=stops_level)
+        with patch("metatrade.broker.mt5_adapter._get_mt5", return_value=mt5_mock):
+            return adapter._adjust_stops_for_min_distance(order, request, digits=5)
+
+    def test_noop_when_no_sl_tp(self) -> None:
+        order = _make_order()
+        request: dict = {"action": 1, "symbol": "EURUSD", "volume": 0.5}
+        result = self._call(order, request)
+        assert result == request
+
+    def test_noop_when_tick_unavailable(self) -> None:
+        order = _make_order(side=OrderSide.SELL)
+        request = {"sl": 1.10100}
+        adapter = MT5BrokerAdapter(login=12345, password="pw", server="Demo")
+        adapter._connected = True
+        mt5_mock = MagicMock()
+        mt5_mock.symbol_info_tick.return_value = None
+        with patch("metatrade.broker.mt5_adapter._get_mt5", return_value=mt5_mock):
+            result = adapter._adjust_stops_for_min_distance(order, request, digits=5)
+        assert result == request
+
+    # ── BUY ──────────────────────────────────────────────────────────────────
+
+    def test_buy_sl_unchanged_when_far_enough(self) -> None:
+        """BUY SL already 15 pips below ask — no adjustment needed (min is 10 pips)."""
+        order = _make_order(side=OrderSide.BUY)
+        # ask=1.10010, min_stop=10 pips=0.00100, max_valid_sl=1.10010-0.00100=1.09910
+        request = {"sl": 1.09895}  # 11.5 pips below ask — fine
+        result = self._call(order, request, ask=1.10010, min_stop_pips=10.0)
+        assert result["sl"] == pytest.approx(1.09895)
+
+    def test_buy_sl_pushed_down_when_too_close(self) -> None:
+        """BUY SL 3 pips below ask is within 10-pip minimum — pushed to 10 pips."""
+        order = _make_order(side=OrderSide.BUY)
+        # ask=1.10000; sl=1.09970 is only 3 pips below ask
+        # min_stop=10 pips → max_valid_sl = 1.10000 - 0.00100 = 1.09900
+        request = {"sl": 1.09970}
+        result = self._call(order, request, ask=1.10000, min_stop_pips=10.0)
+        assert result["sl"] == pytest.approx(1.09900)
+
+    def test_buy_tp_unchanged_when_far_enough(self) -> None:
+        order = _make_order(side=OrderSide.BUY)
+        request = {"tp": 1.10200}  # 19 pips above ask=1.10010
+        result = self._call(order, request, ask=1.10010, min_stop_pips=10.0)
+        assert result["tp"] == pytest.approx(1.10200)
+
+    def test_buy_tp_pushed_up_when_too_close(self) -> None:
+        """BUY TP 5 pips above ask is within 10-pip minimum — pushed to 10 pips."""
+        order = _make_order(side=OrderSide.BUY)
+        # ask=1.10000; tp=1.10050 is only 5 pips above
+        # min_valid_tp = 1.10000 + 0.00100 = 1.10100
+        request = {"tp": 1.10050}
+        result = self._call(order, request, ask=1.10000, min_stop_pips=10.0)
+        assert result["tp"] == pytest.approx(1.10100)
+
+    # ── SELL ─────────────────────────────────────────────────────────────────
+
+    def test_sell_sl_unchanged_when_far_enough(self) -> None:
+        """SELL SL already 15 pips above bid — no adjustment needed."""
+        order = _make_order(side=OrderSide.SELL)
+        # bid=1.10000, min_stop=10 pips → min_valid_sl=1.10100
+        request = {"sl": 1.10150}  # 15 pips above bid — fine
+        result = self._call(order, request, bid=1.10000, min_stop_pips=10.0)
+        assert result["sl"] == pytest.approx(1.10150)
+
+    def test_sell_sl_pushed_up_when_too_close(self) -> None:
+        """SELL SL 3 pips above bid is within 10-pip minimum — pushed up."""
+        order = _make_order(side=OrderSide.SELL)
+        # bid=1.10000; sl=1.10030 is only 3 pips above
+        # min_valid_sl = 1.10000 + 0.00100 = 1.10100
+        request = {"sl": 1.10030}
+        result = self._call(order, request, bid=1.10000, min_stop_pips=10.0)
+        assert result["sl"] == pytest.approx(1.10100)
+
+    def test_sell_tp_unchanged_when_far_enough(self) -> None:
+        order = _make_order(side=OrderSide.SELL)
+        request = {"tp": 1.09800}  # 20 pips below bid=1.10000
+        result = self._call(order, request, bid=1.10000, min_stop_pips=10.0)
+        assert result["tp"] == pytest.approx(1.09800)
+
+    def test_sell_tp_pushed_down_when_too_close(self) -> None:
+        """SELL TP 5 pips below bid is within 10-pip minimum — pushed down."""
+        order = _make_order(side=OrderSide.SELL)
+        # bid=1.10000; tp=1.09950 is only 5 pips below
+        # max_valid_tp = 1.10000 - 0.00100 = 1.09900
+        request = {"tp": 1.09950}
+        result = self._call(order, request, bid=1.10000, min_stop_pips=10.0)
+        assert result["tp"] == pytest.approx(1.09900)
+
+    # ── broker stops_level ────────────────────────────────────────────────────
+
+    def test_broker_stops_level_used_when_larger_than_min_pips(self) -> None:
+        """When broker stops_level (50 points = 5 pips) > min_stop_pips (3), broker wins."""
+        order = _make_order(side=OrderSide.BUY)
+        # ask=1.10000, stops_level=50 points, point=0.00001 → min_distance=0.00050 (5 pips)
+        # min_stop_pips=3 pips → 30 points — broker's 50 points wins
+        # max_valid_sl = 1.10000 - 0.00050 = 1.09950
+        request = {"sl": 1.09980}  # only 2 pips below ask — too close
+        result = self._call(
+            order, request, ask=1.10000, point=0.00001,
+            stops_level=50, min_stop_pips=3.0,
+        )
+        assert result["sl"] == pytest.approx(1.09950)
+
+    # ── JPY pairs ─────────────────────────────────────────────────────────────
+
+    def test_jpy_pair_pip_calculation(self) -> None:
+        """For JPY pairs (point=0.001), 1 pip = 0.01 price units."""
+        order = Order(
+            order_id=Order.new_id(),
+            symbol="USDJPY",
+            side=OrderSide.SELL,
+            order_type=OrderType.MARKET,
+            lot_size=Decimal("0.10"),
+            timestamp_utc=datetime(2024, 1, 15, 10, 0, tzinfo=timezone.utc),
+        )
+        # bid=150.000, min_stop_pips=10 → min_distance = 10 * 0.01 = 0.10
+        # min_valid_sl = 150.000 + 0.10 = 150.100
+        request = {"sl": 150.050}  # only 5 pips above bid — too close
+        adapter = MT5BrokerAdapter(login=12345, password="pw", server="Demo", min_stop_pips=10.0)
+        adapter._connected = True
+        mt5_mock = MagicMock()
+        mt5_mock.symbol_info_tick.return_value = SimpleNamespace(ask=150.010, bid=150.000)
+        mt5_mock.symbol_info.return_value = SimpleNamespace(point=0.001, stops_level=0, digits=3)
+        with patch("metatrade.broker.mt5_adapter._get_mt5", return_value=mt5_mock):
+            result = adapter._adjust_stops_for_min_distance(order, request, digits=3)
+        assert result["sl"] == pytest.approx(150.100)

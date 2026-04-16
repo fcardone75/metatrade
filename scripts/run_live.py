@@ -87,6 +87,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--mt5-path", default="", help="Path to terminal64.exe if MT5 is not auto-detected")
     p.add_argument("--mt5-timeout-ms", type=int, default=60000, help="MT5 initialization timeout in milliseconds")
     p.add_argument("--magic-number", type=int, default=20240601, help="MT5 magic number for order tagging")
+    p.add_argument(
+        "--min-stop-pips",
+        type=float,
+        default=10.0,
+        help="Minimum SL/TP distance from entry in pips (default 10). "
+             "Prevents immediate stop-out due to tight ATR on short timeframes.",
+    )
     # Model
     p.add_argument("--model-dir", type=Path, default=Path("data/models"))
     p.add_argument("--model-version", default=None, help="Specific model version (default: active)")
@@ -216,6 +223,7 @@ def main() -> None:
         timeout=args.mt5_timeout_ms,
         run_mode=RunMode.LIVE,
         magic_number=args.magic_number,
+        min_stop_pips=args.min_stop_pips,
     )
 
     # 2. Load warmup bars
