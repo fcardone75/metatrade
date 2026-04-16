@@ -358,6 +358,11 @@ class LiveRunner(BaseRunner):
         # HOLD — still update SL if trailing stop moved it
         if decision.new_stop_loss is not None:
             new_sl = float(decision.new_stop_loss)
+            # Skip the broker call when SL hasn't actually changed — MT5 returns
+            # retcode=10025 (NO_CHANGES) and we'd spam warnings every tick.
+            current_sl = float(pos["sl"]) if pos.get("sl") else None
+            if current_sl is not None and abs(new_sl - current_sl) < 1e-6:
+                return None
             tp_val = float(pos["tp"]) if pos.get("tp") else None
             modified = self._broker.modify_sl_tp(
                 ticket=ticket,

@@ -710,6 +710,15 @@ class MT5BrokerAdapter(IBrokerAdapter):
         sl_val = round(new_sl, digits) if new_sl is not None else pos.sl
         tp_val = round(new_tp, digits) if new_tp is not None else pos.tp
 
+        # Short-circuit: if the rounded values equal what MT5 already has,
+        # skip the network round-trip entirely (avoids retcode=10025 spam).
+        if abs(sl_val - pos.sl) < 10 ** -digits and abs(tp_val - pos.tp) < 10 ** -digits:
+            log.debug(
+                "mt5_modify_sltp_skipped_no_change",
+                ticket=ticket, sl=sl_val, tp=tp_val,
+            )
+            return True
+
         request = {
             "action":   _MT5_TRADE_ACTION_SLTP,
             "position": ticket,
@@ -723,6 +732,14 @@ class MT5BrokerAdapter(IBrokerAdapter):
         ):
             retcode = result.retcode if result else -1
             comment = result.comment if result else "none"
+            # retcode=10025 means MT5 itself detected no change after rounding
+            # on its side — treat as silent success, not a failure.
+            if retcode == 10025:
+                log.debug(
+                    "mt5_modify_sltp_no_change",
+                    ticket=ticket, symbol=symbol, sl=sl_val, tp=tp_val,
+                )
+                return True
             log.warning(
                 "mt5_modify_sltp_failed",
                 ticket=ticket,
