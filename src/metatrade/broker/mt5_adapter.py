@@ -57,6 +57,8 @@ _MT5_FILL_FLAG_FOK = 1             # broker supports FOK
 _MT5_FILL_FLAG_IOC = 2             # broker supports IOC
 _MT5_RETCODE_DONE = 10009          # Success
 _MT5_RETCODE_DONE_PARTIAL = 10010  # Partial fill
+_MT5_TRADE_ACTION_SLTP = 6         # Modify stop-loss / take-profit of open position
+_MT5_RETCODE_INVALID_VOLUME = 10014
 
 
 def _get_mt5():  # type: ignore[return]
@@ -181,6 +183,43 @@ class MT5BrokerAdapter(IBrokerAdapter):
         order = self._clamp_lot_to_margin(order)
         request = self._build_mt5_request(order)
         log.debug("mt5_order_send", request=request)
+
+        # Pre-flight validation — catches volume / stop / margin issues before
+        # they become retcode errors that show up in the dashboard as failures.
+        check = mt5.order_check(request)
+        if check is not None and check.retcode != _MT5_RETCODE_DONE:
+            if check.retcode == _MT5_RETCODE_INVALID_VOLUME:
+                # Re-normalize volume against the live symbol constraints and retry once
+                new_volume = float(self._normalize_volume(
+                    Decimal(str(request["volume"])), order.symbol
+                ))
+                if new_volume != request["volume"]:
+                    log.warning(
+                        "mt5_order_check_volume_renormalized",
+                        symbol=order.symbol,
+                        original_volume=request["volume"],
+                        renormalized_volume=new_volume,
+                    )
+                    request = dict(request)
+                    request["volume"] = new_volume
+                    check = mt5.order_check(request)
+            if check is not None and check.retcode != _MT5_RETCODE_DONE:
+                log.error(
+                    "mt5_order_check_failed",
+                    retcode=check.retcode,
+                    comment=check.comment,
+                    symbol=order.symbol,
+                    volume=request.get("volume"),
+                    margin=check.margin if hasattr(check, "margin") else None,
+                )
+                raise OrderRejectedError(
+                    message=(
+                        f"MT5 order pre-check failed: retcode={check.retcode} "
+                        f"comment={check.comment}"
+                    ),
+                    code="MT5_ORDER_CHECK_FAILED",
+                    context={"retcode": check.retcode, "comment": check.comment},
+                )
 
         result = mt5.order_send(request)
         if result is None:
@@ -553,3 +592,179 @@ class MT5BrokerAdapter(IBrokerAdapter):
         request = self._adjust_stops_for_min_distance(order, request, digits)
 
         return request
+
+    # ── Position management ───────────────────────────────────────────────────
+
+    def get_latest_tick(self, symbol: str) -> tuple[int, float, float] | None:
+        """Return ``(time_msc, bid, ask)`` for the latest tick on *symbol*.
+
+        ``time_msc`` is MT5's ``tick.time_msc`` — milliseconds since epoch.
+        Callers compare successive values to detect whether a new tick arrived.
+        Returns None when not connected or the symbol has no tick yet.
+        """
+        if not self._connected:
+            return None
+        mt5 = _get_mt5()
+        tick = mt5.symbol_info_tick(symbol)
+        if tick is None:
+            return None
+        # time_msc may not exist on all MT5 builds; fall back to time * 1000
+        time_msc = getattr(tick, "time_msc", None) or (tick.time * 1000)
+        return int(time_msc), float(tick.bid), float(tick.ask)
+
+    def get_open_positions(self, symbol: str | None = None) -> list[dict]:
+        """Return all open positions (optionally filtered by symbol).
+
+        Each dict contains:
+            ticket, symbol, volume, type (0=buy, 1=sell),
+            price_open, sl, tp, profit, time_utc (datetime).
+        Returns an empty list when not connected or no positions exist.
+        """
+        if not self._connected:
+            return []
+        mt5 = _get_mt5()
+        if symbol:
+            positions = mt5.positions_get(symbol=symbol)
+        else:
+            positions = mt5.positions_get()
+        if positions is None:
+            return []
+        result = []
+        for p in positions:
+            result.append({
+                "ticket":      p.ticket,
+                "symbol":      p.symbol,
+                "volume":      p.volume,
+                "type":        p.type,          # 0 = buy, 1 = sell
+                "price_open":  p.price_open,
+                "sl":          p.sl,
+                "tp":          p.tp,
+                "profit":      p.profit,
+                "magic":       p.magic,
+                "comment":     p.comment,
+                "time_utc":    datetime.fromtimestamp(p.time, tz=timezone.utc),
+            })
+        return result
+
+    def modify_sl_tp(
+        self,
+        ticket: int,
+        symbol: str,
+        new_sl: float | None,
+        new_tp: float | None,
+    ) -> bool:
+        """Modify the stop-loss and/or take-profit of an open position.
+
+        Args:
+            ticket:  MT5 position ticket.
+            symbol:  Symbol (needed for price normalisation).
+            new_sl:  New stop-loss price, or None to leave unchanged.
+            new_tp:  New take-profit price, or None to leave unchanged.
+
+        Returns:
+            True if MT5 accepted the modification, False otherwise.
+        """
+        if not self._connected:
+            return False
+        mt5 = _get_mt5()
+        digits = self._symbol_digits(symbol)
+
+        # Fetch current position to fill in unchanged SL/TP
+        positions = mt5.positions_get(ticket=ticket)
+        if not positions:
+            log.warning("mt5_modify_sltp_position_not_found", ticket=ticket)
+            return False
+        pos = positions[0]
+
+        sl_val = round(new_sl, digits) if new_sl is not None else pos.sl
+        tp_val = round(new_tp, digits) if new_tp is not None else pos.tp
+
+        request = {
+            "action":   _MT5_TRADE_ACTION_SLTP,
+            "position": ticket,
+            "symbol":   symbol,
+            "sl":       sl_val,
+            "tp":       tp_val,
+        }
+        result = mt5.order_send(request)
+        if result is None or result.retcode not in (
+            _MT5_RETCODE_DONE, _MT5_RETCODE_DONE_PARTIAL
+        ):
+            retcode = result.retcode if result else -1
+            comment = result.comment if result else "none"
+            log.warning(
+                "mt5_modify_sltp_failed",
+                ticket=ticket,
+                symbol=symbol,
+                new_sl=sl_val,
+                new_tp=tp_val,
+                retcode=retcode,
+                comment=comment,
+            )
+            return False
+        log.info(
+            "mt5_modify_sltp_ok",
+            ticket=ticket,
+            symbol=symbol,
+            new_sl=sl_val,
+            new_tp=tp_val,
+        )
+        return True
+
+    def close_position_by_ticket(
+        self,
+        ticket: int,
+        symbol: str,
+        volume: float,
+        is_buy: bool,
+    ) -> bool:
+        """Close (fully or partially) an open position by ticket.
+
+        Args:
+            ticket:  MT5 position ticket.
+            symbol:  Symbol.
+            volume:  Lots to close (must be <= position volume).
+            is_buy:  True if the position to close is a BUY (we'll sell to close).
+
+        Returns:
+            True if accepted, False otherwise.
+        """
+        if not self._connected:
+            return False
+        mt5 = _get_mt5()
+        close_type = _MT5_ORDER_TYPE_SELL if is_buy else _MT5_ORDER_TYPE_BUY
+        norm_vol = float(self._normalize_volume(Decimal(str(volume)), symbol))
+
+        request = {
+            "action":       _MT5_TRADE_ACTION_DEAL,
+            "symbol":       symbol,
+            "volume":       norm_vol,
+            "type":         close_type,
+            "position":     ticket,
+            "deviation":    self._deviation,
+            "magic":        self._magic_number,
+            "comment":      "exit_engine",
+            "type_filling": self._get_filling_mode(symbol),
+        }
+        result = mt5.order_send(request)
+        if result is None or result.retcode not in (
+            _MT5_RETCODE_DONE, _MT5_RETCODE_DONE_PARTIAL
+        ):
+            retcode = result.retcode if result else -1
+            comment = result.comment if result else "none"
+            log.warning(
+                "mt5_close_position_failed",
+                ticket=ticket,
+                symbol=symbol,
+                volume=norm_vol,
+                retcode=retcode,
+                comment=comment,
+            )
+            return False
+        log.info(
+            "mt5_close_position_ok",
+            ticket=ticket,
+            symbol=symbol,
+            volume=norm_vol,
+        )
+        return True

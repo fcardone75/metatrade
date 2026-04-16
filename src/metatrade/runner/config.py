@@ -59,6 +59,13 @@ class RunnerConfig(BaseConfig):
     chandelier_atr_period: int = Field(default=14, ge=1)
     chandelier_atr_mult: float = Field(default=2.0, gt=0.0)
 
+    # ── Minimum SL distance (pip floor) ──────────────────────────────────────
+    # Hard floor on stop-loss distance from entry, in pips.  Applied both to
+    # the Chandelier SL and to exit-profile candidates before lot sizing.
+    # Prevents tiny SLs from producing oversized lot sizes on short timeframes.
+    # Must match or exceed the MT5 adapter's min_stop_pips setting.
+    min_sl_pips: float = Field(default=10.0, ge=0.0)
+
     # ── Trailing stop ─────────────────────────────────────────────────────────
     # When enabled, the Chandelier SL is updated each bar while a position is
     # open. The stop only moves in the favourable direction (ratchets).

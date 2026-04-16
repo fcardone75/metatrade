@@ -83,3 +83,38 @@ class IBrokerAdapter(ABC):
             BrokerConnectionError: If not connected.
             DataError:             If no quote is available for the symbol.
         """
+
+    # ── Optional position management (not abstract — live adapter implements) ──
+
+    def get_open_positions(self, symbol: str | None = None) -> list[dict]:
+        """Return open positions.  Default: empty list (paper/mock adapters)."""
+        return []
+
+    def modify_sl_tp(
+        self,
+        ticket: int,
+        symbol: str,
+        new_sl: float | None,
+        new_tp: float | None,
+    ) -> bool:
+        """Modify SL/TP of an open position.  Default: no-op (returns False)."""
+        return False
+
+    def close_position_by_ticket(
+        self,
+        ticket: int,
+        symbol: str,
+        volume: float,
+        is_buy: bool,
+    ) -> bool:
+        """Close (fully or partially) a position by ticket.  Default: no-op."""
+        return False
+
+    def get_latest_tick(self, symbol: str) -> tuple[int, float, float] | None:
+        """Return (time_msc, bid, ask) for the latest tick on *symbol*.
+
+        ``time_msc`` is milliseconds since epoch — callers compare the value
+        to detect whether a new tick arrived since the last call.
+        Returns None when not connected or no tick is available.
+        """
+        return None

@@ -12,7 +12,6 @@ Each runner subclass calls process_bar() with appropriate account data.
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -27,6 +26,7 @@ from metatrade.core.contracts.signal import AnalysisSignal
 from metatrade.core.contracts.risk import RiskDecision, RiskVeto
 from metatrade.core.enums import ConsensusMode, SignalDirection, OrderSide, RunMode
 from metatrade.alerting.telegram_alerter import TelegramAlerter
+from metatrade.core.log import get_logger
 from metatrade.observability.store import TelemetryStore
 from metatrade.risk.config import RiskConfig
 from metatrade.risk.manager import RiskManager
@@ -34,7 +34,7 @@ from metatrade.runner.config import RunnerConfig
 from metatrade.technical_analysis.interface import ITechnicalModule
 
 
-log = logging.getLogger(__name__)
+log = get_logger(__name__)
 
 
 @dataclass
@@ -715,6 +715,48 @@ class BaseRunner:
                 return decision
 
             profile = selected.candidate
+
+            # ── Enforce minimum SL pip distance ──────────────────────────────
+            # Exit-profile candidates can produce very tight SLs (e.g. 1-3 pip
+            # swing levels on M1).  A 2-pip SL at 1% risk yields 2+ lots on a
+            # $4k account, which then gets clamped by the broker and creates
+            # volume / margin errors.  Widening the SL here prevents over-sizing
+            # BEFORE the lot calculation, which is the only safe place to fix it.
+            min_sl_pips_val = Decimal(str(self._config.min_sl_pips))
+            if min_sl_pips_val > 0 and profile.sl_pips < min_sl_pips_val:
+                pip_size = Decimal("10") ** -pip_digits
+                new_sl_dist = min_sl_pips_val * pip_size
+                if decision.side == OrderSide.BUY:
+                    adjusted_sl_price = entry_price - new_sl_dist
+                else:
+                    adjusted_sl_price = entry_price + new_sl_dist
+                # Rescale TP proportionally if one was set
+                if profile.tp_price is not None and profile.tp_pips is not None:
+                    rr = profile.risk_reward
+                    new_tp_dist = new_sl_dist * rr
+                    if decision.side == OrderSide.BUY:
+                        adjusted_tp_price = entry_price + new_tp_dist
+                    else:
+                        adjusted_tp_price = entry_price - new_tp_dist
+                    new_tp_pips = min_sl_pips_val * rr
+                else:
+                    adjusted_tp_price = profile.tp_price
+                    new_tp_pips = profile.tp_pips
+                log.warning(
+                    "exit_profile_sl_widened_to_min",
+                    symbol=symbol,
+                    profile_id=profile.profile_id,
+                    original_sl_pips=str(profile.sl_pips),
+                    min_sl_pips=str(min_sl_pips_val),
+                    adjusted_sl=str(adjusted_sl_price),
+                )
+                profile = replace(
+                    profile,
+                    sl_price=adjusted_sl_price,
+                    sl_pips=min_sl_pips_val,
+                    tp_price=adjusted_tp_price,
+                    tp_pips=new_tp_pips,
+                )
 
             # Recompute lot size so the configured risk_pct is preserved
             # with the newly selected SL distance.

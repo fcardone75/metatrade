@@ -107,6 +107,15 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Disable exit-profile candidate pipeline (use default Chandelier SL/TP only).",
     )
+    # Position monitoring
+    p.add_argument(
+        "--position-monitor-interval",
+        type=float,
+        default=5.0,
+        help="Seconds between near-real-time position checks (trailing SL/TP updates, exits). "
+             "0 = tick mode: evaluate on every new MT5 tick (~50 ms polling). "
+             "Negative = disable position monitoring between bars.",
+    )
     # Safety
     p.add_argument(
         "--confirm",
@@ -191,6 +200,71 @@ def make_module_cfg(args: argparse.Namespace) -> ModuleConfig:
     )
 
 
+_TICK_POLL_SECS = 0.05   # 50 ms polling in tick mode (interval == 0)
+
+
+def _print_monitor_action(act: dict) -> None:
+    ts_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    print(
+        f"[{ts_str}] MONITOR  {act['action']:14s} "
+        f"ticket={act['ticket']}  "
+        f"sl={act['new_sl'] or '-':<10}  "
+        f"{act['reason'][:60]}"
+    )
+
+
+def _run_position_monitor(
+    runner,
+    broker,
+    exit_engine,
+    symbol: str,
+    poll_interval: float,
+    mon_interval: float,
+) -> None:
+    """Block for ``poll_interval`` seconds while running position monitoring.
+
+    mon_interval behaviour:
+      > 0  — evaluate every mon_interval seconds (timer mode).
+      == 0 — evaluate on every new MT5 tick; polls at 50 ms to detect tick
+              changes.  This is the highest-frequency mode.
+      < 0  — disable position monitoring; just sleep.
+    """
+    if mon_interval < 0:
+        time.sleep(poll_interval)
+        return
+
+    deadline = time.time() + poll_interval
+    last_tick_msc: int = 0
+
+    while time.time() < deadline:
+        do_monitor = False
+
+        if mon_interval == 0:
+            # Tick mode: run only when a new tick arrived
+            tick = broker.get_latest_tick(symbol)
+            if tick is not None:
+                tick_msc = tick[0]
+                if tick_msc != last_tick_msc:
+                    last_tick_msc = tick_msc
+                    do_monitor = True
+            sleep_secs = _TICK_POLL_SECS
+        else:
+            # Timer mode: run every mon_interval seconds
+            do_monitor = True
+            sleep_secs = mon_interval
+
+        if do_monitor:
+            try:
+                actions = runner.monitor_positions_once(exit_engine, symbol=symbol)
+                for act in actions:
+                    _print_monitor_action(act)
+            except Exception as exc:
+                log.warning("position_monitor_error", error=str(exc))
+
+        remaining = deadline - time.time()
+        time.sleep(min(sleep_secs, max(0.0, remaining)))
+
+
 def main() -> None:
     configure_logging()
     args = parse_args()
@@ -271,6 +345,11 @@ def main() -> None:
 
         exit_gen = ExitProfileCandidateGenerator()
         exit_sel = ExitProfileSelector()
+
+    # Exit engine — used both by the pipeline (per-bar) and the near-real-time
+    # position monitor (sub-bar, every position_monitor_interval seconds).
+    from metatrade.exit_engine.engine import ExitEngine
+    exit_engine = ExitEngine()
 
     runner = LiveRunner(
         config=runner_cfg,
@@ -375,7 +454,14 @@ def main() -> None:
                     break
 
         if _running[0]:
-            time.sleep(poll_interval)
+            _run_position_monitor(
+                runner=runner,
+                broker=broker,
+                exit_engine=exit_engine,
+                symbol=args.symbol,
+                poll_interval=poll_interval,
+                mon_interval=args.position_monitor_interval,
+            )
 
     # 5. Summary
     runner.disconnect()

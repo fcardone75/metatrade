@@ -14,7 +14,9 @@ The live runner is intentionally thin — most logic lives in BaseRunner.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
+from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from metatrade.broker.interface import IBrokerAdapter
 from metatrade.core.contracts.market import Bar
@@ -26,6 +28,9 @@ from metatrade.observability.store import TelemetryStore
 from metatrade.runner.base import BaseRunner
 from metatrade.runner.config import RunnerConfig
 from metatrade.technical_analysis.interface import ITechnicalModule
+
+if TYPE_CHECKING:
+    from metatrade.exit_engine.engine import ExitEngine
 
 
 log = get_logger(__name__)
@@ -194,3 +199,183 @@ class LiveRunner(BaseRunner):
     def reset_buffer(self) -> None:
         """Clear the internal bar buffer (e.g. after a weekend gap)."""
         self._bar_buffer.clear()
+
+    def monitor_positions_once(
+        self,
+        exit_engine: "ExitEngine",
+        symbol: str | None = None,
+    ) -> list[dict]:
+        """Evaluate and act on all open positions in near real-time.
+
+        Designed to be called between bar closes (e.g., every 5 seconds).
+        For each open position the method:
+          1. Runs ``ExitEngine.evaluate()`` against the current market price.
+          2. Updates SL on MT5 if a tighter trailing stop is suggested.
+          3. Closes the position if the engine votes CLOSE_FULL.
+
+        Args:
+            exit_engine: Configured ExitEngine instance.
+            symbol:      Filter to a specific symbol (None = all positions).
+
+        Returns:
+            List of action dicts for logging/display:
+            {"ticket", "symbol", "action", "new_sl", "reason"}.
+        """
+        if not self._connected:
+            return []
+
+        try:
+            positions = self._broker.get_open_positions(symbol=symbol)
+        except Exception as exc:
+            log.warning("monitor_positions_get_failed", error=str(exc))
+            return []
+
+        if not positions:
+            return []
+
+        actions: list[dict] = []
+        now_utc = datetime.now(timezone.utc)
+
+        for pos in positions:
+            try:
+                action = self._evaluate_and_act(pos, exit_engine, now_utc)
+                if action:
+                    actions.append(action)
+            except Exception as exc:
+                log.warning(
+                    "monitor_positions_eval_failed",
+                    ticket=pos.get("ticket"),
+                    symbol=pos.get("symbol"),
+                    error=str(exc),
+                )
+
+        return actions
+
+    def _evaluate_and_act(
+        self,
+        pos: dict,
+        exit_engine: "ExitEngine",
+        now_utc: datetime,
+    ) -> dict | None:
+        """Run ExitEngine for one position and execute the resulting decision."""
+        from metatrade.exit_engine.contracts import PositionContext, PositionSide, ExitAction
+
+        ticket = pos["ticket"]
+        symbol = pos["symbol"]
+        is_buy = pos["type"] == 0
+        pos_side = PositionSide.LONG if is_buy else PositionSide.SHORT
+
+        # Get current market price
+        try:
+            bid, ask = self._broker.get_current_price(symbol)
+            current_price = ask if is_buy else bid
+        except Exception:
+            return None
+
+        entry_price = Decimal(str(pos["price_open"]))
+        lot_size    = Decimal(str(pos["volume"]))
+        opened_at   = pos["time_utc"]
+
+        # Peak favorable price: use entry as lower bound (the bar buffer may not
+        # have a full history for this position yet).
+        if is_buy:
+            peak = max(entry_price, current_price)
+        else:
+            peak = min(entry_price, current_price)
+
+        # Collect bars since position opened (from buffer)
+        bars_since = [
+            b for b in self._bar_buffer
+            if b.timestamp_utc >= opened_at and b.symbol == symbol
+        ] if self._bar_buffer else []
+
+        current_bar = bars_since[-1] if bars_since else None
+        if current_bar is None:
+            # No closed bar available yet — skip this tick
+            return None
+
+        ctx = PositionContext(
+            position_id=str(ticket),
+            symbol=symbol,
+            side=pos_side,
+            entry_price=entry_price,
+            lot_size=lot_size,
+            opened_at_utc=opened_at,
+            current_price=current_price,
+            current_bar=current_bar,
+            bars_since_entry=bars_since,
+            peak_favorable_price=peak,
+            stop_loss=Decimal(str(pos["sl"])) if pos.get("sl") else None,
+            take_profit=Decimal(str(pos["tp"])) if pos.get("tp") else None,
+        )
+
+        decision = exit_engine.evaluate(ctx)
+
+        # ── Act on the decision ───────────────────────────────────────────────
+        if decision.action == ExitAction.CLOSE_FULL:
+            closed = self._broker.close_position_by_ticket(
+                ticket=ticket,
+                symbol=symbol,
+                volume=float(lot_size),
+                is_buy=is_buy,
+            )
+            log.info(
+                "monitor_positions_close_full",
+                ticket=ticket,
+                symbol=symbol,
+                score=decision.aggregate_score,
+                reason=decision.explanation,
+                accepted=closed,
+            )
+            return {
+                "ticket": ticket, "symbol": symbol,
+                "action": "CLOSE_FULL", "new_sl": None,
+                "reason": decision.explanation,
+            }
+
+        if decision.action == ExitAction.CLOSE_PARTIAL:
+            close_lots = float(lot_size) * decision.close_pct
+            closed = self._broker.close_position_by_ticket(
+                ticket=ticket,
+                symbol=symbol,
+                volume=close_lots,
+                is_buy=is_buy,
+            )
+            log.info(
+                "monitor_positions_close_partial",
+                ticket=ticket,
+                symbol=symbol,
+                close_pct=decision.close_pct,
+                score=decision.aggregate_score,
+                accepted=closed,
+            )
+            return {
+                "ticket": ticket, "symbol": symbol,
+                "action": "CLOSE_PARTIAL", "new_sl": None,
+                "reason": decision.explanation,
+            }
+
+        # HOLD — still update SL if trailing stop moved it
+        if decision.new_stop_loss is not None:
+            new_sl = float(decision.new_stop_loss)
+            tp_val = float(pos["tp"]) if pos.get("tp") else None
+            modified = self._broker.modify_sl_tp(
+                ticket=ticket,
+                symbol=symbol,
+                new_sl=new_sl,
+                new_tp=tp_val,
+            )
+            if modified:
+                log.info(
+                    "monitor_positions_sl_updated",
+                    ticket=ticket,
+                    symbol=symbol,
+                    new_sl=new_sl,
+                )
+                return {
+                    "ticket": ticket, "symbol": symbol,
+                    "action": "SL_UPDATE", "new_sl": new_sl,
+                    "reason": decision.explanation,
+                }
+
+        return None
