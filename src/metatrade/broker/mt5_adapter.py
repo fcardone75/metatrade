@@ -723,6 +723,41 @@ class MT5BrokerAdapter(IBrokerAdapter):
             )
             return True
 
+        # Guard against retcode=10016 (INVALID_STOPS): skip the modification
+        # this tick if the new SL or TP would violate the broker's minimum
+        # stop distance from the current price.  The trailing stop will retry
+        # on the next tick once the price moves far enough away.
+        tick = mt5.symbol_info_tick(symbol)
+        info = mt5.symbol_info(symbol)
+        if tick is not None and info is not None:
+            point: float = getattr(info, "point", 0.00001)
+            stops_level: int = getattr(info, "stops_level", 0)
+            pip_size = 0.0001 if point < 0.001 else 0.01
+            pip_points = max(1, round(pip_size / point))
+            min_pts = max(stops_level, int(self._min_stop_pips * pip_points))
+            min_dist = min_pts * point
+            is_buy = pos.type == 0  # 0=POSITION_TYPE_BUY
+            ref = tick.ask if is_buy else tick.bid
+            if is_buy:
+                sl_too_close = sl_val > ref - min_dist
+                tp_too_close = tp_val != 0.0 and tp_val < ref + min_dist
+            else:
+                sl_too_close = sl_val < ref + min_dist
+                tp_too_close = tp_val != 0.0 and tp_val > ref - min_dist
+            if sl_too_close or tp_too_close:
+                log.debug(
+                    "mt5_modify_sltp_skipped_too_close",
+                    ticket=ticket,
+                    symbol=symbol,
+                    sl=sl_val,
+                    tp=tp_val,
+                    ref_price=round(ref, digits),
+                    min_dist_pips=self._min_stop_pips,
+                    sl_too_close=sl_too_close,
+                    tp_too_close=tp_too_close,
+                )
+                return True
+
         request = {
             "action":   _MT5_TRADE_ACTION_SLTP,
             "position": ticket,
