@@ -52,7 +52,7 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from metatrade.core.enums import Timeframe  # noqa: E402
-from metatrade.core.log import get_logger  # noqa: E402
+from metatrade.core.log import configure_logging, get_logger  # noqa: E402
 from metatrade.market_data.config import MarketDataConfig  # noqa: E402
 from metatrade.ml.config import MLConfig  # noqa: E402
 from metatrade.ml.registry import ModelRegistry  # noqa: E402
@@ -632,6 +632,7 @@ def write_json_report(model_dir: Path, payload: dict[str, Any]) -> Path:
 
 
 def main() -> None:
+    configure_logging()
     args = parse_args()
     args = apply_mt5_defaults(args)
     telemetry = TelemetryStore.from_env()

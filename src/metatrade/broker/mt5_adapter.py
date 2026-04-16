@@ -190,6 +190,17 @@ class MT5BrokerAdapter(IBrokerAdapter):
             )
 
         if result.retcode not in (_MT5_RETCODE_DONE, _MT5_RETCODE_DONE_PARTIAL):
+            log.error(
+                "mt5_order_rejected",
+                retcode=result.retcode,
+                comment=result.comment,
+                order_id=str(order.order_id),
+                symbol=order.symbol,
+                side=order.side.value,
+                volume=request.get("volume"),
+                sl=request.get("sl"),
+                tp=request.get("tp"),
+            )
             raise OrderRejectedError(
                 message=(
                     f"MT5 order rejected: retcode={result.retcode} "
@@ -199,7 +210,7 @@ class MT5BrokerAdapter(IBrokerAdapter):
                 context={
                     "retcode": result.retcode,
                     "comment": result.comment,
-                    "order": str(order.order_id),
+                    "order_id": str(order.order_id),
                 },
             )
 
@@ -254,6 +265,66 @@ class MT5BrokerAdapter(IBrokerAdapter):
                 code="MT5_NOT_CONNECTED",
             )
 
+    # ── Symbol info helpers ───────────────────────────────────────────────────
+
+    def _symbol_info(self, symbol: str):  # type: ignore[return]
+        """Return mt5.symbol_info() or None without raising."""
+        try:
+            return _get_mt5().symbol_info(symbol)
+        except Exception:
+            return None
+
+    def _symbol_digits(self, symbol: str) -> int:
+        """Decimal places for prices (default 5).  EURUSD → 5, USDJPY → 3."""
+        info = self._symbol_info(symbol)
+        return int(info.digits) if info is not None else 5
+
+    def _symbol_volume_step(self, symbol: str) -> Decimal:
+        """Minimum lot increment advertised by the broker (default 0.01)."""
+        info = self._symbol_info(symbol)
+        if info is not None:
+            step = getattr(info, "volume_step", None)
+            if step and step > 0:
+                return Decimal(str(step))
+        return Decimal("0.01")
+
+    def _symbol_volume_min(self, symbol: str) -> Decimal:
+        """Minimum tradeable lot size (default 0.01)."""
+        info = self._symbol_info(symbol)
+        if info is not None:
+            vmin = getattr(info, "volume_min", None)
+            if vmin and vmin > 0:
+                return Decimal(str(vmin))
+        return Decimal("0.01")
+
+    def _symbol_volume_max(self, symbol: str) -> Decimal:
+        """Maximum tradeable lot size (default 100)."""
+        info = self._symbol_info(symbol)
+        if info is not None:
+            vmax = getattr(info, "volume_max", None)
+            if vmax and vmax > 0:
+                return Decimal(str(vmax))
+        return Decimal("100")
+
+    def _normalize_volume(self, lots: Decimal, symbol: str) -> Decimal:
+        """Round lots to the broker's volume_step and clamp to [volume_min, volume_max].
+
+        This is the single source of truth for valid volume values.
+        Needed because:
+        - Drawdown-recovery and intermarket scaling multiply without rounding.
+        - Python Decimal arithmetic can produce values like 2.9850000000000001.
+        - MT5 rejects volumes that are not exact multiples of volume_step
+          (retcode=10014 TRADE_RETCODE_INVALID_VOLUME).
+        """
+        step = self._symbol_volume_step(symbol)
+        vmin = self._symbol_volume_min(symbol)
+        vmax = self._symbol_volume_max(symbol)
+        # Floor to step boundary
+        normalized = (lots / step).to_integral_value(rounding=ROUND_DOWN) * step
+        return max(vmin, min(normalized, vmax))
+
+    # ── Margin clamping ───────────────────────────────────────────────────────
+
     def _clamp_lot_to_margin(self, order: Order) -> Order:
         """Scale down lot size if the broker would reject it for insufficient margin.
 
@@ -285,14 +356,11 @@ class MT5BrokerAdapter(IBrokerAdapter):
         if required <= usable:
             return order
 
-        # Scale lot size down proportionally
+        # Scale lot size down proportionally, then round to valid broker step.
         scale = usable / required
-        lot_step = Decimal("0.01")
-        new_lots = (
-            (order.lot_size * Decimal(str(scale))) / lot_step
-        ).to_integral_value(rounding=ROUND_DOWN) * lot_step
-        min_lot = Decimal("0.01")
-        new_lots = max(new_lots, min_lot)
+        new_lots = self._normalize_volume(
+            order.lot_size * Decimal(str(scale)), order.symbol
+        )
 
         log.warning(
             "mt5_lot_clamped_for_margin",
@@ -303,6 +371,8 @@ class MT5BrokerAdapter(IBrokerAdapter):
             free_margin=round(free, 2),
         )
         return dc_replace(order, lot_size=new_lots)
+
+    # ── Filling mode ──────────────────────────────────────────────────────────
 
     def _get_filling_mode(self, symbol: str) -> int:
         """Return the best supported type_filling value for *symbol*.
@@ -322,43 +392,46 @@ class MT5BrokerAdapter(IBrokerAdapter):
         # RETURN is always supported by MT5 for market orders
         return _MT5_FILLING_RETURN
 
-    def _symbol_digits(self, symbol: str) -> int:
-        """Return the number of decimal places for *symbol* prices (default 5)."""
-        mt5 = _get_mt5()
-        info = mt5.symbol_info(symbol)
-        if info is not None:
-            return int(info.digits)
-        return 5
+    # ── Request builder ───────────────────────────────────────────────────────
 
     def _build_mt5_request(self, order: Order) -> dict:
-        """Build an MQL5 trade request dict from an Order."""
+        """Build an MQL5 trade request dict from an Order.
+
+        All prices are normalised to the symbol's ``digits`` decimal places
+        (prevents retcode=10016 TRADE_RETCODE_INVALID_STOPS).
+
+        Volume is normalised to the broker's ``volume_step`` and clamped to
+        [volume_min, volume_max] (prevents retcode=10014
+        TRADE_RETCODE_INVALID_VOLUME).  This is a safety net: the upstream
+        chain (PositionSizer, drawdown scaling, intermarket scaling) may leave
+        unrounded Decimal values.
+        """
         is_buy = order.side == OrderSide.BUY
         action = _MT5_TRADE_ACTION_DEAL
         order_type = _MT5_ORDER_TYPE_BUY if is_buy else _MT5_ORDER_TYPE_SELL
 
-        # MT5 requires prices normalised to the symbol's tick size (digits).
-        # Passing raw Python float arithmetic results (e.g. 1.1798970657790784)
-        # causes retcode=10016 (TRADE_RETCODE_INVALID_STOPS).
         digits = self._symbol_digits(order.symbol)
 
-        def _norm(price: Decimal) -> float:
+        def _norm_price(price: Decimal) -> float:
             return round(float(price), digits)
 
+        volume = float(self._normalize_volume(order.lot_size, order.symbol))
+
         request: dict = {
-            "action": action,
-            "symbol": order.symbol,
-            "volume": float(order.lot_size),
-            "type": order_type,
-            "deviation": self._deviation,
-            "magic": self._magic_number,
-            "comment": order.comment or "metatrade",
+            "action":       action,
+            "symbol":       order.symbol,
+            "volume":       volume,
+            "type":         order_type,
+            "deviation":    self._deviation,
+            "magic":        self._magic_number,
+            "comment":      order.comment or "metatrade",
             "type_filling": self._get_filling_mode(order.symbol),
         }
         if order.price is not None:
-            request["price"] = _norm(order.price)
+            request["price"] = _norm_price(order.price)
         if order.stop_loss is not None:
-            request["sl"] = _norm(order.stop_loss)
+            request["sl"] = _norm_price(order.stop_loss)
         if order.take_profit is not None:
-            request["tp"] = _norm(order.take_profit)
+            request["tp"] = _norm_price(order.take_profit)
 
         return request

@@ -37,6 +37,7 @@ _SRC = Path(__file__).parent.parent / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
+from metatrade.core.log import configure_logging
 from metatrade.core.enums import Timeframe
 from metatrade.ml.config import MLConfig
 from metatrade.ml.registry import ModelRegistry
@@ -188,6 +189,7 @@ def make_module_cfg(args: argparse.Namespace) -> ModuleConfig:
 
 
 def main() -> None:
+    configure_logging()
     args = parse_args()
 
     # ── 1. Load data ──────────────────────────────────────────────────────────
