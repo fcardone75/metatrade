@@ -3,10 +3,34 @@ import sqlite3
 import sys
 from pathlib import Path
 
-db_path = Path("data/telemetry.db")
-if not db_path.exists():
-    print(f"ERROR: {db_path} not found. Run from the repo root.", file=sys.stderr)
-    sys.exit(1)
+# Find all .db files under current dir and common locations
+search_roots = [Path("."), Path("data"), Path("C:/project/metatrade")]
+found = []
+for root in search_roots:
+    if root.exists():
+        found += list(root.rglob("*.db"))
+
+found = sorted(set(found))
+print("=" * 70)
+print("FILE .db TROVATI")
+print("=" * 70)
+for f in found:
+    print(f"  {f}  ({f.stat().st_size} bytes)")
+
+if not found:
+    print("  Nessun file .db trovato.")
+    sys.exit(0)
+
+# Also check env for TELEMETRY_DB_PATH
+import os
+env_path = os.environ.get("TELEMETRY_DB_PATH") or os.environ.get("RUNNER_TELEMETRY_DB")
+if env_path:
+    print(f"\n  TELEMETRY_DB_PATH env = {env_path}")
+
+# Pick the largest .db (most likely the real one)
+db_path = max(found, key=lambda f: f.stat().st_size)
+print(f"\nUso: {db_path}")
+print()
 
 con = sqlite3.connect(db_path)
 cur = con.cursor()
