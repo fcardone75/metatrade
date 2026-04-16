@@ -124,7 +124,12 @@ class TestModifySlTp:
     ) -> tuple[bool, MagicMock]:
         a = _adapter()
         mt5 = MagicMock()
-        mt5.symbol_info.return_value = SimpleNamespace(digits=5)
+        mt5.symbol_info.return_value = SimpleNamespace(
+            digits=5, point=0.00001, stops_level=0,
+        )
+        mt5.symbol_info_tick.return_value = SimpleNamespace(
+            ask=1.10010, bid=1.10000,
+        )
         mt5.positions_get.return_value = [
             _mt5_position(ticket=ticket, sl=pos_sl, tp=pos_tp)
         ]

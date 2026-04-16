@@ -283,9 +283,27 @@ def create_app() -> FastAPI:
         return mt5.get_open_positions()
 
     @app.get("/api/mt5/history")
-    async def mt5_history(limit: int = Query(default=50, ge=1, le=500)) -> list[dict[str, Any]]:
-        """Closed deals from MT5 history (last 90 days)."""
-        return mt5.get_closed_deals(limit=limit)
+    async def mt5_history(
+        limit: int = Query(default=500, ge=1, le=2000),
+        days_back: int | None = Query(default=None, ge=1, le=365),
+        date_from: str | None = Query(default=None, description="ISO date YYYY-MM-DD"),
+        date_to: str | None = Query(default=None, description="ISO date YYYY-MM-DD"),
+    ) -> list[dict[str, Any]]:
+        """Closed deals from MT5 history.
+
+        Filter by days_back (e.g. 7 = last 7 days) or explicit date_from/date_to.
+        Returns up to *limit* results, most recent first.
+        """
+        from datetime import datetime as _dt, timezone as _tz
+
+        parsed_from = _dt.fromisoformat(date_from).replace(tzinfo=_tz.utc) if date_from else None
+        parsed_to = _dt.fromisoformat(date_to).replace(tzinfo=_tz.utc) if date_to else None
+        return mt5.get_closed_deals(
+            limit=limit,
+            days_back=days_back,
+            date_from=parsed_from,
+            date_to=parsed_to,
+        )
 
     @app.post("/api/mt5/close-position")
     async def mt5_close_position(

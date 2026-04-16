@@ -50,7 +50,7 @@ class GiveBackRule(IExitRule):
             return self._exit_full(
                 reason=(
                     f"Give-back {actual_give_back_pct:.0%} from peak "
-                    f"({float(peak_pips):.1f} pip peak → {float(current_pips):.1f} pip now)"
+                    f"({float(peak_pips):.1f} pip peak -> {float(current_pips):.1f} pip now)"
                 ),
                 confidence=min(0.90, 0.65 + actual_give_back_pct * 0.5),
                 peak_pips=float(peak_pips),

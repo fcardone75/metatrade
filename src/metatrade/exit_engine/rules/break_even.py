@@ -47,7 +47,7 @@ class BreakEvenRule(IExitRule):
 
         if ctx.unrealized_pips >= trigger / _PIP:
             return self._hold(
-                reason=f"Break-even trigger reached: suggest SL → {be_sl:.5f}",
+                reason=f"Break-even trigger reached: suggest SL -> {be_sl:.5f}",
                 be_sl=float(be_sl),
                 trigger_pips=float(self._cfg.trigger_pips),
                 activated=True,

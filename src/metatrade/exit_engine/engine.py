@@ -295,7 +295,7 @@ class ExitEngine:
         fired: list[ExitSignal],
         new_sl: Decimal | None,
     ) -> str:
-        parts = [f"score={score:.1f} → {action.value}"]
+        parts = [f"score={score:.1f} -> {action.value}"]
         if fired:
             rule_names = ", ".join(s.rule_id for s in fired)
             parts.append(f"rules fired: [{rule_names}]")
