@@ -33,7 +33,7 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from metatrade.core.enums import RunMode, Timeframe
-from metatrade.core.log import get_logger
+from metatrade.core.log import configure_logging, get_logger
 from metatrade.ml.config import MLConfig
 from metatrade.ml.registry import ModelRegistry
 from metatrade.market_data.config import MarketDataConfig
@@ -180,6 +180,7 @@ def make_module_cfg(args: argparse.Namespace) -> ModuleConfig:
 
 
 def main() -> None:
+    configure_logging()
     args = parse_args()
     args = apply_mt5_defaults(args)
     require_confirmation(args)
