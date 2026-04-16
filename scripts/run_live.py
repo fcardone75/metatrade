@@ -259,11 +259,18 @@ def main() -> None:
     )
     runner.connect()
 
-    # Pre-fill buffer
-    for bar in bars:
+    # Pre-fill buffer — exclude the current (not yet closed) bar so that
+    # ATR is computed only from confirmed closed candles.
+    now_utc_init = datetime.now(timezone.utc)
+    closed_bars = [
+        b for b in bars
+        if b.timestamp_utc.timestamp() + tf_secs <= now_utc_init.timestamp()
+    ]
+    for bar in closed_bars:
         runner._bar_buffer.append(bar)
     if len(runner._bar_buffer) > 500:
         runner._bar_buffer = runner._bar_buffer[-500:]
+    last_bar_time = closed_bars[-1].timestamp_utc if closed_bars else last_bar_time
 
     account = broker.get_account()
     print(f"\nLIVE trading started - {args.symbol}/{args.timeframe}")
@@ -298,6 +305,15 @@ def main() -> None:
 
         if last_bar_time is not None:
             new_bars = [b for b in new_bars if b.timestamp_utc > last_bar_time]
+
+        # Drop the current (still-forming) bar: its H/L range is tiny (only
+        # seconds old), which collapses ATR → inflates lot size → Invalid stops.
+        # A bar is confirmed closed when its period has fully elapsed.
+        now_utc = datetime.now(timezone.utc)
+        new_bars = [
+            b for b in new_bars
+            if b.timestamp_utc.timestamp() + tf_secs <= now_utc.timestamp()
+        ]
 
         for bar in new_bars:
             last_bar_time = bar.timestamp_utc
