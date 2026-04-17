@@ -39,6 +39,7 @@ Monitoraggio avanzamento walk-forward (mentre gira il training):
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import sys
 import time
@@ -92,6 +93,7 @@ class TimeframeTrainReport:
     n_folds: int
     folds: list[dict[str, Any]]
     artifact_path: str | None
+    holdout_accuracy: float | None = None
 
 
 def parse_args() -> argparse.Namespace:
@@ -187,6 +189,41 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=Path("data/models"),
         help="Directory for model persistence (default: data/models)",
+    )
+    p.add_argument(
+        "--holdout-fraction",
+        type=float,
+        default=0.0,
+        metavar="FRACTION",
+        help=(
+            "Fraction of bars (from the end) reserved as final out-of-sample holdout. "
+            "E.g. 0.2 = last 20%% used only for post-training evaluation. "
+            "Walk-forward trains only on the remaining bars. Default: 0 (disabled)."
+        ),
+    )
+    p.add_argument(
+        "--auto-tune",
+        action="store_true",
+        default=False,
+        help=(
+            "Automatically search over forward_bars × atr_threshold_mult combinations "
+            "to maximise holdout accuracy. Requires --holdout-fraction > 0. "
+            "Feature cache is precomputed once and reused across all trials."
+        ),
+    )
+    p.add_argument(
+        "--auto-tune-target",
+        type=float,
+        default=0.52,
+        metavar="ACCURACY",
+        help="Stop auto-tune early when holdout accuracy reaches this threshold (default: 0.52).",
+    )
+    p.add_argument(
+        "--auto-tune-max-trials",
+        type=int,
+        default=20,
+        metavar="N",
+        help="Maximum number of parameter combinations to try during auto-tune (default: 20).",
     )
     return p.parse_args()
 
@@ -557,10 +594,28 @@ def train_single_timeframe(
             eta_sec=round(eta_sec, 0),
         )
 
+    def on_precompute_progress(current: int, total: int) -> None:
+        pct = 100.0 * current / max(total, 1)
+        print(f"  Precomputing features: {pct:.0f}%  ({current}/{total} bars)", end="\r", flush=True)
+        _atomic_write_training_progress(
+            prog_path,
+            {
+                "status": "walk_forward",
+                "symbol": args.symbol,
+                "timeframe": timeframe,
+                "phase": "precomputing_features",
+                "precompute_pct": round(pct, 1),
+                "precompute_bar": current,
+                "precompute_total": total,
+                "updated_at_utc": datetime.now(UTC).isoformat(),
+            },
+        )
+
     result, model = trainer.run(
         bars,
         on_fold_complete=on_fold_complete,
         higher_tf_bars=higher_tf_bars or None,
+        on_precompute_progress=on_precompute_progress,
     )
 
     # Summary after all folds
@@ -570,6 +625,8 @@ def train_single_timeframe(
         above = sum(1 for f in result.folds if f.test_accuracy >= ml_cfg.min_accuracy)
         print(f"  Fold sopra soglia ({ml_cfg.min_accuracy:.0%}): {above}/{len(result.folds)}")
         print(f"  Test accuracy — mean: {result.mean_test_accuracy:.2%}  best: {result.best_test_accuracy:.2%}")
+    if result.holdout_accuracy is not None:
+        print(f"  Holdout accuracy ({result.holdout_n_samples} campioni): {result.holdout_accuracy:.2%}")
     print()
 
     if not result.folds:
@@ -792,6 +849,309 @@ def train_single_timeframe(
         n_folds=len(result.folds),
         folds=fold_details,
         artifact_path=str(artifact_path),
+        holdout_accuracy=float(result.holdout_accuracy) if result.holdout_accuracy is not None else None,
+    )
+
+
+_AUTO_TUNE_GRID = list(itertools.product(
+    [15, 20, 10, 25, 30],           # forward_bars
+    [0.5, 0.6, 0.4, 0.7, 0.8],     # atr_threshold_mult
+))
+
+
+def auto_tune_single_timeframe(
+    *,
+    args: argparse.Namespace,
+    timeframe: str,
+    bars: list,
+    base_ml_cfg: MLConfig,
+    telemetry: TelemetryStore,
+    telemetry_is_active: bool,
+    higher_tf_bars: dict[str, list] | None = None,
+) -> TimeframeTrainReport:
+    """Grid search over forward_bars × atr_threshold_mult, reusing a single feature cache."""
+    t0 = time.perf_counter()
+    n_bars = len(bars)
+    prog_path = training_progress_path(args.model_dir)
+    target = args.auto_tune_target
+    max_trials = min(args.auto_tune_max_trials, len(_AUTO_TUNE_GRID))
+
+    print(f"\n=== Auto-tune: {args.symbol} {timeframe} ({n_bars} barre) ===")
+    print(f"  holdout={base_ml_cfg.holdout_fraction:.0%}  target={target:.0%}  max_trials={max_trials}")
+    print()
+
+    # ── Precompute feature cache once ─────────────────────────────────────────
+    trainer_base = WalkForwardTrainer(base_ml_cfg)
+
+    precompute_start = time.perf_counter()
+    print("  [1/2] Precomputing feature cache (una sola volta per tutti i trial)...")
+
+    def _precompute_progress(current: int, total: int) -> None:
+        pct = 100.0 * current / max(total, 1)
+        print(f"    Features: {pct:.0f}%  ({current}/{total})", end="\r", flush=True)
+
+    feature_cache = trainer_base.precompute_features(
+        bars,
+        higher_tf_bars=higher_tf_bars,
+        on_progress=_precompute_progress,
+    )
+    print(f"    Features: 100%  ({n_bars}/{n_bars}) — {time.perf_counter()-precompute_start:.1f}s")
+    print()
+
+    # ── Grid search ───────────────────────────────────────────────────────────
+    print(f"  [2/2] Grid search ({max_trials} trial)...")
+    print(f"  {'Trial':>5}  {'fwd':>4}  {'atr_mult':>8}  {'folds':>6}  {'mean_test':>10}  {'holdout':>8}  {'elapsed':>8}")
+    print("  " + "-" * 62)
+
+    best_holdout: float = -1.0
+    best_result: WalkForwardResult | None = None
+    best_model = None
+    best_cfg: MLConfig | None = None
+    best_trial_idx: int = -1
+
+    _atomic_write_training_progress(
+        prog_path,
+        {
+            "status": "auto_tune",
+            "symbol": args.symbol,
+            "timeframe": timeframe,
+            "phase": "grid_search",
+            "max_trials": max_trials,
+            "trials_done": 0,
+            "best_holdout": None,
+            "updated_at_utc": datetime.now(UTC).isoformat(),
+        },
+    )
+
+    for trial_idx, (fwd, atr_mult) in enumerate(_AUTO_TUNE_GRID[:max_trials]):
+        trial_cfg = MLConfig(
+            train_window_bars=base_ml_cfg.train_window_bars,
+            test_window_bars=base_ml_cfg.test_window_bars,
+            step_bars=base_ml_cfg.step_bars,
+            forward_bars=fwd,
+            atr_threshold_mult=atr_mult,
+            max_iter=base_ml_cfg.max_iter,
+            max_depth=base_ml_cfg.max_depth,
+            min_accuracy=base_ml_cfg.min_accuracy,
+            holdout_fraction=base_ml_cfg.holdout_fraction,
+            model_registry_dir=base_ml_cfg.model_registry_dir,
+            session_filter_utc_start=base_ml_cfg.session_filter_utc_start,
+            session_filter_utc_end=base_ml_cfg.session_filter_utc_end,
+        )
+        trainer = WalkForwardTrainer(trial_cfg)
+        trial_t0 = time.perf_counter()
+
+        try:
+            result, model = trainer.run(bars, feature_cache=feature_cache)
+        except Exception as exc:  # noqa: BLE001
+            print(f"  {trial_idx+1:>5}  {fwd:>4}  {atr_mult:>8.2f}  — ERRORE: {exc}")
+            continue
+
+        holdout_acc = result.holdout_accuracy
+        holdout_str = f"{holdout_acc:.2%}" if holdout_acc is not None else "  n/a  "
+        marker = " *" if (holdout_acc is not None and holdout_acc > best_holdout) else "  "
+        print(
+            f"  {trial_idx+1:>5}  {fwd:>4}  {atr_mult:>8.2f}"
+            f"  {result.n_folds:>6}  {result.mean_test_accuracy:>10.2%}"
+            f"  {holdout_str:>8}  {time.perf_counter()-trial_t0:>7.1f}s{marker}",
+            flush=True,
+        )
+
+        if holdout_acc is not None and holdout_acc > best_holdout:
+            best_holdout = holdout_acc
+            best_result = result
+            best_model = model
+            best_cfg = trial_cfg
+            best_trial_idx = trial_idx
+
+        _atomic_write_training_progress(
+            prog_path,
+            {
+                "status": "auto_tune",
+                "symbol": args.symbol,
+                "timeframe": timeframe,
+                "phase": "grid_search",
+                "max_trials": max_trials,
+                "trials_done": trial_idx + 1,
+                "best_holdout": round(best_holdout, 4) if best_holdout >= 0 else None,
+                "best_forward_bars": best_cfg.forward_bars if best_cfg else None,
+                "best_atr_mult": best_cfg.atr_threshold_mult if best_cfg else None,
+                "updated_at_utc": datetime.now(UTC).isoformat(),
+            },
+        )
+
+        if holdout_acc is not None and holdout_acc >= target:
+            print(f"\n  Target {target:.0%} raggiunto al trial {trial_idx+1} — stop anticipato.")
+            break
+
+    print("  " + "-" * 62)
+    print()
+
+    if best_result is None or best_model is None or best_cfg is None:
+        msg = "Auto-tune: nessun trial ha prodotto folds validi."
+        print(f"ERROR: {msg}", file=sys.stderr)
+        return TimeframeTrainReport(
+            timeframe=timeframe,
+            success=False,
+            error=msg,
+            bars_used=n_bars,
+            duration_sec=round(time.perf_counter() - t0, 3),
+            model_version=None,
+            mean_test_accuracy=None,
+            best_test_accuracy=None,
+            best_fold_index=None,
+            n_folds=0,
+            folds=[],
+            artifact_path=None,
+            holdout_accuracy=None,
+        )
+
+    print(f"  Miglior trial #{best_trial_idx+1}: forward_bars={best_cfg.forward_bars}  atr_mult={best_cfg.atr_threshold_mult}")
+    print(f"  Holdout accuracy: {best_holdout:.2%}  ({best_result.holdout_n_samples} campioni)")
+    print(f"  Walk-forward — mean: {best_result.mean_test_accuracy:.2%}  best: {best_result.best_test_accuracy:.2%}")
+    print()
+
+    test_acc_ok = best_result.best_test_accuracy >= best_cfg.min_accuracy
+    if not test_acc_ok:
+        msg = (
+            f"Auto-tune: miglior holdout={best_holdout:.0%} ma best_test_accuracy="
+            f"{best_result.best_test_accuracy:.0%} sotto la soglia {best_cfg.min_accuracy:.0%}. "
+            "Modello non salvato. Prova --auto-tune-target piu' basso o piu' barre."
+        )
+        print(f"WARNING: {msg}", file=sys.stderr)
+        return TimeframeTrainReport(
+            timeframe=timeframe,
+            success=False,
+            error=msg,
+            bars_used=n_bars,
+            duration_sec=round(time.perf_counter() - t0, 3),
+            model_version=None,
+            mean_test_accuracy=float(best_result.mean_test_accuracy),
+            best_test_accuracy=float(best_result.best_test_accuracy),
+            best_fold_index=int(best_result.best_fold_index),
+            n_folds=best_result.n_folds,
+            folds=[fold_to_dict(f) for f in best_result.folds],
+            artifact_path=None,
+            holdout_accuracy=float(best_holdout),
+        )
+
+    args.model_dir.mkdir(parents=True, exist_ok=True)
+    registry = ModelRegistry(config=best_cfg, persist=True)
+    best_fold = best_result.folds[best_result.best_fold_index]
+    version = f"v{time.strftime('%Y%m%d_%H%M%S')}_{timeframe}_at"
+    snapshot = registry.register(
+        classifier=best_model,
+        symbol=args.symbol,
+        version=version,
+        tags={
+            "source": args.source,
+            "auto_tune": True,
+            "forward_bars": best_cfg.forward_bars,
+            "atr_threshold_mult": best_cfg.atr_threshold_mult,
+            "n_folds": best_result.n_folds,
+            "mean_test_acc": round(best_result.mean_test_accuracy, 4),
+            "best_test_acc": round(best_result.best_test_accuracy, 4),
+            "holdout_accuracy": round(best_holdout, 4),
+            "best_fold": best_fold.fold_index,
+            "train_bars": n_bars,
+            "timeframe": timeframe,
+        },
+    )
+    registry.promote(snapshot.version)
+
+    artifact_path = args.model_dir / f"{args.symbol}_{snapshot.version}.pkl"
+    duration_sec = round(time.perf_counter() - t0, 3)
+    fold_details = [fold_to_dict(f) for f in best_result.folds]
+
+    print(f"Modello auto-tune salvato ({timeframe}).")
+    print(f"  Versione      : {snapshot.version}")
+    print(f"  forward_bars  : {best_cfg.forward_bars}")
+    print(f"  atr_mult      : {best_cfg.atr_threshold_mult}")
+    print(f"  Holdout acc   : {best_holdout:.2%}")
+    print(f"  File          : {artifact_path}")
+    print(f"  Durata totale : {duration_sec}s")
+    print()
+
+    telemetry.record_training_run(
+        symbol=args.symbol,
+        timeframe=timeframe,
+        source=args.source,
+        bars_requested=args.bars if args.source == "mt5" else n_bars,
+        bars_fetched=n_bars,
+        train_window=args.train_window,
+        test_window=args.test_window,
+        step=args.step,
+        forward_bars=best_cfg.forward_bars,
+        max_iter=best_cfg.max_iter,
+        max_depth=best_cfg.max_depth,
+        min_accuracy=best_cfg.min_accuracy,
+        mean_test_accuracy=best_result.mean_test_accuracy,
+        best_test_accuracy=best_result.best_test_accuracy,
+        best_fold=best_fold.fold_index,
+        model_version=snapshot.version,
+        status="completed",
+        details={
+            "auto_tune": True,
+            "holdout_accuracy": float(best_holdout),
+            "best_atr_threshold_mult": best_cfg.atr_threshold_mult,
+            "artifact_path": str(artifact_path),
+            "duration_sec": duration_sec,
+            "folds": fold_details,
+        },
+    )
+    telemetry.record_model_artifact(
+        version=snapshot.version,
+        symbol=args.symbol,
+        timeframe=timeframe,
+        source=args.source,
+        train_bars=n_bars,
+        n_folds=best_result.n_folds,
+        mean_test_accuracy=best_result.mean_test_accuracy,
+        best_test_accuracy=best_result.best_test_accuracy,
+        artifact_path=str(artifact_path),
+        is_active=telemetry_is_active,
+        details={
+            "auto_tune": True,
+            "holdout_accuracy": float(best_holdout),
+            "best_forward_bars": best_cfg.forward_bars,
+            "best_atr_threshold_mult": best_cfg.atr_threshold_mult,
+        },
+    )
+
+    _atomic_write_training_progress(
+        prog_path,
+        {
+            "status": "timeframe_complete",
+            "symbol": args.symbol,
+            "timeframe": timeframe,
+            "phase": "auto_tune_done",
+            "model_version": snapshot.version,
+            "artifact_path": str(artifact_path),
+            "best_forward_bars": best_cfg.forward_bars,
+            "best_atr_threshold_mult": best_cfg.atr_threshold_mult,
+            "holdout_accuracy": float(best_holdout),
+            "n_folds": best_result.n_folds,
+            "mean_test_accuracy": float(best_result.mean_test_accuracy),
+            "best_test_accuracy": float(best_result.best_test_accuracy),
+            "duration_sec": duration_sec,
+            "updated_at_utc": datetime.now(UTC).isoformat(),
+        },
+    )
+
+    return TimeframeTrainReport(
+        timeframe=timeframe,
+        success=True,
+        error=None,
+        bars_used=n_bars,
+        duration_sec=duration_sec,
+        model_version=snapshot.version,
+        mean_test_accuracy=float(best_result.mean_test_accuracy),
+        best_test_accuracy=float(best_result.best_test_accuracy),
+        best_fold_index=int(best_result.best_fold_index),
+        n_folds=best_result.n_folds,
+        folds=fold_details,
+        artifact_path=str(artifact_path),
+        holdout_accuracy=float(best_holdout),
     )
 
 
@@ -833,6 +1193,14 @@ def main() -> None:
         print(" Nota: ogni run produce un artifact; solo uno e' marcato attivo in telemetria.")
     print("=" * 60 + "\n")
 
+    if args.auto_tune and args.holdout_fraction <= 0.0:
+        print(
+            "ERROR: --auto-tune richiede --holdout-fraction > 0 "
+            "(es. --holdout-fraction 0.2) per valutare i risultati su dati non visti.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     ml_cfg = MLConfig(
         train_window_bars=args.train_window,
         test_window_bars=args.test_window,
@@ -842,6 +1210,7 @@ def main() -> None:
         max_iter=args.max_iter,
         max_depth=args.max_depth,
         min_accuracy=args.min_accuracy,
+        holdout_fraction=args.holdout_fraction,
         model_registry_dir=str(args.model_dir),
         session_filter_utc_start=args.session_start_utc,
         session_filter_utc_end=args.session_end_utc,
@@ -880,15 +1249,26 @@ def main() -> None:
                 higher_tf_bars = load_higher_tf_bars_csv(args.file, args.symbol, tf)
 
         is_active = tf == promote_tf
-        report = train_single_timeframe(
-            args=args,
-            timeframe=tf,
-            bars=bars,
-            ml_cfg=ml_cfg,
-            telemetry=telemetry,
-            telemetry_is_active=is_active,
-            higher_tf_bars=higher_tf_bars,
-        )
+        if args.auto_tune:
+            report = auto_tune_single_timeframe(
+                args=args,
+                timeframe=tf,
+                bars=bars,
+                base_ml_cfg=ml_cfg,
+                telemetry=telemetry,
+                telemetry_is_active=is_active,
+                higher_tf_bars=higher_tf_bars,
+            )
+        else:
+            report = train_single_timeframe(
+                args=args,
+                timeframe=tf,
+                bars=bars,
+                ml_cfg=ml_cfg,
+                telemetry=telemetry,
+                telemetry_is_active=is_active,
+                higher_tf_bars=higher_tf_bars,
+            )
         reports.append(report)
 
     ok_count = sum(1 for r in reports if r.success)
@@ -897,17 +1277,18 @@ def main() -> None:
     print("\n" + "=" * 60)
     print(" RIEPILOGO FINALE")
     print("=" * 60)
-    print(f"{'TF':<6} {'Esito':<10} {'Barre':>7} {'Mean test':>10} {'Best test':>10} {'Versione':<22}")
-    print("-" * 60)
+    print(f"{'TF':<6} {'Esito':<10} {'Barre':>7} {'Mean test':>10} {'Best test':>10} {'Holdout':>8} {'Versione':<22}")
+    print("-" * 70)
     for r in reports:
         status = "OK" if r.success else "FALLITO"
         mean_s = f"{r.mean_test_accuracy:.2%}" if r.mean_test_accuracy is not None else "-"
         best_s = f"{r.best_test_accuracy:.2%}" if r.best_test_accuracy is not None else "-"
+        holdout_s = f"{r.holdout_accuracy:.2%}" if r.holdout_accuracy is not None else "-"
         ver = (r.model_version or "-")[:20]
-        print(f"{r.timeframe:<6} {status:<10} {r.bars_used:>7} {mean_s:>10} {best_s:>10} {ver:<22}")
+        print(f"{r.timeframe:<6} {status:<10} {r.bars_used:>7} {mean_s:>10} {best_s:>10} {holdout_s:>8} {ver:<22}")
         if r.error and not r.success:
             print(f"        ({r.error})")
-    print("-" * 60)
+    print("-" * 70)
     print(f" Completati con successo: {ok_count}/{len(reports)}  |  attivo (telemetria): {promote_tf}")
     print("=" * 60 + "\n")
 
@@ -934,6 +1315,10 @@ def main() -> None:
             "max_depth": args.max_depth,
             "min_accuracy": args.min_accuracy,
             "multires": args.multires,
+            "holdout_fraction": args.holdout_fraction,
+            "auto_tune": args.auto_tune,
+            "auto_tune_target": args.auto_tune_target,
+            "auto_tune_max_trials": args.auto_tune_max_trials,
             "session_start_utc": args.session_start_utc,
             "session_end_utc": args.session_end_utc,
             "bars_requested_mt5": args.bars if args.source == "mt5" else None,

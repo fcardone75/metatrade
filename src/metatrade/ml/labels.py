@@ -49,6 +49,15 @@ def label_bars(
     n = len(bars)
     min_atr_bars = atr_period + 1
 
+    # Pre-compute ATR for the full series in a single O(n) pass.
+    # ATR at index i depends only on bars[0:i+1], so computing it on the full
+    # series and indexing with [i] gives the same value as the original per-bar
+    # slice approach, but avoids O(n²) redundant recomputation.
+    all_highs = [b.high for b in bars]
+    all_lows = [b.low for b in bars]
+    all_closes = [b.close for b in bars]
+    full_atr_vals = atr(all_highs, all_lows, all_closes, atr_period)
+
     labels: list[int | None] = []
 
     for i in range(n):
@@ -62,13 +71,8 @@ def label_bars(
         future_close = float(bars[future_idx].close)
         future_return = (future_close / current_close) - 1.0
 
-        # Compute ATR threshold at this bar (adaptive to volatility)
         if i >= min_atr_bars:
-            slice_highs = [b.high for b in bars[: i + 1]]
-            slice_lows = [b.low for b in bars[: i + 1]]
-            slice_closes = [b.close for b in bars[: i + 1]]
-            atr_vals = atr(slice_highs, slice_lows, slice_closes, atr_period)
-            current_atr = float(atr_vals[-1])
+            current_atr = float(full_atr_vals[i])
             threshold = (current_atr / current_close) * atr_threshold_mult
         else:
             # Before ATR warmup: use a simple fixed 0.5% threshold

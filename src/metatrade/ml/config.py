@@ -56,6 +56,12 @@ class MLConfig(BaseConfig):
     # up-weighting BUY/SELL samples.  None = uniform weights.
     class_weight: str | None = Field(default="balanced")
 
+    # ── Holdout evaluation ────────────────────────────────────────────────────
+    # Fraction of bars (from the end of the series) reserved as a final
+    # out-of-sample holdout.  Walk-forward training only sees bars[:holdout_start].
+    # Set to 0.0 to disable (no holdout reserved).
+    holdout_fraction: float = Field(default=0.0, ge=0.0, lt=1.0)
+
     # ── Session filter ────────────────────────────────────────────────────────
     # When both are set, only bars whose UTC hour is in [start, end) are used
     # for training.  Helps remove thin-market noise on M1/M5.
