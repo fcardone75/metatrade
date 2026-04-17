@@ -205,11 +205,14 @@ _TICK_POLL_SECS = 0.05   # 50 ms polling in tick mode (interval == 0)
 
 def _print_monitor_action(act: dict) -> None:
     ts_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    reason = str(act.get("reason") or "")
+    # Windows console often uses cp1252; avoid Unicode arrows in stdout.
+    reason = reason.replace("\u2192", "->").replace("\u2190", "<-")
     print(
         f"[{ts_str}] MONITOR  {act['action']:14s} "
         f"ticket={act['ticket']}  "
         f"sl={act['new_sl'] or '-':<10}  "
-        f"{act['reason'][:60]}"
+        f"{reason[:60]}"
     )
 
 
