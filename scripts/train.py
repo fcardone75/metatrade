@@ -482,12 +482,31 @@ def train_single_timeframe(
         print(f"  Class distribution (best fold train): {', '.join(dist_parts)}")
         print()
 
-    if model is None or not model.is_trained:
-        msg = (
-            f"Nessun modello sopra la soglia min_accuracy ({ml_cfg.min_accuracy:.0%}). "
-            "Prova --bars piu' alto, --min-accuracy piu' basso, o verifica i dati."
+    # Gate on OUT-OF-SAMPLE (test) accuracy, not in-sample.
+    # model.is_trained uses in-sample accuracy from fit() — a model can have
+    # 95% in-sample and 43% test accuracy and pass that check easily.
+    # We require best_test_accuracy >= min_accuracy before saving anything.
+    test_acc_ok = result.best_test_accuracy >= ml_cfg.min_accuracy
+    if model is None or not model.is_trained or not test_acc_ok:
+        if not test_acc_ok and model is not None and model.is_trained:
+            msg = (
+                f"Test accuracy ({result.best_test_accuracy:.0%}) sotto la soglia min_accuracy "
+                f"({ml_cfg.min_accuracy:.0%}) — modello non salvato (overfit o dati insufficienti). "
+                "Prova --bars piu' alto o abbassa --min-accuracy."
+            )
+        else:
+            msg = (
+                f"Nessun modello sopra la soglia min_accuracy ({ml_cfg.min_accuracy:.0%}). "
+                "Prova --bars piu' alto, --min-accuracy piu' basso, o verifica i dati."
+            )
+        log.warning(
+            "train_timeframe_below_threshold",
+            symbol=args.symbol,
+            timeframe=timeframe,
+            best_test_accuracy=round(float(result.best_test_accuracy), 4),
+            min_accuracy=ml_cfg.min_accuracy,
+            message=msg,
         )
-        log.warning("train_timeframe_below_threshold", symbol=args.symbol, timeframe=timeframe, message=msg)
         print(f"WARNING: {msg}", file=sys.stderr)
         _atomic_write_training_progress(
             prog_path,
