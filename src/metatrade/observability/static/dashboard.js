@@ -662,22 +662,50 @@ async function refreshReputations() {
     </tr>`);
 }
 
-async function refreshClosedDeals() {
-  const rows = await getJson("/api/mt5/history?limit=50");
+// ── Closed deals state ───────────────────────────────────────────────────────
+const _cd = {
+  allRows: [],      // tutti i dati caricati (mai persi)
+  currentPage: 1,
+  pageSize: 25,
+  periodDays: 30,   // default: ultimo mese
+  customFrom: null,
+  customTo: null,
+};
+
+function _cdBuildUrl() {
+  const params = new URLSearchParams({ limit: 2000 });
+  if (_cd.customFrom && _cd.customTo) {
+    params.set("date_from", _cd.customFrom);
+    params.set("date_to", _cd.customTo);
+  } else {
+    params.set("days_back", _cd.periodDays);
+  }
+  return `/api/mt5/history?${params}`;
+}
+
+function _cdRenderPage() {
   const tbody = document.querySelector("#closed-deals-table tbody");
-  const msgEl = document.getElementById("closed-deals-msg");
   if (!tbody) return;
 
-  if (!rows || rows.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="9" class="muted tc">Nessun ordine chiuso trovato</td></tr>';
+  const rows = _cd.allRows;
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="9" class="muted tc">Nessun ordine chiuso nel periodo selezionato</td></tr>';
+    _cdRenderPagination(0);
     return;
   }
 
-  if (msgEl) msgEl.style.display = "none";
-  let totalPnl = 0;
-  tbody.innerHTML = rows.map(row => {
+  const ps = _cd.pageSize;
+  const total = rows.length;
+  const totalPages = Math.max(1, Math.ceil(total / ps));
+  if (_cd.currentPage > totalPages) _cd.currentPage = totalPages;
+
+  const start = (_cd.currentPage - 1) * ps;
+  const pageRows = rows.slice(start, start + ps);
+
+  let pagePnl = 0;
+  tbody.innerHTML = pageRows.map(row => {
     const pnl = row.profit ?? 0;
-    totalPnl += pnl;
+    pagePnl += pnl;
     const pnlClass = pnl >= 0 ? "positive" : "negative";
     const side = row.type === 0 ? "BUY" : "SELL";
     const dt = row.time ? new Date(row.time * 1000).toLocaleString("it-IT", {
@@ -697,13 +725,130 @@ async function refreshClosedDeals() {
     </tr>`;
   }).join("");
 
-  // Summary footer
+  // Totale PnL pagina corrente + totale globale
+  const totalPnl = rows.reduce((s, r) => s + (r.profit ?? 0), 0);
   const footClass = totalPnl >= 0 ? "positive" : "negative";
+  const pageClass = pagePnl >= 0 ? "positive" : "negative";
   tbody.innerHTML += `<tr style="border-top:1px solid #334155;font-weight:600">
-    <td colspan="5" class="muted" style="text-align:right">Totale PnL</td>
+    <td colspan="4" class="muted" style="text-align:right;font-size:0.75rem">PnL pagina</td>
+    <td></td>
+    <td class="${pageClass}">${fmt2(pagePnl)}</td>
+    <td colspan="3"></td>
+  </tr>
+  <tr style="font-weight:700">
+    <td colspan="4" class="muted" style="text-align:right;font-size:0.75rem">Totale periodo (${total} ordini)</td>
+    <td></td>
     <td class="${footClass}">${fmt2(totalPnl)}</td>
     <td colspan="3"></td>
   </tr>`;
+
+  _cdRenderPagination(totalPages);
+}
+
+function _cdRenderPagination(totalPages) {
+  const info = document.getElementById("closed-deals-page-info");
+  const prev = document.getElementById("closed-deals-prev");
+  const next = document.getElementById("closed-deals-next");
+  const btns = document.getElementById("closed-deals-page-btns");
+  if (!info || !prev || !next || !btns) return;
+
+  const total = _cd.allRows.length;
+  const start = (_cd.currentPage - 1) * _cd.pageSize + 1;
+  const end = Math.min(_cd.currentPage * _cd.pageSize, total);
+  info.textContent = total > 0 ? `${start}–${end} di ${total}` : "";
+
+  prev.disabled = _cd.currentPage <= 1;
+  next.disabled = _cd.currentPage >= totalPages;
+
+  // Page number buttons: show at most 7 around current page
+  btns.innerHTML = "";
+  if (totalPages <= 1) return;
+  const range = [];
+  for (let p = 1; p <= totalPages; p++) {
+    if (p === 1 || p === totalPages || (p >= _cd.currentPage - 2 && p <= _cd.currentPage + 2)) {
+      range.push(p);
+    }
+  }
+  let last = 0;
+  range.forEach(p => {
+    if (last && p - last > 1) {
+      const dots = document.createElement("span");
+      dots.textContent = "…";
+      dots.style.cssText = "color:#64748b;padding:0 4px;align-self:center";
+      btns.appendChild(dots);
+    }
+    const btn = document.createElement("button");
+    btn.textContent = p;
+    btn.style.cssText = `padding:2px 8px;border-radius:4px;cursor:pointer;border:1px solid #334155;font-size:0.78rem;${p === _cd.currentPage ? "background:#3b82f6;color:#fff" : "background:#1e293b;color:#e2e8f0"}`;
+    btn.onclick = () => { _cd.currentPage = p; _cdRenderPage(); };
+    btns.appendChild(btn);
+    last = p;
+  });
+}
+
+function _cdInitControls() {
+  const periodSel = document.getElementById("closed-deals-period");
+  const customWrap = document.getElementById("closed-deals-custom");
+  const fromInput = document.getElementById("closed-deals-from");
+  const toInput = document.getElementById("closed-deals-to");
+  const applyBtn = document.getElementById("closed-deals-apply");
+  const pageSel = document.getElementById("closed-deals-pagesize");
+
+  if (!periodSel) return;
+
+  periodSel.addEventListener("change", async () => {
+    const val = periodSel.value;
+    if (val === "custom") {
+      customWrap.style.display = "flex";
+    } else {
+      customWrap.style.display = "none";
+      _cd.customFrom = null;
+      _cd.customTo = null;
+      _cd.periodDays = parseInt(val, 10);
+      _cd.currentPage = 1;
+      await _cdFetchAndRender();
+    }
+  });
+
+  if (applyBtn) {
+    applyBtn.addEventListener("click", async () => {
+      _cd.customFrom = fromInput.value || null;
+      _cd.customTo = toInput.value || null;
+      if (!_cd.customFrom || !_cd.customTo) return;
+      _cd.currentPage = 1;
+      await _cdFetchAndRender();
+    });
+  }
+
+  if (pageSel) {
+    pageSel.addEventListener("change", () => {
+      _cd.pageSize = parseInt(pageSel.value, 10);
+      _cd.currentPage = 1;
+      _cdRenderPage();
+    });
+  }
+
+  const prev = document.getElementById("closed-deals-prev");
+  const next = document.getElementById("closed-deals-next");
+  if (prev) prev.addEventListener("click", () => {
+    if (_cd.currentPage > 1) { _cd.currentPage--; _cdRenderPage(); }
+  });
+  if (next) next.addEventListener("click", () => {
+    _cd.currentPage++;
+    _cdRenderPage();
+  });
+}
+
+async function _cdFetchAndRender() {
+  const msgEl = document.getElementById("closed-deals-msg");
+  if (msgEl) msgEl.style.display = "none";
+  const rows = await getJson(_cdBuildUrl());
+  _cd.allRows = rows || [];
+  _cdRenderPage();
+}
+
+async function refreshClosedDeals() {
+  await _cdFetchAndRender();
 }
 
 // ── Main refresh ─────────────────────────────────────────────────────────────
@@ -776,5 +921,6 @@ document.getElementById("btn-runner-restart")?.addEventListener("click", async (
 restoreAccordionState();
 wireKillSwitchButtons();
 startProgressTick();
+_cdInitControls();
 scheduleUiRefresh(cfg.refreshSeconds);
 refreshAll().then(refreshBars);

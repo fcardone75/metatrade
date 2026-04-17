@@ -391,6 +391,10 @@ def train_single_timeframe(
         ml_cfg.test_window_bars,
         ml_cfg.step_bars,
     )
+    print(f"  Fold stimati: ~{est_folds}  |  Calcolo feature + label in corso...")
+    print(f"  (Il primo fold puo' richiedere 20-60s per il feature engineering)")
+    print()
+
     prog_path = training_progress_path(args.model_dir)
     _atomic_write_training_progress(
         prog_path,
@@ -407,9 +411,55 @@ def train_single_timeframe(
         },
     )
 
+    # Rolling stats for ETA and running accuracy
+    _fold_times: list[float] = []
+    _fold_last_ts = [time.perf_counter()]  # mutable container for closure
+
     def on_fold_complete(fold: WalkForwardFold) -> None:
         done = fold.fold_index + 1
         pct = min(100.0, 100.0 * done / max(est_folds, 1))
+        elapsed_total = time.perf_counter() - t0
+
+        # Per-fold timing for ETA
+        now = time.perf_counter()
+        fold_dur = now - _fold_last_ts[0]
+        _fold_last_ts[0] = now
+        _fold_times.append(fold_dur)
+        avg_fold_sec = sum(_fold_times[-10:]) / len(_fold_times[-10:])  # last 10
+        remaining_folds = max(0, est_folds - done)
+        eta_sec = avg_fold_sec * remaining_folds
+
+        # Running mean test accuracy
+        all_test_acc = [f.test_accuracy for f in [fold]]  # only current available here
+        test_acc = float(fold.test_accuracy)
+
+        # Class distribution from this fold's training metrics
+        cd = fold.train_metrics.class_distribution
+        total_cd = sum(cd.values()) or 1
+        labels_map = {1: "B", -1: "S", 0: "H"}
+        dist_str = " ".join(
+            f"{labels_map.get(k, str(k))}={v}({v*100//total_cd}%)"
+            for k, v in sorted(cd.items())
+        )
+
+        # ETA formatting
+        if eta_sec < 60:
+            eta_str = f"{eta_sec:.0f}s"
+        else:
+            eta_str = f"{eta_sec/60:.1f}m"
+
+        # Console line — overwrite same line for compact output
+        status_char = "+" if test_acc >= ml_cfg.min_accuracy else "-"
+        print(
+            f"  [{status_char}] Fold {done:>3}/{est_folds}"
+            f"  acc={test_acc:.2%}"
+            f"  {dist_str}"
+            f"  fold={fold_dur:.1f}s"
+            f"  elapsed={elapsed_total:.0f}s"
+            f"  ETA~{eta_str}",
+            flush=True,
+        )
+
         payload: dict[str, Any] = {
             "status": "walk_forward",
             "symbol": args.symbol,
@@ -421,8 +471,9 @@ def train_single_timeframe(
             "estimated_folds_upper_bound": est_folds,
             "progress_pct_approx": round(pct, 1),
             "train_end_bar": fold.train_end,
-            "test_accuracy_last": round(float(fold.test_accuracy), 4),
-            "elapsed_sec": round(time.perf_counter() - t0, 1),
+            "test_accuracy_last": round(test_acc, 4),
+            "elapsed_sec": round(elapsed_total, 1),
+            "eta_sec": round(eta_sec, 0),
             "updated_at_utc": datetime.now(UTC).isoformat(),
         }
         _atomic_write_training_progress(prog_path, payload)
@@ -432,10 +483,21 @@ def train_single_timeframe(
             timeframe=timeframe,
             fold_index=fold.fold_index,
             folds_completed=done,
-            test_accuracy=round(float(fold.test_accuracy), 4),
+            test_accuracy=round(test_acc, 4),
+            fold_sec=round(fold_dur, 2),
+            eta_sec=round(eta_sec, 0),
         )
 
     result, model = trainer.run(bars, on_fold_complete=on_fold_complete)
+
+    # Summary after all folds
+    print()
+    print(f"  Walk-forward completato: {len(result.folds)} fold in {time.perf_counter()-t0:.0f}s")
+    if result.folds:
+        above = sum(1 for f in result.folds if f.test_accuracy >= ml_cfg.min_accuracy)
+        print(f"  Fold sopra soglia ({ml_cfg.min_accuracy:.0%}): {above}/{len(result.folds)}")
+        print(f"  Test accuracy — mean: {result.mean_test_accuracy:.2%}  best: {result.best_test_accuracy:.2%}")
+    print()
 
     if not result.folds:
         msg = "Nessun fold prodotto: dati insufficienti."
@@ -482,12 +544,31 @@ def train_single_timeframe(
         print(f"  Class distribution (best fold train): {', '.join(dist_parts)}")
         print()
 
-    if model is None or not model.is_trained:
-        msg = (
-            f"Nessun modello sopra la soglia min_accuracy ({ml_cfg.min_accuracy:.0%}). "
-            "Prova --bars piu' alto, --min-accuracy piu' basso, o verifica i dati."
+    # Gate on OUT-OF-SAMPLE (test) accuracy, not in-sample.
+    # model.is_trained uses in-sample accuracy from fit() — a model can have
+    # 95% in-sample and 43% test accuracy and pass that check easily.
+    # We require best_test_accuracy >= min_accuracy before saving anything.
+    test_acc_ok = result.best_test_accuracy >= ml_cfg.min_accuracy
+    if model is None or not model.is_trained or not test_acc_ok:
+        if not test_acc_ok and model is not None and model.is_trained:
+            msg = (
+                f"Test accuracy ({result.best_test_accuracy:.0%}) sotto la soglia min_accuracy "
+                f"({ml_cfg.min_accuracy:.0%}) — modello non salvato (overfit o dati insufficienti). "
+                "Prova --bars piu' alto o abbassa --min-accuracy."
+            )
+        else:
+            msg = (
+                f"Nessun modello sopra la soglia min_accuracy ({ml_cfg.min_accuracy:.0%}). "
+                "Prova --bars piu' alto, --min-accuracy piu' basso, o verifica i dati."
+            )
+        log.warning(
+            "train_timeframe_below_threshold",
+            symbol=args.symbol,
+            timeframe=timeframe,
+            best_test_accuracy=round(float(result.best_test_accuracy), 4),
+            min_accuracy=ml_cfg.min_accuracy,
+            message=msg,
         )
-        log.warning("train_timeframe_below_threshold", symbol=args.symbol, timeframe=timeframe, message=msg)
         print(f"WARNING: {msg}", file=sys.stderr)
         _atomic_write_training_progress(
             prog_path,

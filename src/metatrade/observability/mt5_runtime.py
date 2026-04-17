@@ -88,16 +88,32 @@ class MT5RuntimeReader:
         finally:
             mt5.shutdown()
 
-    def get_closed_deals(self, limit: int = 50) -> list[dict[str, Any]]:
-        """Return recent closed deals from MT5 history (last 90 days, up to *limit* entries)."""
+    def get_closed_deals(
+        self,
+        limit: int = 500,
+        days_back: int | None = None,
+        date_from: datetime | None = None,
+        date_to: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return closed deals from MT5 history.
+
+        Args:
+            limit:     Maximum number of results (applied after date filtering).
+            days_back: If set, fetch deals from now minus this many days.
+            date_from: Explicit start datetime (UTC). Overrides days_back.
+            date_to:   Explicit end datetime (UTC). Defaults to now.
+        """
         from datetime import timedelta
 
         mt5 = self._initialize()
         if mt5 is None:
             return []
         try:
-            date_to = datetime.now(timezone.utc)
-            date_from = date_to - timedelta(days=90)
+            if date_to is None:
+                date_to = datetime.now(timezone.utc)
+            if date_from is None:
+                days = days_back if days_back is not None else 90
+                date_from = date_to - timedelta(days=days)
             # Richiede il periodo nello storico terminale (senza questo spesso history_deals_get è vuoto).
             if hasattr(mt5, "history_select"):
                 if not mt5.history_select(date_from, date_to):

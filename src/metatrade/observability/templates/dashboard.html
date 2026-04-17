@@ -141,7 +141,35 @@
             </div>
           </div>
           <div class="mt16">
-            <h3 class="acc-subtitle">Ordini chiusi MT5 <span class="acc-subtitle-hint muted">(ultimi 50 · 90 giorni)</span></h3>
+            <h3 class="acc-subtitle">Ordini chiusi MT5</h3>
+            <!-- Filtro periodo + paginazione -->
+            <div class="closed-deals-toolbar" style="display:flex;align-items:center;gap:0.75rem;flex-wrap:wrap;margin-bottom:0.5rem">
+              <label style="font-size:0.8rem;color:#94a3b8">Periodo:</label>
+              <select id="closed-deals-period" style="font-size:0.8rem;padding:2px 6px;background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:4px">
+                <option value="1">Ultimo giorno</option>
+                <option value="7">Ultima settimana</option>
+                <option value="10">Ultimi 10 giorni</option>
+                <option value="14">Ultime 2 settimane</option>
+                <option value="21">Ultime 3 settimane</option>
+                <option value="30" selected>Ultimo mese</option>
+                <option value="90">Ultimi 3 mesi</option>
+                <option value="custom">Personalizzato…</option>
+              </select>
+              <span id="closed-deals-custom" style="display:none;gap:0.4rem;align-items:center;font-size:0.8rem">
+                <input type="date" id="closed-deals-from" style="font-size:0.8rem;padding:2px 4px;background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:4px">
+                <span style="color:#64748b">→</span>
+                <input type="date" id="closed-deals-to" style="font-size:0.8rem;padding:2px 4px;background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:4px">
+                <button id="closed-deals-apply" style="font-size:0.75rem;padding:2px 8px;background:#3b82f6;color:#fff;border:none;border-radius:4px;cursor:pointer">Applica</button>
+              </span>
+              <span style="margin-left:auto;font-size:0.8rem;color:#94a3b8">Righe/pag:</span>
+              <select id="closed-deals-pagesize" style="font-size:0.8rem;padding:2px 6px;background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:4px">
+                <option value="10">10</option>
+                <option value="15">15</option>
+                <option value="25" selected>25</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+              </select>
+            </div>
             <div id="closed-deals-msg" class="muted" style="display:none"></div>
             <div class="table-wrap">
               <table id="closed-deals-table">
@@ -150,6 +178,15 @@
                 </thead>
                 <tbody><tr><td colspan="9" class="muted tc">Caricamento…</td></tr></tbody>
               </table>
+            </div>
+            <!-- Paginazione -->
+            <div id="closed-deals-pagination" style="display:flex;align-items:center;justify-content:space-between;margin-top:0.5rem;font-size:0.8rem;color:#94a3b8">
+              <span id="closed-deals-page-info"></span>
+              <div style="display:flex;gap:0.4rem">
+                <button id="closed-deals-prev" style="padding:2px 10px;background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:4px;cursor:pointer" disabled>‹</button>
+                <span id="closed-deals-page-btns" style="display:flex;gap:0.25rem"></span>
+                <button id="closed-deals-next" style="padding:2px 10px;background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:4px;cursor:pointer" disabled>›</button>
+              </div>
             </div>
           </div>
         </div>
