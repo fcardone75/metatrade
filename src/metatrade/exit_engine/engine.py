@@ -23,10 +23,11 @@ The engine is stateless between calls; all context is passed via PositionContext
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
+from metatrade.core.log import get_logger
 from metatrade.exit_engine.config import ExitEngineConfig
 from metatrade.exit_engine.contracts import (
     ExitAction,
@@ -45,7 +46,6 @@ from metatrade.exit_engine.rules.setup_invalidation import SetupInvalidationRule
 from metatrade.exit_engine.rules.time_exit import TimeExitRule
 from metatrade.exit_engine.rules.trailing_stop import TrailingStopRule
 from metatrade.exit_engine.rules.volatility_exit import VolatilityExitRule
-from metatrade.core.log import get_logger
 
 log = get_logger(__name__)
 
@@ -139,7 +139,7 @@ class ExitEngine:
             aggregate_score=round(score, 2),
             signals=tuple(signals),
             explanation=explanation,
-            timestamp_utc=datetime.now(timezone.utc),
+            timestamp_utc=datetime.now(UTC),
             new_stop_loss=new_sl,
         )
 
@@ -284,7 +284,7 @@ class ExitEngine:
             aggregate_score=0.0,
             signals=signals,
             explanation=reason,
-            timestamp_utc=datetime.now(timezone.utc),
+            timestamp_utc=datetime.now(UTC),
             new_stop_loss=None,
         )
 

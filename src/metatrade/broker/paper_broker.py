@@ -17,15 +17,15 @@ This is not persistence-backed — a restart resets state.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
+from metatrade.broker.interface import IBrokerAdapter
 from metatrade.core.contracts.account import AccountState
 from metatrade.core.contracts.order import Fill, Order
 from metatrade.core.enums import OrderSide, OrderStatus, RunMode
 from metatrade.core.errors import BrokerConnectionError, OrderRejectedError
 from metatrade.core.log import get_logger
-from metatrade.broker.interface import IBrokerAdapter
 
 log = get_logger(__name__)
 
@@ -109,7 +109,7 @@ class PaperBrokerAdapter(IBrokerAdapter):
             equity=self._balance + self._unrealized_pnl,
             free_margin=self._balance - self._used_margin,
             used_margin=self._used_margin,
-            timestamp_utc=datetime.now(timezone.utc),
+            timestamp_utc=datetime.now(UTC),
             currency=self._currency,
             run_mode=RunMode.PAPER,
         )
@@ -147,7 +147,7 @@ class PaperBrokerAdapter(IBrokerAdapter):
         bid, ask = self.get_current_price(order.symbol)
         fill_price = ask if order.side == OrderSide.BUY else bid
         commission = self._commission_per_lot * order.lot_size
-        ts = timestamp_utc or datetime.now(timezone.utc)
+        ts = timestamp_utc or datetime.now(UTC)
 
         fill = Fill(
             order_id=order.order_id,

@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
 
+from metatrade.broker.paper_broker import PaperBrokerAdapter
 from metatrade.core.contracts.order import Order
 from metatrade.core.enums import OrderSide, OrderStatus, OrderType, RunMode
 from metatrade.core.errors import BrokerConnectionError, OrderRejectedError
-from metatrade.broker.paper_broker import PaperBrokerAdapter
 
-UTC = timezone.utc
+UTC = UTC
 T0 = datetime(2024, 1, 15, 10, 0, tzinfo=UTC)
 
 

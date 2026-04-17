@@ -175,7 +175,7 @@ class RiskManager:
         side: OrderSide,
         risk_pct: float | None = None,
         current_atr: Decimal | None = None,
-    ) -> "PositionSizeResult":
+    ) -> PositionSizeResult:
         """Recompute lot size for a new SL price while preserving risk_pct.
 
         Used by the SL/TP policy selector to resize the position after the

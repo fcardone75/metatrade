@@ -30,15 +30,14 @@ Confidence scaling
 from __future__ import annotations
 
 from datetime import datetime
-from decimal import Decimal
 
 from metatrade.core.contracts.market import Bar
 from metatrade.core.contracts.signal import AnalysisSignal
 from metatrade.core.enums import SignalDirection
 from metatrade.core.versioning import ModuleVersion
-from metatrade.technical_analysis.interface import ITechnicalModule
 from metatrade.technical_analysis.indicators.bollinger import bollinger_bands
-from metatrade.technical_analysis.indicators.keltner import keltner_channel, is_squeeze
+from metatrade.technical_analysis.indicators.keltner import is_squeeze, keltner_channel
+from metatrade.technical_analysis.interface import ITechnicalModule
 
 _VERSION = ModuleVersion(1, 0, 0)
 

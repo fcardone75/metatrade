@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -10,7 +10,7 @@ import pytest
 from metatrade.core.contracts.position import Position
 from metatrade.core.enums import PositionSide, PositionState
 
-UTC = timezone.utc
+UTC = UTC
 T0 = datetime(2024, 1, 15, 10, 0, tzinfo=UTC)
 T1 = datetime(2024, 1, 15, 11, 0, tzinfo=UTC)
 

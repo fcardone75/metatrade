@@ -13,26 +13,25 @@ Each runner subclass calls process_bar() with appropriate account data.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
-from metatrade.consensus.engine import ConsensusEngine
-from metatrade.consensus.config import ConsensusConfig
+from metatrade.alerting.telegram_alerter import TelegramAlerter
 from metatrade.consensus.adaptive_threshold import AdaptiveThresholdManager
+from metatrade.consensus.config import ConsensusConfig
+from metatrade.consensus.engine import ConsensusEngine
 from metatrade.consensus.market_accuracy_tracker import MarketAccuracyTracker
 from metatrade.core.contracts.account import AccountState
 from metatrade.core.contracts.market import Bar
-from metatrade.core.contracts.signal import AnalysisSignal
 from metatrade.core.contracts.risk import RiskDecision, RiskVeto
-from metatrade.core.enums import ConsensusMode, SignalDirection, OrderSide, RunMode
-from metatrade.alerting.telegram_alerter import TelegramAlerter
+from metatrade.core.contracts.signal import AnalysisSignal
+from metatrade.core.enums import ConsensusMode, OrderSide, RunMode, SignalDirection
 from metatrade.core.log import get_logger
 from metatrade.observability.store import TelemetryStore
 from metatrade.risk.config import RiskConfig
 from metatrade.risk.manager import RiskManager
 from metatrade.runner.config import RunnerConfig
 from metatrade.technical_analysis.interface import ITechnicalModule
-
 
 log = get_logger(__name__)
 
@@ -379,7 +378,7 @@ class BaseRunner:
             produced an actionable signal. None if consensus is HOLD.
         """
         if timestamp_utc is None:
-            timestamp_utc = datetime.now(timezone.utc)
+            timestamp_utc = datetime.now(UTC)
 
         # Sync kill switch from shared DB (cross-process signal from dashboard).
         self._sync_kill_switch_from_db()
@@ -517,8 +516,8 @@ class BaseRunner:
         im_risk_mult: Decimal | None = None
         if self._intermarket is not None:
             try:
-                from metatrade.intermarket.engine import IntermarketEngine
                 from metatrade.core.contracts.position import Position as _Position
+                from metatrade.intermarket.engine import IntermarketEngine
                 if isinstance(self._intermarket, IntermarketEngine):
                     # Collect open positions from the broker/paper state if
                     # available.  BaseRunner does not own positions directly,
@@ -782,10 +781,10 @@ class BaseRunner:
             recomputed lot size, or the original decision when selection fails.
         """
         try:
-            from metatrade.ml.exit_profile_contracts import ExitProfileContext
             from metatrade.ml.exit_profile_candidate_generator import (
                 ExitProfileCandidateGenerator,
             )
+            from metatrade.ml.exit_profile_contracts import ExitProfileContext
             from metatrade.ml.exit_profile_selector import ExitProfileSelector
 
             if not isinstance(self._exit_profile_generator, ExitProfileCandidateGenerator):

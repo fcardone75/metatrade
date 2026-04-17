@@ -18,9 +18,8 @@ This detector uses a pragmatic approach:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 
-from metatrade.core.contracts.market import Bar
 from metatrade.core.enums import Timeframe
 from metatrade.core.log import get_logger
 from metatrade.market_data.interface import IBarStore, IGapDetector

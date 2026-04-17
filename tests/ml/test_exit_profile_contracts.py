@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -16,7 +16,7 @@ from metatrade.ml.exit_profile_contracts import (
 
 
 def _ts() -> datetime:
-    return datetime(2024, 1, 15, 10, 0, tzinfo=timezone.utc)
+    return datetime(2024, 1, 15, 10, 0, tzinfo=UTC)
 
 
 def _ctx(**kwargs) -> ExitProfileContext:

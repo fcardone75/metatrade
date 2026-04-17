@@ -21,7 +21,6 @@ all data after folds are evaluated.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Any
 
 import numpy as np

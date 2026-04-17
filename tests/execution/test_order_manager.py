@@ -2,19 +2,19 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
 
 from metatrade.core.contracts.order import Fill, Order
 from metatrade.core.contracts.position import Position
-from metatrade.core.contracts.risk import RiskDecision, PositionSizeResult
+from metatrade.core.contracts.risk import PositionSizeResult, RiskDecision
 from metatrade.core.enums import OrderSide, OrderStatus, OrderType, PositionSide, RunMode
 from metatrade.core.errors import DuplicateOrderError, OrderRejectedError
 from metatrade.execution.order_manager import OrderManager
 
-UTC = timezone.utc
+UTC = UTC
 T0 = datetime(2024, 1, 15, 10, 0, tzinfo=UTC)
 
 

@@ -13,17 +13,14 @@ Coverage targets
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from decimal import Decimal
+from datetime import UTC, datetime
 
 import numpy as np
-import pytest
 
 from metatrade.intermarket.config import IntermarketConfig
-from metatrade.intermarket.contracts import PairCorrelation
 from metatrade.intermarket.correlation import RollingCorrelationService
 
-_NOW = datetime(2024, 6, 1, 12, 0, tzinfo=timezone.utc)
+_NOW = datetime(2024, 6, 1, 12, 0, tzinfo=UTC)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────

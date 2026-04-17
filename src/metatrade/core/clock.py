@@ -14,7 +14,7 @@ Without this abstraction, backtesting and deterministic unit tests are impossibl
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 
 
 class Clock(ABC):
@@ -35,10 +35,10 @@ class SystemClock(Clock):
     """Production clock — reads from the OS system time."""
 
     def now_utc(self) -> datetime:
-        return datetime.now(timezone.utc)
+        return datetime.now(UTC)
 
     def today_utc(self) -> date:
-        return datetime.now(timezone.utc).date()
+        return datetime.now(UTC).date()
 
 
 class FixedClock(Clock):

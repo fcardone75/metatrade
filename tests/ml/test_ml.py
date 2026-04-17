@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import math
-import pickle
-import tempfile
 import os
-from datetime import datetime, timezone
+import tempfile
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -14,19 +13,18 @@ import pytest
 from metatrade.core.contracts.market import Bar
 from metatrade.core.enums import SignalDirection, Timeframe
 from metatrade.core.errors import ModuleNotReadyError
+from metatrade.ml.classifier import ClassifierMetrics, MLClassifier
 from metatrade.ml.config import MLConfig
-from metatrade.ml.features import extract_features, FeatureVector, MIN_FEATURE_BARS
+from metatrade.ml.features import MIN_FEATURE_BARS, FeatureVector, extract_features
 from metatrade.ml.labels import label_bars, label_single
-from metatrade.ml.classifier import MLClassifier, ClassifierMetrics
-from metatrade.ml.registry import ModelRegistry, ModelSnapshot
 from metatrade.ml.module import MLModule
-
+from metatrade.ml.registry import ModelRegistry, ModelSnapshot
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-NOW = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2024, 6, 1, 12, 0, 0, tzinfo=UTC)
 
 
 def D(v: str | float | int) -> Decimal:
@@ -44,7 +42,7 @@ def make_bar(
     o = open_ if open_ is not None else close
     h = high if high is not None else close + 0.0010
     lo = low if low is not None else close - 0.0010
-    ts = datetime(2024, 1, 1 + (i // 24), i % 24, 0, 0, tzinfo=timezone.utc)
+    ts = datetime(2024, 1, 1 + (i // 24), i % 24, 0, 0, tzinfo=UTC)
     return Bar(
         symbol="EURUSD",
         timeframe=Timeframe.H1,
@@ -674,7 +672,7 @@ class TestWalkForwardTrainer:
             assert fold.train_end <= fold.test_start
 
     def test_empty_bars_returns_no_folds(self) -> None:
-        from metatrade.ml.walk_forward import WalkForwardTrainer, WalkForwardResult
+        from metatrade.ml.walk_forward import WalkForwardTrainer
         cfg = self._small_cfg()
         result, model = WalkForwardTrainer(cfg).run([])
         assert result.n_folds == 0

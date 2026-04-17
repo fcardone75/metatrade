@@ -18,6 +18,7 @@ from __future__ import annotations
 import pickle
 import time
 from dataclasses import dataclass, field
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
@@ -97,8 +98,8 @@ class SlTpModelRegistry:
             The created SlTpModelSnapshot.
         """
         if version is None:
-            from datetime import datetime, timezone
-            version = datetime.now(timezone.utc).strftime("sltp_v%Y%m%d_%H%M")
+            from datetime import datetime
+            version = datetime.now(UTC).strftime("sltp_v%Y%m%d_%H%M")
 
         snap = SlTpModelSnapshot(
             version=version,

@@ -14,8 +14,8 @@ If multi-threading is added later, use a connection pool or serialize access.
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
-from decimal import Decimal, ROUND_HALF_UP
+from datetime import UTC, datetime
+from decimal import ROUND_HALF_UP, Decimal
 
 import duckdb
 
@@ -218,7 +218,7 @@ def _to_unix(dt: datetime) -> int:
 
 def _from_unix(ts: int) -> datetime:
     """Convert Unix seconds integer to UTC-aware datetime."""
-    return datetime.fromtimestamp(ts, tz=timezone.utc)
+    return datetime.fromtimestamp(ts, tz=UTC)
 
 
 def _bar_to_row(bar: Bar) -> tuple:

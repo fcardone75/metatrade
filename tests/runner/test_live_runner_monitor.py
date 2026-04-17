@@ -7,26 +7,24 @@ are made.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 from metatrade.broker.interface import IBrokerAdapter
 from metatrade.core.contracts.market import Bar
 from metatrade.core.enums import Timeframe
-from metatrade.exit_engine.contracts import ExitAction, ExitDecision, ExitSignal
+from metatrade.exit_engine.contracts import ExitAction, ExitDecision
 from metatrade.runner.config import RunnerConfig
 from metatrade.runner.live_runner import LiveRunner
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-NOW = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2024, 6, 1, 12, 0, 0, tzinfo=UTC)
 
 
 def _cfg() -> RunnerConfig:
@@ -42,7 +40,7 @@ def _cfg() -> RunnerConfig:
 
 def _bar(close: float = 1.10000, ts: datetime | None = None, i: int = 0) -> Bar:
     c = Decimal(str(round(close, 5)))
-    ts = ts or datetime(2024, 1, 1, i % 24, 0, 0, tzinfo=timezone.utc)
+    ts = ts or datetime(2024, 1, 1, i % 24, 0, 0, tzinfo=UTC)
     return Bar(
         symbol="EURUSD", timeframe=Timeframe.M5,
         timestamp_utc=ts,

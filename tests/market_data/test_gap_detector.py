@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -12,7 +12,7 @@ from metatrade.core.enums import Timeframe
 from metatrade.market_data.gap_detector.gap_detector import GapDetector, _is_weekend_gap
 from metatrade.market_data.storage.duckdb_store import DuckDBBarStore
 
-UTC = timezone.utc
+UTC = UTC
 # Monday 2024-01-15 10:00 UTC
 T0 = datetime(2024, 1, 15, 10, 0, tzinfo=UTC)
 

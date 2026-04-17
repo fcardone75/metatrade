@@ -19,8 +19,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timezone
-from decimal import Decimal
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
@@ -72,7 +71,7 @@ def _ts(dt: datetime) -> int:
 
 
 def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class IntermarketStore:
@@ -91,7 +90,7 @@ class IntermarketStore:
         self._connect()
 
     @classmethod
-    def from_env(cls) -> "IntermarketStore":
+    def from_env(cls) -> IntermarketStore:
         """Create an ``IntermarketStore`` reading ``TELEMETRY_DB_PATH`` from env.
 
         Falls back to ``data/telemetry.db``.

@@ -15,7 +15,7 @@ producing realistic-looking OHLCV data with valid invariants.
 from __future__ import annotations
 
 import random
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from metatrade.core.contracts.market import Bar
@@ -63,7 +63,7 @@ class MockFeed(IMarketDataFeed):
 
     def get_latest_bars(self, symbol: str, timeframe: Timeframe, count: int) -> list[Bar]:
         """Generate `count` bars ending at a fixed reference time."""
-        end_ts = datetime(2024, 1, 15, 10, 0, tzinfo=timezone.utc)
+        end_ts = datetime(2024, 1, 15, 10, 0, tzinfo=UTC)
         step = self._timeframe.seconds
         bars = []
         price = self._base_price
@@ -95,7 +95,7 @@ class MockFeed(IMarketDataFeed):
     def generate_bars(self, count: int, start_ts: datetime | None = None) -> list[Bar]:
         """Generate `count` consecutive bars from start_ts (or a default time)."""
         if start_ts is None:
-            start_ts = datetime(2024, 1, 1, tzinfo=timezone.utc)
+            start_ts = datetime(2024, 1, 1, tzinfo=UTC)
         step = self._timeframe.seconds
         bars = []
         price = self._base_price
@@ -127,7 +127,7 @@ class MockFeed(IMarketDataFeed):
         bar = Bar(
             symbol=self._symbol,
             timeframe=self._timeframe,
-            timestamp_utc=datetime.fromtimestamp(ts_unix, tz=timezone.utc),
+            timestamp_utc=datetime.fromtimestamp(ts_unix, tz=UTC),
             open=open_price,
             high=high,
             low=low,

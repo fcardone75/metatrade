@@ -16,7 +16,7 @@ Key design decisions:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 
 import numpy as np
 
@@ -24,14 +24,13 @@ from metatrade.core.contracts.market import Bar
 from metatrade.core.contracts.signal import AnalysisSignal
 from metatrade.core.enums import SignalDirection
 from metatrade.core.versioning import ModuleVersion
-from metatrade.technical_analysis.interface import ITechnicalModule
-
 from metatrade.intermarket.config import IntermarketConfig
 from metatrade.intermarket.contracts import DependencySnapshot, IntermarketAnalysis
 from metatrade.intermarket.correlation import CorrelationEngine
 from metatrade.intermarket.feature_builder import IntermarketFeatureBuilder
 from metatrade.intermarket.lead_lag import LeadLagDetector
 from metatrade.intermarket.stability import StabilityMonitor
+from metatrade.technical_analysis.interface import ITechnicalModule
 
 _VERSION = ModuleVersion(1, 0, 0)
 

@@ -4,7 +4,7 @@ Bollinger Bands, ADX, Pivot Points, Volatility Regime, Seasonality.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -12,21 +12,20 @@ import pytest
 from metatrade.core.contracts.market import Bar
 from metatrade.core.enums import SignalDirection, Timeframe
 from metatrade.core.errors import ModuleNotReadyError
-from metatrade.technical_analysis.modules.bollinger_module import BollingerBandsModule
 from metatrade.technical_analysis.modules.adx_module import AdxModule
+from metatrade.technical_analysis.modules.bollinger_module import BollingerBandsModule
 from metatrade.technical_analysis.modules.pivot_points_module import (
     PivotPointsModule,
     _compute_pivot_levels,
-)
-from metatrade.technical_analysis.modules.volatility_regime_module import (
-    VolatilityRegimeModule,
 )
 from metatrade.technical_analysis.modules.seasonality_module import (
     SeasonalityModule,
     _classify_session,
     _SessionQuality,
 )
-
+from metatrade.technical_analysis.modules.volatility_regime_module import (
+    VolatilityRegimeModule,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -46,7 +45,7 @@ def make_bar(
     o = open_ if open_ is not None else close
     h = max(o, close) + high_extra
     lo = min(o, close) - low_extra
-    ts = datetime(2024, 1, 1 + i // 24, i % 24, 0, 0, tzinfo=timezone.utc)
+    ts = datetime(2024, 1, 1 + i // 24, i % 24, 0, 0, tzinfo=UTC)
     return Bar(
         symbol="EURUSD",
         timeframe=Timeframe.H1,
@@ -80,9 +79,9 @@ def alternating_bars(n: int, base: float = 1.10000, swing: float = 0.0010) -> li
     return bars
 
 
-NOW_LONDON_OVERLAP = datetime(2024, 6, 4, 14, 0, 0, tzinfo=timezone.utc)  # Tue 14:00 UTC
-NOW_ASIAN = datetime(2024, 6, 4, 3, 0, 0, tzinfo=timezone.utc)            # Tue 03:00 UTC
-NOW_FRIDAY_PM = datetime(2024, 6, 7, 16, 0, 0, tzinfo=timezone.utc)       # Fri 16:00 UTC
+NOW_LONDON_OVERLAP = datetime(2024, 6, 4, 14, 0, 0, tzinfo=UTC)  # Tue 14:00 UTC
+NOW_ASIAN = datetime(2024, 6, 4, 3, 0, 0, tzinfo=UTC)            # Tue 03:00 UTC
+NOW_FRIDAY_PM = datetime(2024, 6, 7, 16, 0, 0, tzinfo=UTC)       # Fri 16:00 UTC
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +168,7 @@ class TestBollingerBandsModule:
     def test_timestamp_propagated(self) -> None:
         m = BollingerBandsModule(period=10)
         bars = flat_bars(30)
-        ts = datetime(2024, 3, 15, 9, 0, 0, tzinfo=timezone.utc)
+        ts = datetime(2024, 3, 15, 9, 0, 0, tzinfo=UTC)
         sig = m.analyse(bars, ts)
         assert sig.timestamp_utc == ts
 
@@ -325,14 +324,14 @@ class TestPivotPointsModule:
             c = D("1.11")
             h = D("1.12") if i == 2 else c + D("0.001")
             lo = D("1.10") if i == 3 else c - D("0.001")
-            ts = datetime(2024, 1, 1, i, 0, 0, tzinfo=timezone.utc)
+            ts = datetime(2024, 1, 1, i, 0, 0, tzinfo=UTC)
             base_bars.append(Bar(
                 symbol="EURUSD", timeframe=Timeframe.H1,
                 timestamp_utc=ts, open=c, high=h, low=lo, close=c, volume=D("100"),
             ))
         # Add a "current session" of 10 more bars with last close near S1 ≈ 1.10
         for i in range(5, 15):
-            ts = datetime(2024, 1, 1, i, 0, 0, tzinfo=timezone.utc)
+            ts = datetime(2024, 1, 1, i, 0, 0, tzinfo=UTC)
             close_val = D("1.1003") if i == 14 else D("1.1050")
             base_bars.append(Bar(
                 symbol="EURUSD", timeframe=Timeframe.H1,
@@ -409,7 +408,7 @@ class TestVolatilityRegimeModule:
         # Use bars with zero spread so ATR=0 → ratio=0 < low_atr_mult → HOLD
         def zero_spread_bar(i: int) -> Bar:
             c = D("1.10000")
-            ts = datetime(2024, 1, 1 + i // 24, i % 24, 0, 0, tzinfo=timezone.utc)
+            ts = datetime(2024, 1, 1 + i // 24, i % 24, 0, 0, tzinfo=UTC)
             return Bar(
                 symbol="EURUSD", timeframe=Timeframe.H1,
                 timestamp_utc=ts, open=c, high=c, low=c, close=c, volume=D("100"),
@@ -541,7 +540,7 @@ class TestSeasonalityModule:
         m = SeasonalityModule(momentum_bars=3, momentum_threshold=0.0100)
         bars = flat_bars(10)  # effectively zero momentum
         # Mon 10:00 = GOOD session
-        ts_mon = datetime(2024, 6, 3, 10, 0, 0, tzinfo=timezone.utc)
+        ts_mon = datetime(2024, 6, 3, 10, 0, 0, tzinfo=UTC)
         sig = m.analyse(bars, ts_mon)
         assert sig.direction == SignalDirection.HOLD
 
@@ -549,7 +548,7 @@ class TestSeasonalityModule:
         """Good session with strong momentum → BUY/SELL."""
         m = SeasonalityModule(momentum_bars=3, momentum_threshold=0.0001)
         bars = rising_bars(10, step=0.0020)
-        ts_mon = datetime(2024, 6, 3, 10, 0, 0, tzinfo=timezone.utc)
+        ts_mon = datetime(2024, 6, 3, 10, 0, 0, tzinfo=UTC)
         sig = m.analyse(bars, ts_mon)
         assert sig.direction == SignalDirection.BUY
 
@@ -582,6 +581,6 @@ class TestSeasonalityModule:
     def test_timestamp_propagated(self) -> None:
         m = SeasonalityModule()
         bars = rising_bars(10)
-        ts = datetime(2024, 6, 4, 14, 30, 0, tzinfo=timezone.utc)
+        ts = datetime(2024, 6, 4, 14, 30, 0, tzinfo=UTC)
         sig = m.analyse(bars, ts)
         assert sig.timestamp_utc == ts

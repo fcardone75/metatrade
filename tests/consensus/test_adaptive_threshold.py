@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
 import pytest
 
-from metatrade.consensus.adaptive_threshold import AdaptiveThresholdManager, ModuleThresholdState
+from metatrade.consensus.adaptive_threshold import AdaptiveThresholdManager
 from metatrade.core.contracts.signal import AnalysisSignal
 from metatrade.core.enums import SignalDirection
-from metatrade.core.versioning import ModuleVersion, SchemaVersion
+from metatrade.core.versioning import ModuleVersion
 
-_NOW = datetime(2024, 1, 1, tzinfo=timezone.utc)
+_NOW = datetime(2024, 1, 1, tzinfo=UTC)
 _VERSION = ModuleVersion(1, 0, 0)
 
 

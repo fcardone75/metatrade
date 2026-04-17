@@ -31,14 +31,13 @@ from datetime import datetime
 from decimal import Decimal
 
 from metatrade.core.contracts.market import Bar
-from metatrade.technical_analysis.indicators.ema import ema
-from metatrade.technical_analysis.indicators.rsi import rsi
-from metatrade.technical_analysis.indicators.atr import atr
 from metatrade.technical_analysis.indicators.adx import adx as compute_adx
+from metatrade.technical_analysis.indicators.atr import atr
 from metatrade.technical_analysis.indicators.bollinger import bollinger_bands
 from metatrade.technical_analysis.indicators.donchian import donchian_channel
+from metatrade.technical_analysis.indicators.ema import ema
 from metatrade.technical_analysis.indicators.hurst import hurst_exponent
-
+from metatrade.technical_analysis.indicators.rsi import rsi
 
 # Minimum bars required to compute all features.
 # Raised from 35 → 55 to accommodate:
@@ -378,4 +377,283 @@ def extract_features(
         bb_pct_b=bb_pct_b,
         rsi_divergence=rsi_divergence,
         hurst_short=hurst_short,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Multi-resolution support
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Minimum bars required in a higher-TF window for HTF context extraction.
+MIN_HIGHER_TF_BARS: int = 55
+
+# Neutral HTF context used when a higher-TF window is too short.
+_NEUTRAL_HTF: dict[str, float] = {
+    "ema9_dist": 0.0,
+    "ema21_dist": 0.0,
+    "ema9_21_cross": 0.0,
+    "rsi14": 0.5,
+    "atr_zscore": 0.0,
+    "donchian_pos": 0.5,
+    "adx_slope": 0.0,
+    "hurst_short": 0.5,
+}
+
+
+def _extract_htf_context(bars: list[Bar]) -> dict[str, float] | None:
+    """Extract 8 structural context features from a higher-TF bar window.
+
+    Features: ema9_dist, ema21_dist, ema9_21_cross, rsi14, atr_zscore,
+    donchian_pos, adx_slope, hurst_short — same semantics as FeatureVector
+    but computed on the higher-TF bars for trend/regime context.
+
+    Returns None if len(bars) < MIN_HIGHER_TF_BARS.
+    """
+    if len(bars) < MIN_HIGHER_TF_BARS:
+        return None
+
+    closes = [b.close for b in bars]
+    highs = [b.high for b in bars]
+    lows = [b.low for b in bars]
+    close_f = [_d(c) for c in closes]
+    c = close_f[-1]
+    eps = 1e-10
+
+    ema9_vals = ema(closes, 9)
+    ema21_vals = ema(closes, 21)
+    e9 = _d(ema9_vals[-1])
+    e21 = _d(ema21_vals[-1])
+    ema9_dist = (c - e9) / (e9 + eps)
+    ema21_dist = (c - e21) / (e21 + eps)
+    ema9_21_cross = (e9 - e21) / (c + eps)
+
+    rsi14_vals = rsi(closes, 14)
+    rsi14 = float(rsi14_vals[-1]) / 100.0
+
+    atr14_vals = atr(highs, lows, closes, 14)
+    atr14_f = [_d(v) for v in atr14_vals]
+    atr14 = atr14_f[-1]
+    try:
+        atr_window = atr14_f[-30:]
+        if len(atr_window) >= 2:
+            atr_mean = sum(atr_window) / len(atr_window)
+            atr_std = math.sqrt(
+                sum((v - atr_mean) ** 2 for v in atr_window) / len(atr_window)
+            )
+            atr_zscore = (atr14 - atr_mean) / (atr_std + eps)
+        else:
+            atr_zscore = 0.0
+    except Exception:
+        atr_zscore = 0.0
+
+    try:
+        don_up, _, don_low = donchian_channel(highs, lows, period=20)
+        don_range = float(don_up[-1] - don_low[-1])
+        donchian_pos = (
+            float(closes[-1] - don_low[-1]) / don_range if don_range > 0 else 0.5
+        )
+    except Exception:
+        donchian_pos = 0.5
+
+    try:
+        adx_vals = compute_adx(highs, lows, closes, period=14)
+        adx_slope = (float(adx_vals[-1]) - float(adx_vals[-5])) / 100.0
+    except Exception:
+        adx_slope = 0.0
+
+    try:
+        hurst_short = hurst_exponent(closes[-40:], min_period=4)
+    except Exception:
+        hurst_short = 0.5
+
+    return {
+        "ema9_dist": ema9_dist,
+        "ema21_dist": ema21_dist,
+        "ema9_21_cross": ema9_21_cross,
+        "rsi14": rsi14,
+        "atr_zscore": atr_zscore,
+        "donchian_pos": donchian_pos,
+        "adx_slope": adx_slope,
+        "hurst_short": hurst_short,
+    }
+
+
+@dataclass(frozen=True)
+class MultiResFeatureVector:
+    """43-feature vector combining M1 micro-structure with M5 and M15 context.
+
+    Layout:
+        [0-26]   27 M1 base features — identical ordering to FeatureVector.
+        [27-34]   8 M5 context features (prefix ``m5_``).
+        [35-42]   8 M15 context features (prefix ``m15_``).
+
+    When a higher-TF window is too short neutral values are used for that
+    TF's 8 features so the M1 sample is not discarded during warm-up.
+    """
+
+    # ── M1 base (27) ────────────────────────────────────────────────────────
+    returns_1: float
+    returns_2: float
+    returns_3: float
+    returns_5: float
+    returns_10: float
+    ema9_dist: float
+    ema21_dist: float
+    ema9_21_cross: float
+    rsi14: float
+    rsi14_change: float
+    atr14_rel: float
+    rolling_std5: float
+    rolling_std20: float
+    body_ratio: float
+    upper_wick: float
+    lower_wick: float
+    vol_rel: float
+    hour_sin: float
+    hour_cos: float
+    weekday_sin: float
+    weekday_cos: float
+    adx_slope: float
+    atr_zscore: float
+    donchian_pos: float
+    bb_pct_b: float
+    rsi_divergence: float
+    hurst_short: float
+    # ── M5 context (8) ──────────────────────────────────────────────────────
+    m5_ema9_dist: float
+    m5_ema21_dist: float
+    m5_ema9_21_cross: float
+    m5_rsi14: float
+    m5_atr_zscore: float
+    m5_donchian_pos: float
+    m5_adx_slope: float
+    m5_hurst_short: float
+    # ── M15 context (8) ─────────────────────────────────────────────────────
+    m15_ema9_dist: float
+    m15_ema21_dist: float
+    m15_ema9_21_cross: float
+    m15_rsi14: float
+    m15_atr_zscore: float
+    m15_donchian_pos: float
+    m15_adx_slope: float
+    m15_hurst_short: float
+
+    def to_list(self) -> list[float]:
+        """Ordered list of all 43 feature values."""
+        return [
+            self.returns_1, self.returns_2, self.returns_3,
+            self.returns_5, self.returns_10,
+            self.ema9_dist, self.ema21_dist, self.ema9_21_cross,
+            self.rsi14, self.rsi14_change,
+            self.atr14_rel, self.rolling_std5, self.rolling_std20,
+            self.body_ratio, self.upper_wick, self.lower_wick,
+            self.vol_rel,
+            self.hour_sin, self.hour_cos, self.weekday_sin, self.weekday_cos,
+            self.adx_slope, self.atr_zscore, self.donchian_pos, self.bb_pct_b,
+            self.rsi_divergence, self.hurst_short,
+            self.m5_ema9_dist, self.m5_ema21_dist, self.m5_ema9_21_cross,
+            self.m5_rsi14, self.m5_atr_zscore, self.m5_donchian_pos,
+            self.m5_adx_slope, self.m5_hurst_short,
+            self.m15_ema9_dist, self.m15_ema21_dist, self.m15_ema9_21_cross,
+            self.m15_rsi14, self.m15_atr_zscore, self.m15_donchian_pos,
+            self.m15_adx_slope, self.m15_hurst_short,
+        ]
+
+    @classmethod
+    def feature_names(cls) -> list[str]:
+        """Stable ordered feature names matching to_list() (43 names)."""
+        return [
+            "returns_1", "returns_2", "returns_3", "returns_5", "returns_10",
+            "ema9_dist", "ema21_dist", "ema9_21_cross",
+            "rsi14", "rsi14_change",
+            "atr14_rel", "rolling_std5", "rolling_std20",
+            "body_ratio", "upper_wick", "lower_wick",
+            "vol_rel",
+            "hour_sin", "hour_cos", "weekday_sin", "weekday_cos",
+            "adx_slope", "atr_zscore", "donchian_pos", "bb_pct_b",
+            "rsi_divergence", "hurst_short",
+            "m5_ema9_dist", "m5_ema21_dist", "m5_ema9_21_cross",
+            "m5_rsi14", "m5_atr_zscore", "m5_donchian_pos",
+            "m5_adx_slope", "m5_hurst_short",
+            "m15_ema9_dist", "m15_ema21_dist", "m15_ema9_21_cross",
+            "m15_rsi14", "m15_atr_zscore", "m15_donchian_pos",
+            "m15_adx_slope", "m15_hurst_short",
+        ]
+
+
+def extract_features_multires(
+    m1_bars: list[Bar],
+    m5_bars: list[Bar] | None = None,
+    m15_bars: list[Bar] | None = None,
+    timestamp_utc: datetime | None = None,
+) -> MultiResFeatureVector | None:
+    """Extract a 43-feature multi-resolution vector from M1 + M5/M15 context.
+
+    Combines the standard 27 M1 features with 8 M5 structural features and
+    8 M15 structural features.  When a higher-TF window is too short
+    (< MIN_HIGHER_TF_BARS) neutral values are used for that TF's features
+    so the M1 sample is not discarded during the dataset warm-up period.
+
+    Args:
+        m1_bars:        M1 bar window (oldest first), at least MIN_FEATURE_BARS.
+        m5_bars:        M5 bars aligned to m1_bars[-1].timestamp_utc.
+                        Pass None or [] to use neutral M5 context.
+        m15_bars:       M15 bars aligned to m1_bars[-1].timestamp_utc.
+                        Pass None or [] to use neutral M15 context.
+        timestamp_utc:  Used for cyclical time-of-day features on the M1 bar.
+
+    Returns:
+        MultiResFeatureVector (43 features) or None if M1 base is insufficient.
+    """
+    base = extract_features(m1_bars, timestamp_utc)
+    if base is None:
+        return None
+
+    m5_ctx = (_extract_htf_context(m5_bars) if m5_bars else None) or _NEUTRAL_HTF
+    m15_ctx = (_extract_htf_context(m15_bars) if m15_bars else None) or _NEUTRAL_HTF
+
+    return MultiResFeatureVector(
+        returns_1=base.returns_1,
+        returns_2=base.returns_2,
+        returns_3=base.returns_3,
+        returns_5=base.returns_5,
+        returns_10=base.returns_10,
+        ema9_dist=base.ema9_dist,
+        ema21_dist=base.ema21_dist,
+        ema9_21_cross=base.ema9_21_cross,
+        rsi14=base.rsi14,
+        rsi14_change=base.rsi14_change,
+        atr14_rel=base.atr14_rel,
+        rolling_std5=base.rolling_std5,
+        rolling_std20=base.rolling_std20,
+        body_ratio=base.body_ratio,
+        upper_wick=base.upper_wick,
+        lower_wick=base.lower_wick,
+        vol_rel=base.vol_rel,
+        hour_sin=base.hour_sin,
+        hour_cos=base.hour_cos,
+        weekday_sin=base.weekday_sin,
+        weekday_cos=base.weekday_cos,
+        adx_slope=base.adx_slope,
+        atr_zscore=base.atr_zscore,
+        donchian_pos=base.donchian_pos,
+        bb_pct_b=base.bb_pct_b,
+        rsi_divergence=base.rsi_divergence,
+        hurst_short=base.hurst_short,
+        m5_ema9_dist=m5_ctx["ema9_dist"],
+        m5_ema21_dist=m5_ctx["ema21_dist"],
+        m5_ema9_21_cross=m5_ctx["ema9_21_cross"],
+        m5_rsi14=m5_ctx["rsi14"],
+        m5_atr_zscore=m5_ctx["atr_zscore"],
+        m5_donchian_pos=m5_ctx["donchian_pos"],
+        m5_adx_slope=m5_ctx["adx_slope"],
+        m5_hurst_short=m5_ctx["hurst_short"],
+        m15_ema9_dist=m15_ctx["ema9_dist"],
+        m15_ema21_dist=m15_ctx["ema21_dist"],
+        m15_ema9_21_cross=m15_ctx["ema9_21_cross"],
+        m15_rsi14=m15_ctx["rsi14"],
+        m15_atr_zscore=m15_ctx["atr_zscore"],
+        m15_donchian_pos=m15_ctx["donchian_pos"],
+        m15_adx_slope=m15_ctx["adx_slope"],
+        m15_hurst_short=m15_ctx["hurst_short"],
     )

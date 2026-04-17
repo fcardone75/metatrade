@@ -21,15 +21,14 @@ the ADX module's signals.
 from __future__ import annotations
 
 from datetime import datetime
-from decimal import Decimal
 
 from metatrade.core.contracts.market import Bar
 from metatrade.core.contracts.signal import AnalysisSignal
 from metatrade.core.enums import SignalDirection
 from metatrade.core.versioning import ModuleVersion
-from metatrade.technical_analysis.interface import ITechnicalModule
-from metatrade.technical_analysis.indicators.rsi import rsi as compute_rsi
 from metatrade.technical_analysis.indicators.adx import adx as compute_adx
+from metatrade.technical_analysis.indicators.rsi import rsi as compute_rsi
+from metatrade.technical_analysis.interface import ITechnicalModule
 
 _VERSION = ModuleVersion(1, 0, 0)
 

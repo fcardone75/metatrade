@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -11,7 +11,7 @@ from metatrade.core.contracts.market import Bar
 from metatrade.core.enums import Timeframe
 from metatrade.market_data.feed.mock_feed import MockFeed
 
-UTC = timezone.utc
+UTC = UTC
 T0 = datetime(2024, 1, 1, tzinfo=UTC)
 
 

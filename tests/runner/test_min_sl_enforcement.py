@@ -13,29 +13,23 @@ These tests verify that:
 
 from __future__ import annotations
 
-from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from metatrade.core.contracts.market import Bar
 from metatrade.core.contracts.risk import PositionSizeResult, RiskDecision
 from metatrade.core.enums import OrderSide, Timeframe
-from metatrade.core.versioning import ModuleVersion
 from metatrade.ml.exit_profile_contracts import ExitProfileCandidate, SelectedExitProfile
 from metatrade.runner.base import BaseRunner
 from metatrade.runner.config import RunnerConfig
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 ENTRY = Decimal("1.10000")
-NOW   = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+NOW   = datetime(2024, 6, 1, 12, 0, 0, tzinfo=UTC)
 
 
 def _bar(close: float = 1.10000, i: int = 0) -> Bar:
@@ -43,7 +37,7 @@ def _bar(close: float = 1.10000, i: int = 0) -> Bar:
     return Bar(
         symbol="EURUSD",
         timeframe=Timeframe.M5,
-        timestamp_utc=datetime(2024, 1, 1, i % 24, 0, 0, tzinfo=timezone.utc),
+        timestamp_utc=datetime(2024, 1, 1, i % 24, 0, 0, tzinfo=UTC),
         open=c, high=c + Decimal("0.0010"),
         low=c  - Decimal("0.0010"), close=c,
         volume=Decimal("1000"),
@@ -98,8 +92,6 @@ def _make_decision(side: OrderSide = OrderSide.BUY) -> RiskDecision:
 
 def _make_runner(min_sl_pips: float = 10.0) -> BaseRunner:
     """Return a BaseRunner with no real modules."""
-    from metatrade.runner.config import RunnerConfig
-    from metatrade.technical_analysis.interface import ITechnicalModule
 
     cfg = RunnerConfig(
         symbol="EURUSD",

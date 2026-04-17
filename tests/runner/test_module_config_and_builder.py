@@ -3,24 +3,20 @@ runner features: spread filter, signal cooldown, drawdown recovery."""
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
-from unittest.mock import MagicMock
-
-import pytest
 
 from metatrade.core.contracts.market import Bar
-from metatrade.core.contracts.risk import RiskDecision, RiskVeto
-from metatrade.core.enums import SignalDirection, Timeframe, OrderSide, RunMode
-from metatrade.core.versioning import ModuleVersion
-from metatrade.runner.config import RunnerConfig
-from metatrade.runner.module_config import ModuleConfig
-from metatrade.runner.module_builder import build_modules
-from metatrade.runner.base import BaseRunner
-from metatrade.technical_analysis.interface import ITechnicalModule
 from metatrade.core.contracts.signal import AnalysisSignal
+from metatrade.core.enums import RunMode, SignalDirection, Timeframe
+from metatrade.core.versioning import ModuleVersion
+from metatrade.runner.base import BaseRunner
+from metatrade.runner.config import RunnerConfig
+from metatrade.runner.module_builder import build_modules
+from metatrade.runner.module_config import ModuleConfig
+from metatrade.technical_analysis.interface import ITechnicalModule
 
-UTC = timezone.utc
+UTC = UTC
 NOW = datetime(2024, 6, 1, 12, 0, 0, tzinfo=UTC)
 
 

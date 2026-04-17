@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import numpy as np
 
-
 # Maximum rolling std that maps to zero stability.
 # std = 0 → stability = 1.0 (perfectly stable)
 # std ≥ MAX_STD → stability = 0.0 (maximally unstable)

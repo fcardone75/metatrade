@@ -56,6 +56,13 @@ class MLConfig(BaseConfig):
     # up-weighting BUY/SELL samples.  None = uniform weights.
     class_weight: str | None = Field(default="balanced")
 
+    # ── Session filter ────────────────────────────────────────────────────────
+    # When both are set, only bars whose UTC hour is in [start, end) are used
+    # for training.  Helps remove thin-market noise on M1/M5.
+    # Example: start=7, end=21 keeps London + NY sessions only.
+    session_filter_utc_start: int | None = Field(default=None, ge=0, lt=24)
+    session_filter_utc_end: int | None = Field(default=None, ge=0, lt=24)
+
     # ── Registry ─────────────────────────────────────────────────────────────
     # Directory where model snapshots are persisted
     model_registry_dir: str = Field(default="data/models")

@@ -9,18 +9,15 @@ bars in real-time as they arrive.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 from decimal import Decimal
 
 from metatrade.broker.paper_broker import PaperBrokerAdapter as PaperBroker
 from metatrade.core.contracts.market import Bar
 from metatrade.core.contracts.risk import RiskDecision, RiskVeto
-from metatrade.core.enums import OrderSide
 from metatrade.observability.store import TelemetryStore
 from metatrade.runner.base import BaseRunner
 from metatrade.runner.config import RunnerConfig
 from metatrade.technical_analysis.interface import ITechnicalModule
-
 
 log = logging.getLogger(__name__)
 
@@ -141,9 +138,10 @@ class PaperRunner(BaseRunner):
         Returns:
             Order ID if submitted successfully, None on failure.
         """
+        import uuid
+
         from metatrade.core.contracts.order import Order, OrderType
         from metatrade.core.enums import OrderStatus
-        import uuid
 
         order_id = str(uuid.uuid4())
         ps = decision.position_size

@@ -17,7 +17,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from metatrade.exit_engine.config import GiveBackConfig
-from metatrade.exit_engine.contracts import ExitSignal, PositionContext, PositionSide
+from metatrade.exit_engine.contracts import ExitSignal, PositionContext
 from metatrade.exit_engine.rules.base import IExitRule
 
 _PIP = Decimal("0.0001")

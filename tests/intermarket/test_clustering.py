@@ -15,15 +15,14 @@ Coverage targets
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from decimal import Decimal
+from datetime import UTC, datetime
 
 import pytest
 
 from metatrade.intermarket.clustering import RiskClusterBuilder
 from metatrade.intermarket.contracts import PairCorrelation
 
-_NOW = datetime(2024, 6, 1, 12, 0, tzinfo=timezone.utc)
+_NOW = datetime(2024, 6, 1, 12, 0, tzinfo=UTC)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────

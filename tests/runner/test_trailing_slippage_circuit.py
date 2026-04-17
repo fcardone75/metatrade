@@ -6,19 +6,18 @@ vol-scaled position sizing end-to-end.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
 
 from metatrade.core.contracts.market import Bar
 from metatrade.core.contracts.signal import AnalysisSignal
-from metatrade.core.enums import OrderSide, SignalDirection, Timeframe
+from metatrade.core.enums import SignalDirection, Timeframe
 from metatrade.core.versioning import ModuleVersion
-from metatrade.runner.backtest_runner import BacktestResult, BacktestRunner, SimulatedTrade
+from metatrade.runner.backtest_runner import BacktestResult, BacktestRunner
 from metatrade.runner.config import RunnerConfig
 from metatrade.technical_analysis.interface import ITechnicalModule
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -34,7 +33,7 @@ def _bar(
     return Bar(
         symbol="EURUSD",
         timeframe=Timeframe.H1,
-        timestamp_utc=dt or datetime(2024, 1, 2, 12, 0, tzinfo=timezone.utc),
+        timestamp_utc=dt or datetime(2024, 1, 2, 12, 0, tzinfo=UTC),
         open=Decimal(str(open_ or close)),
         high=Decimal(str(high or close + 0.0002)),
         low=Decimal(str(low or close - 0.0002)),
@@ -45,7 +44,7 @@ def _bar(
 
 def make_bars(n: int, base: float = 1.1000, trend: float = 0.0001) -> list[Bar]:
     """Build a list of ascending bars with a small trend."""
-    start = datetime(2024, 1, 2, 0, 0, tzinfo=timezone.utc)
+    start = datetime(2024, 1, 2, 0, 0, tzinfo=UTC)
     return [
         _bar(
             close=base + i * trend,
@@ -197,7 +196,7 @@ class TestDailyCircuitBreaker:
     def _make_bars_multi_day(self, n_days: int = 3, bars_per_day: int = 24) -> list[Bar]:
         """Build bars spanning multiple UTC calendar days."""
         bars = []
-        start = datetime(2024, 1, 2, 0, 0, tzinfo=timezone.utc)
+        start = datetime(2024, 1, 2, 0, 0, tzinfo=UTC)
         for i in range(n_days * bars_per_day):
             dt = start + timedelta(hours=i)
             close = 1.1000 + i * 0.0001

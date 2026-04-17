@@ -18,7 +18,6 @@ from decimal import Decimal
 
 from metatrade.core.contracts.account import AccountState
 from metatrade.core.contracts.risk import RiskVeto
-from metatrade.core.enums import KillSwitchLevel
 from metatrade.core.log import get_logger
 from metatrade.risk.config import RiskConfig
 from metatrade.risk.kill_switch import KillSwitchManager

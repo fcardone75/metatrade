@@ -6,10 +6,10 @@ from decimal import Decimal
 
 import pytest
 
+from metatrade.technical_analysis.indicators.atr import atr, atr_stop_loss, true_range
 from metatrade.technical_analysis.indicators.ema import ema, ema_crossover_signal
-from metatrade.technical_analysis.indicators.rsi import rsi, rsi_signal
 from metatrade.technical_analysis.indicators.macd import macd, macd_signal
-from metatrade.technical_analysis.indicators.atr import atr, true_range, atr_stop_loss
+from metatrade.technical_analysis.indicators.rsi import rsi, rsi_signal
 
 
 def D(v: str | float | int) -> Decimal:

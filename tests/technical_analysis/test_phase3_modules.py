@@ -6,7 +6,7 @@ and updated ATR-adaptive PivotPoints.
 from __future__ import annotations
 
 import math
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -14,25 +14,24 @@ import pytest
 from metatrade.core.contracts.market import Bar
 from metatrade.core.enums import SignalDirection, Timeframe
 from metatrade.core.errors import ModuleNotReadyError
-from metatrade.technical_analysis.modules.stochastic_rsi_module import StochasticRsiModule
 from metatrade.technical_analysis.modules.adaptive_rsi_module import AdaptiveRsiModule
-from metatrade.technical_analysis.modules.swing_level_module import (
-    SwingLevelModule,
-    _find_swing_highs,
-    _find_swing_lows,
-)
 from metatrade.technical_analysis.modules.multi_timeframe_module import (
     MultiTimeframeModule,
     _resample_bars,
 )
 from metatrade.technical_analysis.modules.pivot_points_module import PivotPointsModule
-
+from metatrade.technical_analysis.modules.stochastic_rsi_module import StochasticRsiModule
+from metatrade.technical_analysis.modules.swing_level_module import (
+    SwingLevelModule,
+    _find_swing_highs,
+    _find_swing_lows,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-NOW = datetime(2024, 6, 3, 14, 0, 0, tzinfo=timezone.utc)  # Tuesday 14:00 UTC
+NOW = datetime(2024, 6, 3, 14, 0, 0, tzinfo=UTC)  # Tuesday 14:00 UTC
 
 
 def D(v: str | float | int) -> Decimal:
@@ -50,7 +49,7 @@ def make_bar(
     o = open_ if open_ is not None else close
     h = max(o, close) + high_extra
     lo = min(o, close) - low_extra
-    ts = datetime(2024, 1, 1 + i // 24, i % 24, 0, 0, tzinfo=timezone.utc)
+    ts = datetime(2024, 1, 1 + i // 24, i % 24, 0, 0, tzinfo=UTC)
     return Bar(
         symbol="EURUSD",
         timeframe=Timeframe.H1,
@@ -92,7 +91,6 @@ def wave_bars(
     period: int = 20,
 ) -> list[Bar]:
     """Smooth sine-wave price series for swing detection."""
-    import math
     bars = []
     for i in range(n):
         c = base + amplitude * math.sin(2 * math.pi * i / period)

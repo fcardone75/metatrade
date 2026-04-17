@@ -14,7 +14,7 @@ The live runner is intentionally thin — most logic lives in BaseRunner.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -202,7 +202,7 @@ class LiveRunner(BaseRunner):
 
     def monitor_positions_once(
         self,
-        exit_engine: "ExitEngine",
+        exit_engine: ExitEngine,
         symbol: str | None = None,
     ) -> list[dict]:
         """Evaluate and act on all open positions in near real-time.
@@ -234,7 +234,7 @@ class LiveRunner(BaseRunner):
             return []
 
         actions: list[dict] = []
-        now_utc = datetime.now(timezone.utc)
+        now_utc = datetime.now(UTC)
 
         for pos in positions:
             try:
@@ -254,11 +254,11 @@ class LiveRunner(BaseRunner):
     def _evaluate_and_act(
         self,
         pos: dict,
-        exit_engine: "ExitEngine",
+        exit_engine: ExitEngine,
         now_utc: datetime,
     ) -> dict | None:
         """Run ExitEngine for one position and execute the resulting decision."""
-        from metatrade.exit_engine.contracts import PositionContext, PositionSide, ExitAction
+        from metatrade.exit_engine.contracts import ExitAction, PositionContext, PositionSide
 
         ticket = pos["ticket"]
         symbol = pos["symbol"]

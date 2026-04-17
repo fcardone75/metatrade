@@ -13,7 +13,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-
 # ── Per-rule config dataclasses ───────────────────────────────────────────────
 
 @dataclass
@@ -118,7 +117,7 @@ class ExitEngineConfig:
     partial_exit:       PartialExitConfig       = field(default_factory=PartialExitConfig)
 
     @classmethod
-    def from_yaml(cls, path: str | Path) -> "ExitEngineConfig":
+    def from_yaml(cls, path: str | Path) -> ExitEngineConfig:
         """Load config from a YAML file.  Requires PyYAML (optional dependency)."""
         try:
             import yaml  # type: ignore[import-untyped]
@@ -132,7 +131,7 @@ class ExitEngineConfig:
         return cls._from_dict(root)
 
     @classmethod
-    def _from_dict(cls, d: dict[str, Any]) -> "ExitEngineConfig":
+    def _from_dict(cls, d: dict[str, Any]) -> ExitEngineConfig:
         """Build from a plain dict (used by from_yaml)."""
         def _sub(klass, key: str):
             sub = d.get(key, {})

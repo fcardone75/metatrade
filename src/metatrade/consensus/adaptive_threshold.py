@@ -31,9 +31,7 @@ accuracy estimate for each module without re-scanning the decision history.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Any, Protocol
-
 
 # ── DB protocol ───────────────────────────────────────────────────────────────
 

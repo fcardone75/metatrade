@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
-
-import pytest
 
 from metatrade.core.enums import OrderSide
 from metatrade.ml.exit_profile_candidate_generator import ExitProfileCandidateGenerator
@@ -13,7 +11,7 @@ from metatrade.ml.exit_profile_contracts import ExitProfileCandidate, ExitProfil
 
 
 def _ts() -> datetime:
-    return datetime(2024, 1, 15, 10, 0, tzinfo=timezone.utc)
+    return datetime(2024, 1, 15, 10, 0, tzinfo=UTC)
 
 
 def _ctx(side: OrderSide = OrderSide.BUY, **kwargs) -> ExitProfileContext:

@@ -2,20 +2,20 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
 
-from metatrade.core.clock import BacktestClock, FixedClock, SystemClock
-from metatrade.core.contracts.market import Bar, Instrument, Tick
+from metatrade.core.clock import BacktestClock, FixedClock
+from metatrade.core.contracts.market import Bar, Instrument
 from metatrade.core.contracts.signal import AnalysisSignal
 from metatrade.core.enums import SignalDirection, Timeframe
-from metatrade.core.versioning import ModuleVersion, SchemaVersion
+from metatrade.core.versioning import ModuleVersion
 
 # ── Timestamps ────────────────────────────────────────────────────────────────
 
-UTC = timezone.utc
+UTC = UTC
 T0 = datetime(2024, 1, 15, 10, 0, 0, tzinfo=UTC)
 T1 = datetime(2024, 1, 15, 11, 0, 0, tzinfo=UTC)
 

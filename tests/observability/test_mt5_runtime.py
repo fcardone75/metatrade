@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
-def _make_reader() -> "MT5RuntimeReader":
+def _make_reader() -> MT5RuntimeReader:
     from metatrade.observability.mt5_runtime import MT5RuntimeReader
 
     reader = MT5RuntimeReader.__new__(MT5RuntimeReader)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +23,7 @@ def save_last_launch(*, mode: str, script_path: Path) -> None:
         "script": str(script_path.resolve()),
         "argv": list(sys.argv[1:]),
         "cwd": str(Path.cwd().resolve()),
-        "saved_at": datetime.now(timezone.utc).isoformat(),
+        "saved_at": datetime.now(UTC).isoformat(),
     }
     path = last_launch_path()
     path.parent.mkdir(parents=True, exist_ok=True)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -10,17 +10,16 @@ import pytest
 from metatrade.core.contracts.market import Bar
 from metatrade.core.enums import SignalDirection, Timeframe
 from metatrade.core.errors import ModuleNotReadyError
-from metatrade.technical_analysis.modules.ema_crossover import EmaCrossoverModule
-from metatrade.technical_analysis.modules.rsi_module import RsiModule
-from metatrade.technical_analysis.modules.macd_module import MacdModule
 from metatrade.technical_analysis.modules.atr_module import AtrModule
-
+from metatrade.technical_analysis.modules.ema_crossover import EmaCrossoverModule
+from metatrade.technical_analysis.modules.macd_module import MacdModule
+from metatrade.technical_analysis.modules.rsi_module import RsiModule
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-NOW = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2024, 6, 1, 12, 0, 0, tzinfo=UTC)
 
 
 def D(v: str | float | int) -> Decimal:
@@ -36,7 +35,7 @@ def make_bar(
     o = open_ if open_ is not None else close
     h = max(o, close) + D("0.00010")
     lo = min(o, close) - D("0.00010")
-    ts = datetime(2024, 1, 1 + i // 24, i % 24, 0, 0, tzinfo=timezone.utc)
+    ts = datetime(2024, 1, 1 + i // 24, i % 24, 0, 0, tzinfo=UTC)
     return Bar(
         symbol="EURUSD",
         timeframe=Timeframe.H1,
@@ -384,7 +383,7 @@ class TestAtrModule:
             h = close + D(str(volatility))
             lo = close - D(str(volatility))
             o = close
-            ts = datetime(2024, 1, 1 + i // 24, i % 24, 0, 0, tzinfo=timezone.utc)
+            ts = datetime(2024, 1, 1 + i // 24, i % 24, 0, 0, tzinfo=UTC)
             bars.append(Bar(
                 symbol="EURUSD",
                 timeframe=Timeframe.H1,
@@ -465,7 +464,7 @@ class TestAtrModule:
         # Renumber timestamps to keep them sequential
         reindexed = []
         for i, b in enumerate(all_bars):
-            ts = datetime(2024, 1, 1 + i // 24, i % 24, 0, 0, tzinfo=timezone.utc)
+            ts = datetime(2024, 1, 1 + i // 24, i % 24, 0, 0, tzinfo=UTC)
             reindexed.append(Bar(
                 symbol=b.symbol, timeframe=b.timeframe, timestamp_utc=ts,
                 open=b.open, high=b.high, low=b.low, close=b.close, volume=b.volume,

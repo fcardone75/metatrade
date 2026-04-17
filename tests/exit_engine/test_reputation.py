@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -17,7 +16,6 @@ from metatrade.exit_engine.contracts import (
     TradeOutcome,
 )
 from metatrade.exit_engine.reputation import ReputationModel
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -47,8 +45,8 @@ def _outcome(
         exit_price=Decimal(exit_price),
         side=side,
         lot_size=Decimal("0.1"),
-        opened_at_utc=datetime(2024, 1, 1, tzinfo=timezone.utc),
-        closed_at_utc=datetime(2024, 1, 1, 1, tzinfo=timezone.utc),
+        opened_at_utc=datetime(2024, 1, 1, tzinfo=UTC),
+        closed_at_utc=datetime(2024, 1, 1, 1, tzinfo=UTC),
         exit_reason="engine",
         signals_emitted=tuple(
             (sig, Decimal(price)) for sig, price in signals
@@ -167,7 +165,7 @@ class TestReputationModel:
 
         # Decay with "now" 10 days after the last eval
         last_ts = model.all_states()[0].last_eval_ts
-        future = datetime.fromtimestamp(last_ts + 10 * 86400, tz=timezone.utc)
+        future = datetime.fromtimestamp(last_ts + 10 * 86400, tz=UTC)
         model.apply_decay(now=future)
 
         w_after = model.get_weight("trailing_stop")
@@ -201,8 +199,8 @@ class TestReputationModel:
             position_id="p1", symbol="EURUSD",
             entry_price=Decimal("1.1000"), exit_price=Decimal("1.0990"),
             side=PositionSide.LONG, lot_size=Decimal("0.1"),
-            opened_at_utc=datetime(2024, 1, 1, tzinfo=timezone.utc),
-            closed_at_utc=datetime(2024, 1, 1, 1, tzinfo=timezone.utc),
+            opened_at_utc=datetime(2024, 1, 1, tzinfo=UTC),
+            closed_at_utc=datetime(2024, 1, 1, 1, tzinfo=UTC),
             exit_reason="engine",
             signals_emitted=((sig, Decimal("1.1015")),),
             pnl_pips=Decimal("-10"),
@@ -255,7 +253,7 @@ class TestApplyDecay:
         # Decay with now = just 1 day after last eval (within 30-day window)
         state = model.all_states()[0]
         near_future = datetime.fromtimestamp(
-            state.last_eval_ts + 86400, tz=timezone.utc
+            state.last_eval_ts + 86400, tz=UTC
         )
         model.apply_decay(now=near_future)
         w_after = model.get_weight("trailing_stop")
@@ -276,8 +274,8 @@ class TestShortSideScoring:
             exit_price=Decimal("1.0970"),
             side=PositionSide.SHORT,
             lot_size=Decimal("0.1"),
-            opened_at_utc=datetime(2024, 1, 1, tzinfo=timezone.utc),
-            closed_at_utc=datetime(2024, 1, 1, 1, tzinfo=timezone.utc),
+            opened_at_utc=datetime(2024, 1, 1, tzinfo=UTC),
+            closed_at_utc=datetime(2024, 1, 1, 1, tzinfo=UTC),
             exit_reason="engine",
             signals_emitted=((sig, Decimal("1.0985")),),
             pnl_pips=Decimal("30"),

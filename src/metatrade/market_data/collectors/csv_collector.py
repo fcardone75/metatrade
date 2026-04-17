@@ -15,7 +15,7 @@ Column names are configurable to support different data provider formats
 from __future__ import annotations
 
 import csv
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from metatrade.core.contracts.market import Bar
@@ -214,7 +214,7 @@ class CsvCollector(IHistoricalCollector):
         dt_str = row[cm.datetime_col].strip()
         dt = datetime.strptime(dt_str, cm.datetime_format)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
 
         spread_raw = None
         if cm.spread_col and cm.spread_col in row:

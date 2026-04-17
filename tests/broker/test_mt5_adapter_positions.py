@@ -5,21 +5,21 @@ All tests run offline (no real MT5 needed) via unittest.mock.patch.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from metatrade.broker.mt5_adapter import (
-    MT5BrokerAdapter,
     _MT5_ORDER_TYPE_BUY,
     _MT5_ORDER_TYPE_SELL,
-    _MT5_RETCODE_DONE,
     _MT5_RETCODE_CHECK_OK,
+    _MT5_RETCODE_DONE,
     _MT5_TRADE_ACTION_DEAL,
     _MT5_TRADE_ACTION_SLTP,
+    MT5BrokerAdapter,
 )
 from metatrade.core.contracts.order import Order
 from metatrade.core.enums import OrderSide, OrderType
@@ -306,7 +306,7 @@ class TestOrderCheckPreValidation:
             side=OrderSide.BUY,
             order_type=OrderType.MARKET,
             lot_size=Decimal("0.10"),
-            timestamp_utc=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            timestamp_utc=datetime(2024, 1, 1, tzinfo=UTC),
         )
         mt5 = MagicMock()
         mt5.account_info.return_value = SimpleNamespace(

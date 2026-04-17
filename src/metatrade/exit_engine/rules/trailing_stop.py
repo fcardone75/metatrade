@@ -11,7 +11,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from metatrade.exit_engine.config import TrailingStopConfig
-from metatrade.exit_engine.contracts import ExitAction, ExitSignal, PositionContext, PositionSide
+from metatrade.exit_engine.contracts import ExitSignal, PositionContext, PositionSide
 from metatrade.exit_engine.rules.base import IExitRule
 
 _PIP = Decimal("0.0001")

@@ -31,14 +31,13 @@ Proportionality guarantee:
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Callable
 
 from metatrade.core.contracts.signal import AnalysisSignal
 from metatrade.core.enums import SignalDirection
-
 
 # ── Contracts ──────────────────────────────────────────────────────────────────
 
@@ -164,7 +163,7 @@ class MarketAccuracyTracker:
             current_close: Close price of the current bar.
             timestamp_utc: Timestamp of the current bar.
         """
-        ts = timestamp_utc or datetime.now(timezone.utc)
+        ts = timestamp_utc or datetime.now(UTC)
         for sig in signals:
             if self._skip_hold and sig.direction == SignalDirection.HOLD:
                 continue
@@ -193,7 +192,7 @@ class MarketAccuracyTracker:
             current_close: Close price of the current (newly closed) bar.
             timestamp_utc: Timestamp of the current bar.
         """
-        ts = timestamp_utc or datetime.now(timezone.utc)
+        ts = timestamp_utc or datetime.now(UTC)
         results: list[EvalResult] = []
         still_pending: list[PendingEvaluation] = []
 

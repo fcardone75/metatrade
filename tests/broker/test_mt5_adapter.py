@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -27,7 +27,7 @@ def _make_order(
         order_type=OrderType.MARKET,
         lot_size=Decimal(lots),
         price=Decimal(price) if price else None,
-        timestamp_utc=datetime(2024, 1, 15, 10, 0, tzinfo=timezone.utc),
+        timestamp_utc=datetime(2024, 1, 15, 10, 0, tzinfo=UTC),
     )
 
 
@@ -361,7 +361,7 @@ class TestAdjustStopsForMinDistance:
             side=OrderSide.SELL,
             order_type=OrderType.MARKET,
             lot_size=Decimal("0.10"),
-            timestamp_utc=datetime(2024, 1, 15, 10, 0, tzinfo=timezone.utc),
+            timestamp_utc=datetime(2024, 1, 15, 10, 0, tzinfo=UTC),
         )
         # bid=150.000, min_stop_pips=10 → min_distance = 10 * 0.01 = 0.10
         # min_valid_sl = 150.000 + 0.10 = 150.100

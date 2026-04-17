@@ -2,16 +2,10 @@
 
 from __future__ import annotations
 
-import pytest
-
 from metatrade.core.enums import (
-    ConsensusMode,
     KillSwitchLevel,
-    OrderSide,
     OrderStatus,
     OrderType,
-    PositionSide,
-    PositionState,
     RunMode,
     SignalDirection,
     Timeframe,

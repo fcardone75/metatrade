@@ -13,16 +13,16 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from metatrade.consensus.config import ConsensusConfig
+from metatrade.consensus.engines.dynamic_vote import DynamicVoteEngine
+from metatrade.consensus.engines.simple_vote import SimpleVoteEngine
+from metatrade.consensus.engines.weighted_vote import WeightedVoteEngine
+from metatrade.consensus.errors import ConsensusError
+from metatrade.consensus.interface import IConsensusEngine
 from metatrade.core.contracts.consensus import ConsensusResult
 from metatrade.core.contracts.signal import AnalysisSignal
 from metatrade.core.enums import ConsensusMode
 from metatrade.core.log import get_logger
-from metatrade.consensus.config import ConsensusConfig
-from metatrade.consensus.errors import ConsensusError
-from metatrade.consensus.interface import IConsensusEngine
-from metatrade.consensus.engines.simple_vote import SimpleVoteEngine
-from metatrade.consensus.engines.weighted_vote import WeightedVoteEngine
-from metatrade.consensus.engines.dynamic_vote import DynamicVoteEngine
 
 log = get_logger(__name__)
 

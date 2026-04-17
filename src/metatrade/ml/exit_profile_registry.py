@@ -17,6 +17,7 @@ from __future__ import annotations
 import pickle
 import time
 from dataclasses import dataclass, field
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
@@ -96,8 +97,8 @@ class ExitProfileModelRegistry:
             The created ExitProfileModelSnapshot.
         """
         if version is None:
-            from datetime import datetime, timezone
-            version = datetime.now(timezone.utc).strftime(
+            from datetime import datetime
+            version = datetime.now(UTC).strftime(
                 "exitprofile_v%Y%m%d_%H%M"
             )
 

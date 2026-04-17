@@ -8,24 +8,21 @@ Covers:
 
 from __future__ import annotations
 
-import math
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
 
 from metatrade.consensus.engines.dynamic_vote import DynamicVoteEngine
 from metatrade.consensus.market_accuracy_tracker import (
-    EvalResult,
     MarketAccuracyTracker,
-    PendingEvaluation,
     _compute_score,
 )
 from metatrade.core.enums import SignalDirection
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
-_NOW = datetime(2024, 6, 1, 12, 0, tzinfo=timezone.utc)
+_NOW = datetime(2024, 6, 1, 12, 0, tzinfo=UTC)
 
 
 def _signal_stub(module_id: str, direction: SignalDirection):
@@ -336,15 +333,12 @@ class TestBaseRunnerAutoWeight:
     """Verify that weights change after enough bars have passed."""
 
     def _make_runner(self, auto_weight: bool = True, forward_bars: int = 3):
-        from decimal import Decimal
-        from datetime import datetime, timezone
-        from metatrade.core.contracts.market import Bar
-        from metatrade.core.enums import SignalDirection, Timeframe
         from metatrade.core.contracts.signal import AnalysisSignal
+        from metatrade.core.enums import SignalDirection
         from metatrade.core.versioning import ModuleVersion
-        from metatrade.technical_analysis.interface import ITechnicalModule
         from metatrade.runner.base import BaseRunner
         from metatrade.runner.config import RunnerConfig
+        from metatrade.technical_analysis.interface import ITechnicalModule
 
         class AlwaysBuyModule(ITechnicalModule):
             @property
@@ -379,14 +373,15 @@ class TestBaseRunnerAutoWeight:
         )
         return runner
 
-    def _bar(self, price: float, i: int = 0) -> "Bar":
+    def _bar(self, price: float, i: int = 0) -> Bar:
+        from decimal import Decimal
+
         from metatrade.core.contracts.market import Bar
         from metatrade.core.enums import Timeframe
-        from decimal import Decimal
         return Bar(
             symbol="EURUSD",
             timeframe=Timeframe.H1,
-            timestamp_utc=datetime(2024, 1, 1, i % 24, i // 24, tzinfo=timezone.utc),
+            timestamp_utc=datetime(2024, 1, 1, i % 24, i // 24, tzinfo=UTC),
             open=Decimal(str(price)),
             high=Decimal(str(price + 0.001)),
             low=Decimal(str(price - 0.001)),

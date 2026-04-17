@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
-
-import pytest
 
 from metatrade.exit_engine.config import (
     BreakEvenConfig,
@@ -29,7 +27,6 @@ from metatrade.exit_engine.contracts import (
 )
 from metatrade.exit_engine.engine import ExitEngine
 
-
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
 def make_long_ctx(
@@ -46,7 +43,7 @@ def make_long_ctx(
         side=PositionSide.LONG,
         entry_price=Decimal("1.1000"),
         lot_size=Decimal("0.1"),
-        opened_at_utc=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        opened_at_utc=datetime(2024, 1, 1, tzinfo=UTC),
         current_price=Decimal(current_price),
         current_bar=None,
         bars_since_entry=[None] * n_bars,
@@ -175,8 +172,8 @@ class TestExitEngineRecordOutcome:
             exit_price=Decimal(str(1.1000 + pnl_pips * 0.0001)),
             side=PositionSide.LONG,
             lot_size=Decimal("0.1"),
-            opened_at_utc=datetime(2024, 1, 1, tzinfo=timezone.utc),
-            closed_at_utc=datetime(2024, 1, 1, 1, tzinfo=timezone.utc),
+            opened_at_utc=datetime(2024, 1, 1, tzinfo=UTC),
+            closed_at_utc=datetime(2024, 1, 1, 1, tzinfo=UTC),
             exit_reason="engine",
             signals_emitted=signals,
             pnl_pips=Decimal(str(pnl_pips)),
@@ -257,7 +254,7 @@ class TestStopLossManagement:
             side=PositionSide.SHORT,
             entry_price=Decimal("1.1000"),
             lot_size=Decimal("0.1"),
-            opened_at_utc=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            opened_at_utc=datetime(2024, 1, 1, tzinfo=UTC),
             current_price=Decimal("1.0980"),
             current_bar=None,
             bars_since_entry=[None] * 5,
@@ -294,7 +291,6 @@ class TestExitEngineHelperMethods:
     def test_extra_rules_extend_rule_list(self):
         """Extra rules passed to constructor are added to the rule list."""
         from metatrade.exit_engine.rules.base import IExitRule
-        from metatrade.exit_engine.contracts import ExitSignal
 
         class DummyRule(IExitRule):
             @property

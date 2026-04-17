@@ -12,26 +12,24 @@
 
 from __future__ import annotations
 
-import math
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
 
 from metatrade.core.contracts.market import Bar
-from metatrade.core.enums import SignalDirection, Timeframe, OrderSide, RunMode
+from metatrade.core.enums import OrderSide, SignalDirection, Timeframe
 from metatrade.core.errors import ModuleNotReadyError
-from metatrade.core.versioning import ModuleVersion
-from metatrade.technical_analysis.indicators.hma import wma, hma
-from metatrade.technical_analysis.indicators.keltner import keltner_channel, is_squeeze
 from metatrade.technical_analysis.indicators.donchian import donchian_channel
+from metatrade.technical_analysis.indicators.hma import hma, wma
 from metatrade.technical_analysis.indicators.hurst import hurst_exponent
-from metatrade.technical_analysis.modules.keltner_squeeze_module import KeltnerSqueezeModule
+from metatrade.technical_analysis.indicators.keltner import is_squeeze, keltner_channel
 from metatrade.technical_analysis.modules.donchian_module import DonchianBreakoutModule
-from metatrade.technical_analysis.modules.market_regime_module import MarketRegimeModule
 from metatrade.technical_analysis.modules.ema_crossover import EmaCrossoverModule
+from metatrade.technical_analysis.modules.keltner_squeeze_module import KeltnerSqueezeModule
+from metatrade.technical_analysis.modules.market_regime_module import MarketRegimeModule
 
-UTC = timezone.utc
+UTC = UTC
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -696,7 +694,6 @@ class TestChandelierExitSL:
     def test_sl_below_entry_for_buy(self) -> None:
         from metatrade.runner.base import BaseRunner
         from metatrade.runner.config import RunnerConfig
-        from metatrade.core.enums import OrderSide
 
         cfg = RunnerConfig()
         runner = BaseRunner(config=cfg, modules=[], auto_weight=False)
@@ -708,7 +705,6 @@ class TestChandelierExitSL:
     def test_sl_above_entry_for_sell(self) -> None:
         from metatrade.runner.base import BaseRunner
         from metatrade.runner.config import RunnerConfig
-        from metatrade.core.enums import OrderSide
 
         cfg = RunnerConfig()
         runner = BaseRunner(config=cfg, modules=[], auto_weight=False)
@@ -721,7 +717,6 @@ class TestChandelierExitSL:
         """Wide bars → larger ATR → wider SL distance."""
         from metatrade.runner.base import BaseRunner
         from metatrade.runner.config import RunnerConfig
-        from metatrade.core.enums import OrderSide
 
         cfg = RunnerConfig()
         runner = BaseRunner(config=cfg, modules=[], auto_weight=False)
@@ -760,7 +755,6 @@ class TestChandelierExitSL:
         """With fewer bars than ATR period, falls back to 20-pip default."""
         from metatrade.runner.base import BaseRunner
         from metatrade.runner.config import RunnerConfig
-        from metatrade.core.enums import OrderSide
 
         cfg = RunnerConfig(chandelier_atr_period=14)
         runner = BaseRunner(config=cfg, modules=[], auto_weight=False)
@@ -776,7 +770,6 @@ class TestChandelierExitSL:
         """chandelier_atr_mult=1.0 vs 3.0 should give different SL distances."""
         from metatrade.runner.base import BaseRunner
         from metatrade.runner.config import RunnerConfig
-        from metatrade.core.enums import OrderSide
 
         bars = self._make_bars(30, step=0.001)
         entry = bars[-1].close

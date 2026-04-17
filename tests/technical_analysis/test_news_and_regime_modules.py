@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -10,16 +10,15 @@ import pytest
 from metatrade.core.contracts.market import Bar
 from metatrade.core.enums import SignalDirection, Timeframe
 from metatrade.core.errors import ModuleNotReadyError
+from metatrade.technical_analysis.modules.market_regime_module import MarketRegimeModule
 from metatrade.technical_analysis.modules.news_calendar_module import (
     NewsCalendarModule,
+    _build_hardcoded_events,
     _first_friday_of_month,
     _nfp_event,
-    _build_hardcoded_events,
-    _HARDCODED_EVENTS,
 )
-from metatrade.technical_analysis.modules.market_regime_module import MarketRegimeModule
 
-UTC = timezone.utc
+UTC = UTC
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────

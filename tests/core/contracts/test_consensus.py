@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from decimal import Decimal
+from datetime import UTC, datetime
 
 import pytest
 
@@ -12,7 +11,7 @@ from metatrade.core.contracts.signal import AnalysisSignal
 from metatrade.core.enums import ConsensusMode, SignalDirection
 from metatrade.core.versioning import ModuleVersion
 
-UTC = timezone.utc
+UTC = UTC
 T0 = datetime(2024, 1, 15, 10, 0, tzinfo=UTC)
 V1 = ModuleVersion(1, 0, 0)
 

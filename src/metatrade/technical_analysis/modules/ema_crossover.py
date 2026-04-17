@@ -28,9 +28,9 @@ from metatrade.core.contracts.market import Bar
 from metatrade.core.contracts.signal import AnalysisSignal
 from metatrade.core.enums import SignalDirection
 from metatrade.core.versioning import ModuleVersion
-from metatrade.technical_analysis.interface import ITechnicalModule
 from metatrade.technical_analysis.indicators.ema import ema as compute_ema
 from metatrade.technical_analysis.indicators.hma import hma as compute_hma
+from metatrade.technical_analysis.interface import ITechnicalModule
 
 _VERSION = ModuleVersion(2, 0, 0)  # bumped: slow line upgraded EMA → HMA
 

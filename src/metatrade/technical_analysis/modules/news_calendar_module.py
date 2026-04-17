@@ -30,8 +30,7 @@ Confidence:
 from __future__ import annotations
 
 import logging
-from calendar import monthrange
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import NamedTuple
 
 from metatrade.core.contracts.market import Bar
@@ -55,7 +54,7 @@ class _Event(NamedTuple):
 
 def _utc(*args: int) -> datetime:
     """Shorthand: _utc(year, month, day, hour, minute) → aware datetime."""
-    return datetime(*args, tzinfo=timezone.utc)
+    return datetime(*args, tzinfo=UTC)
 
 
 # FOMC announcements (19:00 UTC on the second day of the two-day meeting)
@@ -182,8 +181,8 @@ class NewsCalendarModule(ITechnicalModule):
             return
 
         try:
-            import urllib.request
             import json
+            import urllib.request
             from_str = now.strftime("%Y-%m-%d")
             to_str   = (now + timedelta(days=7)).strftime("%Y-%m-%d")
             url = (
@@ -200,7 +199,7 @@ class NewsCalendarModule(ITechnicalModule):
                 try:
                     dt = datetime.strptime(
                         item["time"], "%Y-%m-%d %H:%M:%S"
-                    ).replace(tzinfo=timezone.utc)
+                    ).replace(tzinfo=UTC)
                     events.append(_Event(item.get("event", "?"), dt))
                 except (KeyError, ValueError):
                     continue

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings
 
 from metatrade.core.config_base import BaseConfig
 from metatrade.core.enums import Timeframe

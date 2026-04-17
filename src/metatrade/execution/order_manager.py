@@ -15,13 +15,12 @@ layer and the broker adapter. All order state transitions flow through here.
 from __future__ import annotations
 
 from datetime import datetime
-from decimal import Decimal
 
 from metatrade.core.contracts.order import Fill, Order
 from metatrade.core.contracts.position import Position
 from metatrade.core.contracts.risk import RiskDecision
 from metatrade.core.enums import OrderSide, OrderStatus, OrderType, PositionSide, RunMode
-from metatrade.core.errors import DuplicateOrderError, ModeGuardError, OrderRejectedError
+from metatrade.core.errors import OrderRejectedError
 from metatrade.core.log import get_logger
 from metatrade.execution.idempotency_guard import IdempotencyGuard
 from metatrade.observability.store import TelemetryStore

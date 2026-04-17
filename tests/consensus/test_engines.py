@@ -2,18 +2,18 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
+from metatrade.consensus.engines.dynamic_vote import DynamicVoteEngine
+from metatrade.consensus.engines.simple_vote import SimpleVoteEngine
+from metatrade.consensus.engines.weighted_vote import WeightedVoteEngine
 from metatrade.core.contracts.signal import AnalysisSignal
 from metatrade.core.enums import ConsensusMode, SignalDirection
 from metatrade.core.versioning import ModuleVersion
-from metatrade.consensus.engines.simple_vote import SimpleVoteEngine
-from metatrade.consensus.engines.weighted_vote import WeightedVoteEngine
-from metatrade.consensus.engines.dynamic_vote import DynamicVoteEngine
 
-UTC = timezone.utc
+UTC = UTC
 T0 = datetime(2024, 1, 15, 10, 0, tzinfo=UTC)
 V1 = ModuleVersion(1, 0, 0)
 

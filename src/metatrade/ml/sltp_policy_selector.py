@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import structlog
 
-from metatrade.ml.sltp_contracts import SlTpCandidate, SlTpContext, SelectedSlTpPolicy
+from metatrade.ml.sltp_contracts import SelectedSlTpPolicy, SlTpCandidate, SlTpContext
 
 log = structlog.get_logger(__name__)
 

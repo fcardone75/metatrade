@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from metatrade.core.log import get_logger
@@ -52,7 +52,7 @@ class MT5RuntimeReader:
                 "trade_allowed": getattr(info, "trade_allowed", None),
                 "trade_expert": getattr(info, "trade_expert", None),
                 "company": getattr(info, "company", None),
-                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "timestamp_utc": datetime.now(UTC).isoformat(),
             }
         finally:
             mt5.shutdown()
@@ -110,7 +110,7 @@ class MT5RuntimeReader:
             return []
         try:
             if date_to is None:
-                date_to = datetime.now(timezone.utc)
+                date_to = datetime.now(UTC)
             if date_from is None:
                 days = days_back if days_back is not None else 90
                 date_from = date_to - timedelta(days=days)

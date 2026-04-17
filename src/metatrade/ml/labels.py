@@ -13,8 +13,6 @@ to market volatility (e.g. threshold = 1.5 × ATR14).
 
 from __future__ import annotations
 
-from decimal import Decimal
-
 from metatrade.core.contracts.market import Bar
 from metatrade.technical_analysis.indicators.atr import atr
 

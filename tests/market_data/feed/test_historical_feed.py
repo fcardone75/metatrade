@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -13,7 +13,7 @@ from metatrade.market_data.errors import FeedNotInitializedError, InsufficientHi
 from metatrade.market_data.feed.historical_feed import HistoricalFeed
 from metatrade.market_data.storage.duckdb_store import DuckDBBarStore
 
-UTC = timezone.utc
+UTC = UTC
 T0 = datetime(2024, 1, 15, 10, 0, tzinfo=UTC)
 
 

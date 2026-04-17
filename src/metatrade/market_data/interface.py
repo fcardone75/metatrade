@@ -13,7 +13,6 @@ from metatrade.core.contracts.market import Bar
 from metatrade.core.enums import Timeframe
 from metatrade.market_data.models import (
     BarQuery,
-    CollectionReport,
     GapInfo,
     SymbolCoverage,
 )

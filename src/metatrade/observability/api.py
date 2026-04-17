@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -41,7 +41,7 @@ def _parse_date_param(value: str, *, end_of_day: bool) -> datetime:
             dt = datetime.strptime(value, fmt)
             if end_of_day and fmt == "%Y-%m-%d":
                 dt = dt.replace(hour=23, minute=59, second=59)
-            return dt.replace(tzinfo=timezone.utc)
+            return dt.replace(tzinfo=UTC)
         except ValueError:
             continue
     raise HTTPException(status_code=400, detail=f"Data non riconosciuta: {value!r}. Usa YYYY-MM-DD.")
@@ -169,7 +169,7 @@ def create_app() -> FastAPI:
             "status": "ok",
             "title": obs_cfg.title,
             "refresh_seconds": obs_cfg.refresh_seconds,
-            "time_utc": datetime.now(timezone.utc).isoformat(),
+            "time_utc": datetime.now(UTC).isoformat(),
         }
 
     @app.get("/api/overview")
@@ -294,10 +294,10 @@ def create_app() -> FastAPI:
         Filter by days_back (e.g. 7 = last 7 days) or explicit date_from/date_to.
         Returns up to *limit* results, most recent first.
         """
-        from datetime import datetime as _dt, timezone as _tz
+        from datetime import datetime as _dt
 
-        parsed_from = _dt.fromisoformat(date_from).replace(tzinfo=_tz.utc) if date_from else None
-        parsed_to = _dt.fromisoformat(date_to).replace(tzinfo=_tz.utc) if date_to else None
+        parsed_from = _dt.fromisoformat(date_from).replace(tzinfo=UTC) if date_from else None
+        parsed_to = _dt.fromisoformat(date_to).replace(tzinfo=UTC) if date_to else None
         return mt5.get_closed_deals(
             limit=limit,
             days_back=days_back,
@@ -473,7 +473,7 @@ def create_app() -> FastAPI:
         if not deals:
             return {"imported": 0, "skipped": 0, "message": "Nessun deal trovato in MT5"}
 
-        cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
+        cutoff = datetime.now(UTC) - timedelta(days=days_back)
         cutoff_ts = int(cutoff.timestamp())
         imported = 0
         skipped = 0
@@ -495,7 +495,7 @@ def create_app() -> FastAPI:
             profit = float(deal.get("profit") or 0)
             commission = float(deal.get("commission") or 0)
             swap = float(deal.get("swap") or 0)
-            close_dt = datetime.fromtimestamp(float(deal_time), tz=timezone.utc)
+            close_dt = datetime.fromtimestamp(float(deal_time), tz=UTC)
             trade_id = f"mt5-{broker_id}" if broker_id else f"mt5-{deal_time}"
             telemetry.record_closed_trade(
                 trade_id=trade_id,
@@ -506,7 +506,7 @@ def create_app() -> FastAPI:
                 lot_size=lot_size,
                 entry_price=float(deal.get("price_open") or price_close),
                 entry_time_utc=datetime.fromtimestamp(
-                    float(deal.get("time_open") or deal_time), tz=timezone.utc
+                    float(deal.get("time_open") or deal_time), tz=UTC
                 ),
                 exit_price=price_close,
                 exit_time_utc=close_dt,
@@ -569,7 +569,7 @@ def create_app() -> FastAPI:
                 timeout=market_cfg.mt5_timeout_ms,
             )
             try:
-                date_to = datetime.now(timezone.utc)
+                date_to = datetime.now(UTC)
                 date_from = date_to - timedelta(seconds=tf.seconds * max(limit + 10, 50))
                 rows = collector.collect(symbol, tf, date_from, date_to)
                 rows = rows[-limit:]

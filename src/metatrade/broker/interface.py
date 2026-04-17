@@ -8,11 +8,10 @@ to MT5 or any other concrete broker library.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from datetime import datetime
 from decimal import Decimal
 
 from metatrade.core.contracts.account import AccountState
-from metatrade.core.contracts.order import Fill, Order
+from metatrade.core.contracts.order import Order
 
 
 class IBrokerAdapter(ABC):

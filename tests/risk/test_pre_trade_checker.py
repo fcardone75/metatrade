@@ -2,18 +2,16 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
-import pytest
-
 from metatrade.core.contracts.account import AccountState
-from metatrade.core.enums import KillSwitchLevel, RunMode
+from metatrade.core.enums import KillSwitchLevel
 from metatrade.risk.config import RiskConfig
 from metatrade.risk.kill_switch import KillSwitchManager
 from metatrade.risk.pre_trade_checker import PreTradeChecker
 
-UTC = timezone.utc
+UTC = UTC
 T0 = datetime(2024, 1, 15, 10, 0, tzinfo=UTC)
 
 

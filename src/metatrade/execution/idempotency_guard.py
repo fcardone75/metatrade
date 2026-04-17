@@ -16,7 +16,7 @@ Design:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from metatrade.core.errors import DuplicateOrderError
 from metatrade.core.log import get_logger
@@ -58,7 +58,7 @@ class IdempotencyGuard:
         Call this after a successful broker submission, not before.
         """
         self._expire_old_entries()
-        self._seen[order_id] = datetime.now(timezone.utc).timestamp()
+        self._seen[order_id] = datetime.now(UTC).timestamp()
         log.debug("order_registered", order_id=order_id)
 
     def check_and_register(self, order_id: str) -> None:
@@ -86,7 +86,7 @@ class IdempotencyGuard:
         return len(self._seen)
 
     def _expire_old_entries(self) -> None:
-        now = datetime.now(timezone.utc).timestamp()
+        now = datetime.now(UTC).timestamp()
         cutoff = now - self._ttl
         expired = [oid for oid, ts in self._seen.items() if ts < cutoff]
         for oid in expired:

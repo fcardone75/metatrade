@@ -14,16 +14,14 @@ Coverage targets
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
-
-import pytest
 
 from metatrade.core.contracts.position import Position
 from metatrade.core.enums import OrderSide, PositionSide, PositionState
 from metatrade.intermarket.exposure import CurrencyExposureService, parse_symbol
 
-_NOW = datetime(2024, 6, 1, 12, 0, tzinfo=timezone.utc)
+_NOW = datetime(2024, 6, 1, 12, 0, tzinfo=UTC)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────

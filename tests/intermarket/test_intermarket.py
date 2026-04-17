@@ -11,8 +11,7 @@ Coverage targets:
 
 from __future__ import annotations
 
-import math
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import numpy as np
@@ -22,7 +21,7 @@ from metatrade.core.contracts.market import Bar
 from metatrade.core.enums import SignalDirection, Timeframe
 from metatrade.intermarket.config import IntermarketConfig
 from metatrade.intermarket.contracts import DependencySnapshot, LeadLagResult
-from metatrade.intermarket.correlation import CorrelationEngine, _to_returns, _rank
+from metatrade.intermarket.correlation import CorrelationEngine, _rank, _to_returns
 from metatrade.intermarket.feature_builder import IntermarketFeatureBuilder
 from metatrade.intermarket.lead_lag import LeadLagDetector
 from metatrade.intermarket.module import IntermarketModule
@@ -30,14 +29,14 @@ from metatrade.intermarket.stability import StabilityMonitor
 
 # ── Test helpers ───────────────────────────────────────────────────────────────
 
-_NOW = datetime(2024, 6, 1, 12, 0, tzinfo=timezone.utc)
+_NOW = datetime(2024, 6, 1, 12, 0, tzinfo=UTC)
 
 
 def _bar(close: float, i: int = 0) -> Bar:
     return Bar(
         symbol="EURUSD",
         timeframe=Timeframe.H1,
-        timestamp_utc=datetime(2024, 1, 1, i, 0, tzinfo=timezone.utc),
+        timestamp_utc=datetime(2024, 1, 1, i, 0, tzinfo=UTC),
         open=Decimal(str(close)),
         high=Decimal(str(close + 0.001)),
         low=Decimal(str(close - 0.001)),
@@ -64,7 +63,7 @@ def _bars_from_prices(prices: list[float], symbol: str = "EURUSD") -> list[Bar]:
         Bar(
             symbol=symbol,
             timeframe=Timeframe.H1,
-            timestamp_utc=datetime(2024, 1, 1, i % 24, i // 24, tzinfo=timezone.utc),
+            timestamp_utc=datetime(2024, 1, 1, i % 24, i // 24, tzinfo=UTC),
             open=Decimal(str(p)),
             high=Decimal(str(p + 0.001)),
             low=Decimal(str(p - 0.001)),
@@ -640,14 +639,17 @@ class TestIntermarketModule:
 from metatrade.intermarket.contracts import (
     CurrencyExposure,
     IntermarketDecision,
+)
+from metatrade.intermarket.contracts import (
     PairCorrelation as PortfolioPairCorrelation,
 )
 
 
 class TestCurrencyExposureValidation:
     def test_negative_gross_lots_raises(self) -> None:
-        import pytest
         from decimal import Decimal
+
+        import pytest
         with pytest.raises(ValueError, match="gross_lots must be >= 0"):
             CurrencyExposure(
                 currency="EUR",
@@ -688,8 +690,9 @@ class TestPairCorrelationValidation:
 
 class TestIntermarketDecisionValidation:
     def test_zero_risk_multiplier_raises(self) -> None:
-        import pytest
         from decimal import Decimal
+
+        import pytest
         with pytest.raises(ValueError, match="risk_multiplier must be > 0"):
             IntermarketDecision(
                 approved=True,
@@ -700,8 +703,9 @@ class TestIntermarketDecisionValidation:
             )
 
     def test_empty_reason_raises(self) -> None:
-        import pytest
         from decimal import Decimal
+
+        import pytest
         with pytest.raises(ValueError, match="reason cannot be empty"):
             IntermarketDecision(
                 approved=True,

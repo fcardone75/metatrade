@@ -22,11 +22,11 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from metatrade.consensus.engines._base import _build_result, _hold_result
+from metatrade.consensus.interface import IConsensusEngine
 from metatrade.core.contracts.consensus import ConsensusResult, VoteRecord
 from metatrade.core.contracts.signal import AnalysisSignal
 from metatrade.core.enums import ConsensusMode
-from metatrade.consensus.interface import IConsensusEngine
-from metatrade.consensus.engines._base import _build_result, _hold_result
 
 
 class DynamicVoteEngine(IConsensusEngine):

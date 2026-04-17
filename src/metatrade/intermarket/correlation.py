@@ -22,7 +22,6 @@ from datetime import datetime
 
 import numpy as np
 
-
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _to_returns(prices: list[float]) -> np.ndarray:
@@ -217,7 +216,7 @@ class RollingCorrelationService:
                 ``corr_min_overlap_bars``, and ``corr_returns_mode``.
     """
 
-    def __init__(self, config: "IntermarketConfig") -> None:  # type: ignore[name-defined]
+    def __init__(self, config: IntermarketConfig) -> None:  # type: ignore[name-defined]
         self._config = config
         # Keyed by symbol → list of close prices (oldest first)
         self._histories: dict[str, list[float]] = {}
@@ -244,7 +243,7 @@ class RollingCorrelationService:
         sym_a: str,
         sym_b: str,
         timestamp_utc: datetime,
-    ) -> "PairCorrelation | None":  # type: ignore[name-defined]
+    ) -> PairCorrelation | None:  # type: ignore[name-defined]
         """Compute rolling Pearson correlation between two symbols.
 
         Returns ``None`` when:
@@ -301,7 +300,7 @@ class RollingCorrelationService:
         self,
         symbols: list[str],
         timestamp_utc: datetime,
-    ) -> "dict[tuple[str, str], PairCorrelation]":  # type: ignore[name-defined]
+    ) -> dict[tuple[str, str], PairCorrelation]:  # type: ignore[name-defined]
         """Compute correlations for all unique symbol pairs.
 
         Only pairs for which ``compute_pair`` returns a non-None result
@@ -315,7 +314,7 @@ class RollingCorrelationService:
         Returns:
             Dict mapping ``(symbol_a, symbol_b)`` → ``PairCorrelation``.
         """
-        result: dict[tuple[str, str], "PairCorrelation"] = {}  # type: ignore[type-arg]
+        result: dict[tuple[str, str], PairCorrelation] = {}  # type: ignore[type-arg]
         for i, sym_a in enumerate(symbols):
             for sym_b in symbols[i + 1:]:
                 a, b = (sym_a, sym_b) if sym_a <= sym_b else (sym_b, sym_a)

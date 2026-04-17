@@ -2,18 +2,17 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
 
 from metatrade.core.contracts.market import Bar
 from metatrade.core.enums import Timeframe
-from metatrade.market_data.errors import NormalizationError
 from metatrade.market_data.models import RawBar
 from metatrade.market_data.normalizer.bar_normalizer import BarNormalizer
 
-UTC = timezone.utc
+UTC = UTC
 T0 = datetime(2024, 1, 15, 10, 0, tzinfo=UTC)
 TS0 = int(T0.timestamp())
 

@@ -7,7 +7,7 @@ from datetime import datetime
 
 from metatrade.core.contracts.market import Bar
 from metatrade.core.contracts.signal import AnalysisSignal
-from metatrade.core.errors import InsufficientDataError, ModuleNotReadyError
+from metatrade.core.errors import ModuleNotReadyError
 
 
 class ITechnicalModule(ABC):

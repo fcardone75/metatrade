@@ -116,7 +116,9 @@ class MLClassifier:
         # HistGBM exposes feature_importances_ via permutation importance
         # or the built-in property (available in sklearn >= 1.2).
         # Use it when available; otherwise record zeros.
-        feature_names = FeatureVector.feature_names()
+        # Resolve names from the actual vector type (supports MultiResFeatureVector).
+        fv_cls = type(feature_vectors[0]) if feature_vectors else FeatureVector
+        feature_names = fv_cls.feature_names()
         try:
             importances = {
                 name: float(imp)
@@ -184,7 +186,7 @@ class MLClassifier:
         return pickle.dumps(self._model)
 
     @classmethod
-    def deserialize(cls, data: bytes, config: MLConfig | None = None) -> "MLClassifier":
+    def deserialize(cls, data: bytes, config: MLConfig | None = None) -> MLClassifier:
         """Reconstruct a classifier from serialized bytes.
 
         Args:

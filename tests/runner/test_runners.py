@@ -2,34 +2,31 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
+from unittest.mock import MagicMock
 
 import pytest
-
-from unittest.mock import MagicMock
 
 from metatrade.broker.interface import IBrokerAdapter
 from metatrade.core.contracts.account import AccountState
 from metatrade.core.contracts.market import Bar
-from metatrade.core.contracts.order import Order
 from metatrade.core.contracts.risk import RiskDecision
 from metatrade.core.contracts.signal import AnalysisSignal
-from metatrade.core.enums import SignalDirection, Timeframe, RunMode
+from metatrade.core.enums import RunMode, SignalDirection, Timeframe
 from metatrade.core.versioning import ModuleVersion
+from metatrade.runner.backtest_runner import BacktestResult, BacktestRunner
 from metatrade.runner.base import BaseRunner, RunStats
-from metatrade.runner.backtest_runner import BacktestRunner, BacktestResult
 from metatrade.runner.config import RunnerConfig
 from metatrade.runner.live_runner import LiveRunner
 from metatrade.runner.paper_runner import PaperRunner
 from metatrade.technical_analysis.interface import ITechnicalModule
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-NOW = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2024, 6, 1, 12, 0, 0, tzinfo=UTC)
 
 
 def D(v: str | float | int) -> Decimal:
@@ -40,7 +37,7 @@ def make_bar(close: float, i: int = 0, volume: float = 1000.0) -> Bar:
     c = D(str(round(close, 5)))
     h = c + D("0.0010")
     lo = c - D("0.0010")
-    ts = datetime(2024, 1, 1 + (i // 24), i % 24, 0, 0, tzinfo=timezone.utc)
+    ts = datetime(2024, 1, 1 + (i // 24), i % 24, 0, 0, tzinfo=UTC)
     return Bar(
         symbol="EURUSD",
         timeframe=Timeframe.H1,
@@ -618,7 +615,7 @@ class TestLiveRunner:
         runner.connect()
 
         # Build a minimal approved RiskDecision to pass to _submit_live_order
-        from metatrade.core.contracts.risk import RiskDecision, PositionSizeResult
+        from metatrade.core.contracts.risk import PositionSizeResult, RiskDecision
         from metatrade.core.enums import OrderSide
         ps = PositionSizeResult(
             lot_size=D("0.01"),
@@ -642,9 +639,9 @@ class TestLiveRunner:
 
     def test_submit_live_order_swallows_unexpected_exception(self) -> None:
         """Any unexpected exception in order submission is swallowed."""
-        from metatrade.execution.order_manager import OrderManager
-        from metatrade.core.contracts.risk import RiskDecision, PositionSizeResult
+        from metatrade.core.contracts.risk import PositionSizeResult, RiskDecision
         from metatrade.core.enums import OrderSide
+        from metatrade.execution.order_manager import OrderManager
 
         broker = _make_mock_broker()
         order_manager = MagicMock(spec=OrderManager)
@@ -677,8 +674,8 @@ class TestLiveRunner:
         stdlib logging.Logger._log() does not accept arbitrary keyword args,
         which was the root cause of the original crash.
         """
+
         import metatrade.runner.live_runner as lr_mod
-        import structlog
         # get_logger returns a BoundLogger proxy; calling bind() is the
         # structlog-specific API not present on stdlib Logger.
         assert hasattr(lr_mod.log, "bind"), (

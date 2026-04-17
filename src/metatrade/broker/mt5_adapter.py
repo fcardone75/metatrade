@@ -23,19 +23,18 @@ map our internal enums to MT5 constants.
 from __future__ import annotations
 
 from dataclasses import replace as dc_replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import ROUND_DOWN, Decimal
 
+from metatrade.broker.interface import IBrokerAdapter
 from metatrade.core.contracts.account import AccountState
 from metatrade.core.contracts.order import Order
-from metatrade.core.enums import OrderSide, OrderStatus, OrderType, RunMode
+from metatrade.core.enums import OrderSide, OrderStatus, RunMode
 from metatrade.core.errors import (
     BrokerConnectionError,
-    BrokerTimeoutError,
     OrderRejectedError,
 )
 from metatrade.core.log import get_logger
-from metatrade.broker.interface import IBrokerAdapter
 
 log = get_logger(__name__)
 
@@ -318,7 +317,7 @@ class MT5BrokerAdapter(IBrokerAdapter):
             equity=Decimal(str(info.equity)),
             free_margin=Decimal(str(raw_free_margin)),
             used_margin=Decimal(str(raw_used_margin)),
-            timestamp_utc=datetime.now(timezone.utc),
+            timestamp_utc=datetime.now(UTC),
             currency=info.currency,
             open_positions_count=open_positions_count,
             run_mode=self._run_mode,
@@ -677,7 +676,7 @@ class MT5BrokerAdapter(IBrokerAdapter):
                 "profit":      p.profit,
                 "magic":       p.magic,
                 "comment":     p.comment,
-                "time_utc":    datetime.fromtimestamp(p.time, tz=timezone.utc),
+                "time_utc":    datetime.fromtimestamp(p.time, tz=UTC),
             })
         return result
 

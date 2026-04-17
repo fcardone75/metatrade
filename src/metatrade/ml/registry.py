@@ -17,7 +17,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from metatrade.ml.classifier import MLClassifier, ClassifierMetrics
+from metatrade.ml.classifier import ClassifierMetrics, MLClassifier
 from metatrade.ml.config import MLConfig
 
 

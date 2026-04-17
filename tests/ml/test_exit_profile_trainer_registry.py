@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import tempfile
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import UTC, datetime
 
 import numpy as np
 import pytest
@@ -13,7 +12,6 @@ from metatrade.ml.exit_profile_dataset_builder import DatasetRow
 from metatrade.ml.exit_profile_feature_builder import ExitProfileFeatureBuilder
 from metatrade.ml.exit_profile_registry import (
     ExitProfileModelRegistry,
-    ExitProfileModelSnapshot,
 )
 from metatrade.ml.exit_profile_trainer import (
     ExitProfileTrainer,
@@ -22,7 +20,7 @@ from metatrade.ml.exit_profile_trainer import (
 
 
 def _ts(i: int = 0) -> datetime:
-    return datetime(2024, 1, 1 + i % 28, 10, 0, tzinfo=timezone.utc)
+    return datetime(2024, 1, 1 + i % 28, 10, 0, tzinfo=UTC)
 
 
 def _make_rows(n: int, labels: list[str] | None = None) -> list[DatasetRow]:

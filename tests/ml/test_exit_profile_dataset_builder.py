@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
-
-import pytest
 
 from metatrade.core.contracts.market import Bar
 from metatrade.core.enums import OrderSide, Timeframe
-from metatrade.ml.exit_profile_contracts import ExitProfileCandidate, ExitProfileContext
+from metatrade.ml.exit_profile_contracts import ExitProfileCandidate
 from metatrade.ml.exit_profile_dataset_builder import (
     CandidateSimResult,
     DatasetRow,
@@ -19,7 +17,7 @@ from metatrade.ml.exit_profile_dataset_builder import (
 
 
 def _ts(day: int = 15) -> datetime:
-    return datetime(2024, 1, day, 10, 0, tzinfo=timezone.utc)
+    return datetime(2024, 1, day, 10, 0, tzinfo=UTC)
 
 
 def _bar(open_=1.10, high=1.101, low=1.099, close=1.100, ts=None) -> Bar:
@@ -59,7 +57,7 @@ def _bars(n: int = 60) -> list[Bar]:
             high=base + 0.0005,
             low=base - 0.0002,
             close=base + 0.0001,
-            ts=datetime(2024, 1, 1, i // 60 % 24, i % 60, tzinfo=timezone.utc),
+            ts=datetime(2024, 1, 1, i // 60 % 24, i % 60, tzinfo=UTC),
         ))
     return result
 

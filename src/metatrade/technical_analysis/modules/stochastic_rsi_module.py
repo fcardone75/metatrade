@@ -25,8 +25,8 @@ from metatrade.core.contracts.market import Bar
 from metatrade.core.contracts.signal import AnalysisSignal
 from metatrade.core.enums import SignalDirection
 from metatrade.core.versioning import ModuleVersion
-from metatrade.technical_analysis.interface import ITechnicalModule
 from metatrade.technical_analysis.indicators.stochastic import stochastic_rsi
+from metatrade.technical_analysis.interface import ITechnicalModule
 
 _VERSION = ModuleVersion(1, 0, 0)
 

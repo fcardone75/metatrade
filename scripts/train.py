@@ -154,6 +154,35 @@ def parse_args() -> argparse.Namespace:
         help="ATR multiplier for label threshold (no-trade zone). Use 0.7-0.9 for M1/M5, 1.0-1.5 for H1+",
     )
     p.add_argument(
+        "--multires",
+        action="store_true",
+        default=False,
+        help=(
+            "Multi-resolution mode: load M5 and M15 bars alongside the primary "
+            "timeframe and use 43-feature MultiResFeatureVector. "
+            "Recommended for M1 training. Requires --source mt5 or a CSV path "
+            "with {TIMEFRAME} placeholder."
+        ),
+    )
+    p.add_argument(
+        "--session-start-utc",
+        type=int,
+        default=None,
+        metavar="HOUR",
+        help=(
+            "Session filter start (UTC hour 0-23). Combined with --session-end-utc, "
+            "only bars in [start, end) are used. E.g. --session-start-utc 7 "
+            "--session-end-utc 21 keeps London + NY sessions."
+        ),
+    )
+    p.add_argument(
+        "--session-end-utc",
+        type=int,
+        default=None,
+        metavar="HOUR",
+        help="Session filter end (UTC hour 0-23, exclusive). See --session-start-utc.",
+    )
+    p.add_argument(
         "--model-dir",
         type=Path,
         default=Path("data/models"),
@@ -255,8 +284,16 @@ def load_from_csv(path: Path, symbol: str, timeframe: str):
     return bars
 
 
-def load_from_mt5(args: argparse.Namespace, timeframe: str):
+_TF_MINUTES: dict[str, int] = {
+    "M1": 1, "M5": 5, "M15": 15, "M30": 30,
+    "H1": 60, "H4": 240, "D1": 1440,
+}
+
+
+def load_from_mt5(args: argparse.Namespace, timeframe: str, *, bars_count: int | None = None):
     from metatrade.market_data.collectors.mt5_collector import MT5Collector
+
+    n_bars = bars_count if bars_count is not None else args.bars
 
     collector = MT5Collector(store=None)
     collector.initialize(
@@ -269,24 +306,42 @@ def load_from_mt5(args: argparse.Namespace, timeframe: str):
 
     tf = _TIMEFRAME_MAP[timeframe]
     date_to = datetime.now(UTC)
-
-    tf_minutes = {
-        Timeframe.M1: 1,
-        Timeframe.M5: 5,
-        Timeframe.M15: 15,
-        Timeframe.M30: 30,
-        Timeframe.H1: 60,
-        Timeframe.H4: 240,
-        Timeframe.D1: 1440,
-    }
-    minutes = tf_minutes.get(tf, 60) * args.bars
+    minutes = _TF_MINUTES.get(timeframe, 60) * n_bars
     date_from = date_to - timedelta(minutes=minutes)
 
-    print(f"Scarico {args.bars} barre {args.symbol}/{timeframe} da MT5 ...")
+    print(f"Scarico {n_bars} barre {args.symbol}/{timeframe} da MT5 ...")
     bars = collector.collect(args.symbol, tf, date_from, date_to)
     collector.shutdown()
     print(f"  Scaricate {len(bars)} barre.")
     return bars
+
+
+def load_higher_tf_bars_mt5(args: argparse.Namespace, primary_tf: str) -> dict[str, list]:
+    """Load M5 and M15 context bars for multi-resolution training.
+
+    Bar counts are derived from the primary M1 bar count so the time window
+    is equivalent across all timeframes.
+    """
+    primary_minutes = _TF_MINUTES.get(primary_tf, 1)
+    total_minutes = primary_minutes * args.bars
+
+    result: dict[str, list] = {}
+    for htf in ("M5", "M15"):
+        htf_min = _TF_MINUTES[htf]
+        n = max(200, total_minutes // htf_min + 100)
+        result[htf] = load_from_mt5(args, htf, bars_count=n)
+    return result
+
+
+def load_higher_tf_bars_csv(
+    file_arg: Path, symbol: str, primary_tf: str
+) -> dict[str, list]:
+    """Load M5 and M15 context bars from CSV files (requires {TIMEFRAME} placeholder)."""
+    result: dict[str, list] = {}
+    for htf in ("M5", "M15"):
+        path = resolve_csv_path(file_arg, htf, multi=True)
+        result[htf] = load_from_csv(path, symbol, htf)
+    return result
 
 
 TRAINING_PROGRESS_JSON = "training_progress.json"
@@ -334,6 +389,7 @@ def train_single_timeframe(
     ml_cfg: MLConfig,
     telemetry: TelemetryStore,
     telemetry_is_active: bool,
+    higher_tf_bars: dict[str, list] | None = None,
 ) -> TimeframeTrainReport:
     t0 = time.perf_counter()
     log.info(
@@ -379,9 +435,22 @@ def train_single_timeframe(
         )
 
     trainer = WalkForwardTrainer(ml_cfg)
+    multires_active = higher_tf_bars is not None and bool(higher_tf_bars)
+    multires_label = (
+        f"  [multires: {', '.join(f'{k}={len(v)}bar' for k,v in higher_tf_bars.items())}]"
+        if multires_active else ""
+    )
+    session_label = (
+        f"  [session: {ml_cfg.session_filter_utc_start}–{ml_cfg.session_filter_utc_end} UTC]"
+        if ml_cfg.session_filter_utc_start is not None else ""
+    )
     print(f"\n=== Walk-forward: {args.symbol} {timeframe} ({len(bars)} barre) ===")
     print(f"  train_window={ml_cfg.train_window_bars}  test_window={ml_cfg.test_window_bars}  step={ml_cfg.step_bars}")
     print(f"  forward_bars={ml_cfg.forward_bars}  atr_threshold_mult={ml_cfg.atr_threshold_mult}  class_weight={ml_cfg.class_weight}")
+    if multires_label:
+        print(multires_label)
+    if session_label:
+        print(session_label)
     print()
 
     n_bars = len(bars)
@@ -488,7 +557,11 @@ def train_single_timeframe(
             eta_sec=round(eta_sec, 0),
         )
 
-    result, model = trainer.run(bars, on_fold_complete=on_fold_complete)
+    result, model = trainer.run(
+        bars,
+        on_fold_complete=on_fold_complete,
+        higher_tf_bars=higher_tf_bars or None,
+    )
 
     # Summary after all folds
     print()
@@ -770,6 +843,8 @@ def main() -> None:
         max_depth=args.max_depth,
         min_accuracy=args.min_accuracy,
         model_registry_dir=str(args.model_dir),
+        session_filter_utc_start=args.session_start_utc,
+        session_filter_utc_end=args.session_end_utc,
     )
 
     reports: list[TimeframeTrainReport] = []
@@ -796,6 +871,14 @@ def main() -> None:
         else:
             bars = load_from_mt5(args, tf)
 
+        higher_tf_bars: dict[str, list] | None = None
+        if args.multires:
+            if args.source == "mt5":
+                higher_tf_bars = load_higher_tf_bars_mt5(args, tf)
+            else:
+                assert args.file is not None
+                higher_tf_bars = load_higher_tf_bars_csv(args.file, args.symbol, tf)
+
         is_active = tf == promote_tf
         report = train_single_timeframe(
             args=args,
@@ -804,6 +887,7 @@ def main() -> None:
             ml_cfg=ml_cfg,
             telemetry=telemetry,
             telemetry_is_active=is_active,
+            higher_tf_bars=higher_tf_bars,
         )
         reports.append(report)
 
@@ -849,6 +933,9 @@ def main() -> None:
             "max_iter": args.max_iter,
             "max_depth": args.max_depth,
             "min_accuracy": args.min_accuracy,
+            "multires": args.multires,
+            "session_start_utc": args.session_start_utc,
+            "session_end_utc": args.session_end_utc,
             "bars_requested_mt5": args.bars if args.source == "mt5" else None,
             "runs": [asdict(r) for r in reports],
         }

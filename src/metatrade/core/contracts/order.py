@@ -11,7 +11,7 @@ This makes the audit trail trivial: every state is a new immutable object.
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 

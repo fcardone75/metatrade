@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
-
-import pytest
 
 from metatrade.exit_engine.config import TrailingStopConfig
 from metatrade.exit_engine.contracts import ExitAction, PositionContext, PositionSide
@@ -26,7 +24,7 @@ def make_long_ctx(
         side=PositionSide.LONG,
         entry_price=Decimal(entry_price),
         lot_size=Decimal("0.1"),
-        opened_at_utc=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        opened_at_utc=datetime(2024, 1, 1, tzinfo=UTC),
         current_price=Decimal(current_price),
         current_bar=None,
         bars_since_entry=bars or [],
@@ -49,7 +47,7 @@ def make_short_ctx(
         side=PositionSide.SHORT,
         entry_price=Decimal(entry_price),
         lot_size=Decimal("0.1"),
-        opened_at_utc=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        opened_at_utc=datetime(2024, 1, 1, tzinfo=UTC),
         current_price=Decimal(current_price),
         current_bar=None,
         bars_since_entry=[],
@@ -133,8 +131,9 @@ class TestTrailingStopRule:
 
     def test_atr_computed_from_bars(self):
         """With enough bars, ATR is computed from actual bar data (not entry_atr)."""
+        from datetime import datetime
+
         from metatrade.core.contracts.market import Bar
-        from datetime import datetime, timezone
 
         rule = TrailingStopRule(TrailingStopConfig(mode="atr", atr_period=5, atr_mult=2.0))
 
@@ -147,7 +146,7 @@ class TestTrailingStopRule:
             bars.append(Bar(
                 symbol="EURUSD",
                 timeframe="M15",
-                timestamp_utc=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                timestamp_utc=datetime(2024, 1, 1, tzinfo=UTC),
                 open=close,
                 high=high,
                 low=low,

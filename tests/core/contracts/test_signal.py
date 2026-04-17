@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
 from metatrade.core.contracts.signal import SIGNAL_SCHEMA_VERSION, AnalysisSignal
 from metatrade.core.enums import SignalDirection
-from metatrade.core.versioning import ModuleVersion, SchemaVersion
+from metatrade.core.versioning import ModuleVersion
 
-UTC = timezone.utc
+UTC = UTC
 T0 = datetime(2024, 1, 15, 10, 0, tzinfo=UTC)
 V100 = ModuleVersion(1, 0, 0)
 

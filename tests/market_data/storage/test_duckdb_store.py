@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -13,7 +13,7 @@ from metatrade.market_data.errors import BarStoreError
 from metatrade.market_data.models import BarQuery
 from metatrade.market_data.storage.duckdb_store import DuckDBBarStore
 
-UTC = timezone.utc
+UTC = UTC
 T0 = datetime(2024, 1, 15, 10, 0, tzinfo=UTC)
 
 
@@ -59,7 +59,8 @@ class TestDuckDBBarStoreLifecycle:
             store.save_bars([make_bar()])
 
     def test_read_only_cannot_write(self) -> None:
-        import tempfile, os
+        import os
+        import tempfile
         with tempfile.NamedTemporaryFile(suffix=".duckdb", delete=False) as f:
             path = f.name
         os.unlink(path)  # remove the empty file so DuckDB can create a valid one

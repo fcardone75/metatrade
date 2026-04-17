@@ -23,7 +23,7 @@ Key invariants enforced:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
@@ -152,7 +152,7 @@ class BarNormalizer:
 
     def _raw_to_bar(self, raw: RawBar) -> Bar:
         """Core conversion logic with full validation."""
-        ts = datetime.fromtimestamp(raw.timestamp_unix, tz=timezone.utc)
+        ts = datetime.fromtimestamp(raw.timestamp_unix, tz=UTC)
 
         open_ = self._to_decimal(raw.open)
         high = self._to_decimal(raw.high)
@@ -181,7 +181,7 @@ class BarNormalizer:
             close=close,
             volume=volume,
             spread=spread,
-            received_at_utc=datetime.now(timezone.utc),
+            received_at_utc=datetime.now(UTC),
         )
 
     def _to_decimal(self, value: float) -> Decimal:

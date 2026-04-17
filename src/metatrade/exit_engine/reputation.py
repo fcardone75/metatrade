@@ -36,14 +36,13 @@ If symbol not found, falls back to global ("*").
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Protocol
 
 from metatrade.exit_engine.config import ReputationConfig
 from metatrade.exit_engine.contracts import ExitAction, TradeOutcome
-
 
 # ── Storage protocol ──────────────────────────────────────────────────────────
 
@@ -152,7 +151,7 @@ class ReputationModel:
         """
         if self._cfg.decay_days <= 0:
             return
-        now_ts = int((now or datetime.now(timezone.utc)).timestamp())
+        now_ts = int((now or datetime.now(UTC)).timestamp())
         decay_threshold_secs = self._cfg.decay_days * 86400
 
         for sym_states in self._states.values():

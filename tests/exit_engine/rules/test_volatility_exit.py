@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
-import pytest
-
+from metatrade.core.contracts.market import Bar
 from metatrade.exit_engine.config import VolatilityExitConfig
 from metatrade.exit_engine.contracts import ExitAction, PositionContext, PositionSide
 from metatrade.exit_engine.rules.volatility_exit import VolatilityExitRule
-from metatrade.core.contracts.market import Bar
 
 
 def _bar(close: float, high: float | None = None, low: float | None = None) -> Bar:
@@ -20,7 +18,7 @@ def _bar(close: float, high: float | None = None, low: float | None = None) -> B
     return Bar(
         symbol="EURUSD",
         timeframe="M15",
-        timestamp_utc=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        timestamp_utc=datetime(2024, 1, 1, tzinfo=UTC),
         open=c,
         high=h,
         low=l,
@@ -40,7 +38,7 @@ def _ctx(
         side=PositionSide.LONG,
         entry_price=Decimal("1.1000"),
         lot_size=Decimal("0.1"),
-        opened_at_utc=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        opened_at_utc=datetime(2024, 1, 1, tzinfo=UTC),
         current_price=Decimal(current_price),
         current_bar=None,
         bars_since_entry=bars or [],

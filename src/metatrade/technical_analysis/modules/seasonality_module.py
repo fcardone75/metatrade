@@ -45,7 +45,6 @@ Asian session.
 from __future__ import annotations
 
 from datetime import datetime
-from decimal import Decimal
 from enum import Enum
 
 from metatrade.core.contracts.market import Bar

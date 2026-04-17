@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-import math
 from decimal import Decimal
 
 import pytest
 
+from metatrade.technical_analysis.indicators.adx import adx
 from metatrade.technical_analysis.indicators.bollinger import (
+    band_width,
     bollinger_bands,
     percent_b,
-    band_width,
 )
-from metatrade.technical_analysis.indicators.adx import adx
 
 
 def D(v: str | float | int) -> Decimal:

@@ -17,8 +17,8 @@ Conditional inclusion rules
 
 from __future__ import annotations
 
-from metatrade.technical_analysis.interface import ITechnicalModule
 from metatrade.runner.module_config import ModuleConfig
+from metatrade.technical_analysis.interface import ITechnicalModule
 
 
 def build_modules(

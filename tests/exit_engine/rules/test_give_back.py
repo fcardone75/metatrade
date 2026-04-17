@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
-
-import pytest
 
 from metatrade.exit_engine.config import GiveBackConfig
 from metatrade.exit_engine.contracts import ExitAction, PositionContext, PositionSide
@@ -20,7 +18,7 @@ def make_ctx(current_price, peak_price, side=PositionSide.LONG):
         side=side,
         entry_price=Decimal(entry),
         lot_size=Decimal("0.1"),
-        opened_at_utc=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        opened_at_utc=datetime(2024, 1, 1, tzinfo=UTC),
         current_price=Decimal(current_price),
         current_bar=None,
         bars_since_entry=[],

@@ -19,9 +19,9 @@ from metatrade.core.contracts.market import Bar
 from metatrade.core.contracts.signal import AnalysisSignal
 from metatrade.core.enums import SignalDirection
 from metatrade.core.versioning import ModuleVersion
-from metatrade.technical_analysis.interface import ITechnicalModule
-from metatrade.ml.features import extract_features, MIN_FEATURE_BARS
+from metatrade.ml.features import MIN_FEATURE_BARS, extract_features
 from metatrade.ml.registry import ModelRegistry
+from metatrade.technical_analysis.interface import ITechnicalModule
 
 _VERSION = ModuleVersion(1, 0, 0)
 

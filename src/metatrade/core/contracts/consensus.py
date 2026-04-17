@@ -9,9 +9,8 @@ enabling full auditability of every trading decision.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal
 
 from metatrade.core.contracts.signal import AnalysisSignal
 from metatrade.core.enums import ConsensusMode, SignalDirection

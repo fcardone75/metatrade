@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -19,7 +19,7 @@ def make_ctx(current_price: str, partial_closes=()):
         side=PositionSide.LONG,
         entry_price=Decimal("1.1000"),
         lot_size=Decimal("0.1"),
-        opened_at_utc=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        opened_at_utc=datetime(2024, 1, 1, tzinfo=UTC),
         current_price=Decimal(current_price),
         current_bar=None,
         bars_since_entry=[],

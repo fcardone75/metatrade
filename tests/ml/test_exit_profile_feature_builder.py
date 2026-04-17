@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -14,7 +14,7 @@ from metatrade.ml.exit_profile_feature_builder import ExitProfileFeatureBuilder
 
 
 def _ts(hour: int = 10) -> datetime:
-    return datetime(2024, 1, 15, hour, 0, tzinfo=timezone.utc)
+    return datetime(2024, 1, 15, hour, 0, tzinfo=UTC)
 
 
 def _ctx(**kwargs) -> ExitProfileContext:

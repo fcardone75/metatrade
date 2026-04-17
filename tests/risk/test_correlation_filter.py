@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import math
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -12,12 +11,11 @@ from metatrade.core.contracts.market import Bar
 from metatrade.core.enums import Timeframe
 from metatrade.risk.correlation_filter import CorrelationFilter
 
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
 def make_bars(closes: list[float]) -> list[Bar]:
-    start = datetime(2024, 1, 2, 0, 0, tzinfo=timezone.utc)
+    start = datetime(2024, 1, 2, 0, 0, tzinfo=UTC)
     bars = []
     for i, c in enumerate(closes):
         close = Decimal(str(c))

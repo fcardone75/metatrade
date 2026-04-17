@@ -12,7 +12,6 @@ import pytest
 from metatrade.alerting.config import AlertConfig
 from metatrade.alerting.telegram_alerter import TelegramAlerter
 
-
 # ── AlertConfig tests ─────────────────────────────────────────────────────────
 
 

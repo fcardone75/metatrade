@@ -17,7 +17,7 @@ An optional SQLiteAuditStore logs every activation and reset for audit trail.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from metatrade.core.contracts.risk import KillSwitchState
 from metatrade.core.enums import KillSwitchLevel
@@ -39,7 +39,7 @@ class KillSwitchManager:
         self._state = KillSwitchState(
             level=KillSwitchLevel.NONE,
             reason="System started",
-            activated_at_utc=datetime.now(timezone.utc),
+            activated_at_utc=datetime.now(UTC),
             activated_by="system",
         )
         self._audit_store = audit_store  # duck-typed: expects .log_kill_switch()
@@ -99,7 +99,7 @@ class KillSwitchManager:
             )
             return self._state
 
-        now = ts or datetime.now(timezone.utc)
+        now = ts or datetime.now(UTC)
         self._state = KillSwitchState(
             level=level,
             reason=reason,
@@ -136,7 +136,7 @@ class KillSwitchManager:
                 message="HARD_KILL cannot be reset via reset() — use force_reset()",
                 context={"level": KillSwitchLevel.HARD_KILL.name},
             )
-        now = ts or datetime.now(timezone.utc)
+        now = ts or datetime.now(UTC)
         self._state = KillSwitchState(
             level=KillSwitchLevel.NONE,
             reason=f"Reset by {activated_by}",
@@ -157,7 +157,7 @@ class KillSwitchManager:
         Requires explicit call — prevents accidental reset of the highest
         severity level.
         """
-        now = ts or datetime.now(timezone.utc)
+        now = ts or datetime.now(UTC)
         self._state = KillSwitchState(
             level=KillSwitchLevel.NONE,
             reason=f"Force-reset by {activated_by}",

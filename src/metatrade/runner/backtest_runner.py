@@ -18,7 +18,6 @@ from __future__ import annotations
 import logging
 import random
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from decimal import Decimal
 
 from metatrade.core.contracts.market import Bar
@@ -27,7 +26,6 @@ from metatrade.core.enums import OrderSide
 from metatrade.runner.base import BaseRunner, RunStats
 from metatrade.runner.config import RunnerConfig
 from metatrade.technical_analysis.interface import ITechnicalModule
-
 
 log = logging.getLogger(__name__)
 

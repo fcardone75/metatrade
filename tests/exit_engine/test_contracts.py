@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -17,7 +16,6 @@ from metatrade.exit_engine.contracts import (
     TradeOutcome,
 )
 
-
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
 @pytest.fixture
@@ -28,7 +26,7 @@ def long_ctx():
         side=PositionSide.LONG,
         entry_price=Decimal("1.1000"),
         lot_size=Decimal("0.1"),
-        opened_at_utc=datetime(2024, 1, 1, 10, 0, tzinfo=timezone.utc),
+        opened_at_utc=datetime(2024, 1, 1, 10, 0, tzinfo=UTC),
         current_price=Decimal("1.1030"),
         current_bar=None,
         bars_since_entry=[],
@@ -44,7 +42,7 @@ def short_ctx():
         side=PositionSide.SHORT,
         entry_price=Decimal("1.1000"),
         lot_size=Decimal("0.1"),
-        opened_at_utc=datetime(2024, 1, 1, 10, 0, tzinfo=timezone.utc),
+        opened_at_utc=datetime(2024, 1, 1, 10, 0, tzinfo=UTC),
         current_price=Decimal("1.0970"),
         current_bar=None,
         bars_since_entry=[],
@@ -97,7 +95,7 @@ class TestPositionContext:
                 side=PositionSide.LONG,
                 entry_price=Decimal("1.1"),
                 lot_size=Decimal("0"),
-                opened_at_utc=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                opened_at_utc=datetime(2024, 1, 1, tzinfo=UTC),
                 current_price=Decimal("1.1"),
                 current_bar=None,
                 bars_since_entry=[],
@@ -149,7 +147,7 @@ class TestExitDecision:
             aggregate_score=0.0,
             signals=(),
             explanation="hold",
-            timestamp_utc=datetime.now(timezone.utc),
+            timestamp_utc=datetime.now(UTC),
         )
         assert not d.is_exit
 
@@ -160,7 +158,7 @@ class TestExitDecision:
             aggregate_score=80.0,
             signals=(),
             explanation="exit",
-            timestamp_utc=datetime.now(timezone.utc),
+            timestamp_utc=datetime.now(UTC),
         )
         assert d.is_exit
 
@@ -174,7 +172,7 @@ class TestPositionContextValidation:
                 side=PositionSide.LONG,
                 entry_price=Decimal("-1.1000"),
                 lot_size=Decimal("0.1"),
-                opened_at_utc=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                opened_at_utc=datetime(2024, 1, 1, tzinfo=UTC),
                 current_price=Decimal("1.1010"),
                 current_bar=None,
                 bars_since_entry=[],
@@ -204,8 +202,8 @@ class TestTradeOutcomeProperties:
             exit_price=Decimal(str(1.1000 + pnl_pips * 0.0001)),
             side=PositionSide.LONG,
             lot_size=Decimal(lot_size),
-            opened_at_utc=datetime(2024, 1, 1, tzinfo=timezone.utc),
-            closed_at_utc=datetime(2024, 1, 1, 1, tzinfo=timezone.utc),
+            opened_at_utc=datetime(2024, 1, 1, tzinfo=UTC),
+            closed_at_utc=datetime(2024, 1, 1, 1, tzinfo=UTC),
             exit_reason="engine",
             signals_emitted=(),
             pnl_pips=Decimal(str(pnl_pips)),

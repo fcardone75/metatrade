@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import sqlite3
-import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -17,7 +15,7 @@ from metatrade.intermarket.contracts import (
 )
 from metatrade.intermarket.persistence import IntermarketStore
 
-_NOW = datetime(2024, 6, 1, 12, 0, tzinfo=timezone.utc)
+_NOW = datetime(2024, 6, 1, 12, 0, tzinfo=UTC)
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────

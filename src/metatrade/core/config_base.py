@@ -45,7 +45,7 @@ class BaseConfig(BaseSettings):
     )
 
     @classmethod
-    def load(cls) -> "BaseConfig":
+    def load(cls) -> BaseConfig:
         """Factory method with structured error wrapping.
 
         Converts Pydantic's ValidationError into ConfigurationError so callers

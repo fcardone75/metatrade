@@ -6,7 +6,7 @@ import json
 import sqlite3
 import uuid
 from dataclasses import asdict, is_dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from enum import Enum
 from pathlib import Path
@@ -212,7 +212,7 @@ CREATE_TRAINING_IDX = "CREATE INDEX IF NOT EXISTS idx_dashboard_training_complet
 
 
 def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _ts(value: datetime) -> int:
@@ -246,7 +246,7 @@ class TelemetryStore:
         self._connect()
 
     @classmethod
-    def from_env(cls) -> "TelemetryStore":
+    def from_env(cls) -> TelemetryStore:
         cfg = MarketDataConfig.load()
         return cls(cfg.sqlite_path)
 
