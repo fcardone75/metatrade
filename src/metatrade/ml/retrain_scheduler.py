@@ -176,14 +176,14 @@ class RetrainScheduler:
         """
         if self.is_training:
             return False
-        return self._launch_raw(symbol="manual", timeframe="manual")
+        return self._launch_raw(symbol="manual", timeframe="manual", advance_slot=False)
 
     def _launch(self, bar: Bar) -> bool:
         symbol = bar.symbol
         tf = str(bar.timeframe.value) if hasattr(bar.timeframe, "value") else str(bar.timeframe)
-        return self._launch_raw(symbol=symbol, timeframe=tf)
+        return self._launch_raw(symbol=symbol, timeframe=tf, advance_slot=True)
 
-    def _launch_raw(self, symbol: str, timeframe: str) -> bool:
+    def _launch_raw(self, symbol: str, timeframe: str, advance_slot: bool = True) -> bool:
         if not self._script.exists():
             log.warning("retrain_scheduler_script_not_found", path=str(self._script))
             return False
@@ -213,8 +213,10 @@ class RetrainScheduler:
             return False
 
         self._bars_since_last = 0
-        # Record which slot we just consumed so next_slot advances correctly
-        self._last_triggered_slot = self.next_slot
+        # Record which slot we just consumed so next_slot advances correctly.
+        # Manual triggers (advance_slot=False) must not consume a scheduled slot.
+        if advance_slot:
+            self._last_triggered_slot = self.next_slot
 
         if self._alerter is not None:
             unit_val = (

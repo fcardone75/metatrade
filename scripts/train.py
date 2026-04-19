@@ -430,9 +430,19 @@ def _estimate_max_walk_forward_folds(n_bars: int, train_w: int, test_w: int, ste
 
 def _atomic_write_training_progress(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    content = json.dumps(payload, indent=2, ensure_ascii=False)
     tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(path)
+    tmp.write_text(content, encoding="utf-8")
+    try:
+        tmp.replace(path)
+    except PermissionError:
+        # Windows: target file may be held open by the runner reading it.
+        # Fall back to direct write — non-atomic but safe for this use case.
+        path.write_text(content, encoding="utf-8")
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _print_fold_table(result: WalkForwardResult) -> None:
@@ -727,7 +737,7 @@ def train_single_timeframe(
         # Compute overfitting ratio: best train acc / best test acc
         best_fold = result.folds[result.best_fold_index] if result.folds else None
         overfit_ratio = (
-            round(best_fold.train_accuracy / max(best_fold.test_accuracy, 0.001), 3)
+            round(best_fold.train_metrics.accuracy / max(best_fold.test_accuracy, 0.001), 3)
             if best_fold else None
         )
         fold_accuracies = [round(f.test_accuracy, 4) for f in result.folds]
@@ -745,7 +755,7 @@ def train_single_timeframe(
             n_folds_above_threshold=sum(
                 1 for f in result.folds if f.test_accuracy >= ml_cfg.min_accuracy
             ),
-            best_fold_train_accuracy=round(best_fold.train_accuracy, 4) if best_fold else None,
+            best_fold_train_accuracy=round(best_fold.train_metrics.accuracy, 4) if best_fold else None,
             overfit_ratio=overfit_ratio,
             fold_test_accuracies=fold_accuracies,
             class_distribution=class_dist,
