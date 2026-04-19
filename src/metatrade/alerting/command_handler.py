@@ -106,6 +106,7 @@ class CommandHandler:
             "/retrain": "Avvia retraining manuale",
             "/training": "Stato training adattivo (tentativi, holdout, target)",
             "/stoptraining": "Interrompe training in corso",
+            "/removetraining": "Rimuove training in corso",
             "/pause": "Pausa nuove entry (exit continuano)",
             "/resume": "Riprende entry dopo /pause",
             "/stop": "Stop completo (richiede conferma)",

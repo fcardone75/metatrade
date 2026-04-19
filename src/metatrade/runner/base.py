@@ -453,10 +453,11 @@ class BaseRunner:
         ch.register("/model",     self._cmd_model)
         ch.register("/accuracy",  self._cmd_accuracy)
         ch.register("/daily",     self._cmd_daily)
-        ch.register("/retrain",      self._cmd_retrain)
-        ch.register("/training",     self._cmd_training)
-        ch.register("/stoptraining", self._cmd_stop_training)
-        ch.register("/pause",        self._cmd_pause)
+        ch.register("/retrain",        self._cmd_retrain)
+        ch.register("/training",       self._cmd_training)
+        ch.register("/stoptraining",   self._cmd_stop_training)
+        ch.register("/removetraining", self._cmd_remove_training)
+        ch.register("/pause",          self._cmd_pause)
         ch.register("/resume",    self._cmd_resume)
         ch.register("/stop",      self._cmd_stop)
 
@@ -638,6 +639,58 @@ class BaseRunner:
             return "🔁 <b>Training in corso</b>\n\n" + _format_adaptive_progress(data, fold_data)
         except Exception as exc:
             return f"🔁 Training in corso (errore lettura progress: {exc})."
+
+    def _cmd_remove_training(self, _args: str) -> str:
+        if self._retrain_scheduler is not None and self._retrain_scheduler.is_training:
+            return (
+                "⚠️ Training ancora in corso. Fermalo prima con /stoptraining, "
+                "poi esegui /removetraining."
+            )
+        try:
+            from metatrade.ml.config import MLConfig as _MLCfg
+            model_dir = Path(_MLCfg().model_registry_dir)
+        except Exception:
+            model_dir = Path("data/models")
+
+        symbol = None
+        if self._retrain_scheduler is not None:
+            from metatrade.ml.retrain_scheduler import _extract_arg
+            symbol = _extract_arg(self._retrain_scheduler._train_args, "--symbol")
+
+        deleted: list[str] = []
+        patterns = ["adaptive_progress.json", "training_progress.json", "training_progress.json.tmp"]
+        if symbol:
+            patterns += [f"{symbol}_v*.pkl", f"{symbol}_v*_meta.json"]
+        else:
+            patterns += ["*_v*.pkl", "*_v*_meta.json"]
+
+        for pat in patterns:
+            for f in model_dir.glob(pat):
+                try:
+                    f.unlink()
+                    deleted.append(f.name)
+                except OSError:
+                    pass
+
+        # Remove training_reports dir contents (keep the dir itself)
+        reports_dir = model_dir / "training_reports"
+        if reports_dir.exists():
+            for f in reports_dir.glob("*.json"):
+                try:
+                    f.unlink()
+                    deleted.append(f"training_reports/{f.name}")
+                except OSError:
+                    pass
+
+        log.warning("training_files_removed_via_telegram", count=len(deleted), files=deleted)
+
+        if not deleted:
+            return "ℹ️ Nessun file di training trovato da rimuovere."
+        files_list = "\n".join(f"  • {n}" for n in deleted)
+        return (
+            f"🗑 <b>Training rimosso ({len(deleted)} file):</b>\n{files_list}\n\n"
+            "Usa /retrain per ripartire da zero."
+        )
 
     def _cmd_stop_training(self, _args: str) -> str:
         if self._retrain_scheduler is None:
