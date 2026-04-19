@@ -1454,6 +1454,26 @@ def adaptive_train_loop(
     print("=" * 60)
 
     best_report: TimeframeTrainReport | None = None
+    attempt_history: list[dict] = []
+    _adaptive_progress_path = args.model_dir / "adaptive_progress.json"
+
+    def _write_adaptive_progress(status: str) -> None:
+        best_h = (best_report.holdout_accuracy or 0.0) if best_report else 0.0
+        payload = {
+            "status": status,
+            "symbol": args.symbol,
+            "timeframe": timeframe,
+            "target": round(target, 4),
+            "current_model_acc": round(current_acc, 4) if current_acc else None,
+            "max_attempts": len(schedule),
+            "best_holdout": round(best_h, 4) if best_h else None,
+            "attempts_done": len(attempt_history),
+            "attempts": attempt_history,
+            "updated_at_utc": datetime.now(UTC).isoformat(),
+        }
+        _atomic_write_training_progress(_adaptive_progress_path, payload)
+
+    _write_adaptive_progress("running")
 
     for attempt_idx, (max_depth, max_iter, bar_scale) in enumerate(schedule):
         attempt_bars = min(int(base_bars * bar_scale), 100_000)
@@ -1540,6 +1560,22 @@ def adaptive_train_loop(
             best_report = report
 
         holdout = report.holdout_accuracy or 0.0
+        attempt_record = {
+            "attempt": attempt_idx + 1,
+            "max_depth": max_depth,
+            "max_iter": max_iter,
+            "bars": attempt_bars,
+            "holdout": round(holdout, 4),
+            "mean_test_accuracy": round(report.mean_test_accuracy, 4) if report.mean_test_accuracy else None,
+            "best_test_accuracy": round(report.best_test_accuracy, 4) if report.best_test_accuracy else None,
+            "n_folds": report.n_folds,
+            "success": report.success,
+            "model_version": report.model_version,
+            "duration_sec": report.duration_sec,
+            "completed_at_utc": datetime.now(UTC).isoformat(),
+        }
+        attempt_history.append(attempt_record)
+
         if report.success and holdout >= target:
             print(f"\n✓ Target raggiunto al tentativo {attempt_idx + 1}: {holdout:.2%} >= {target:.2%}")
             log.info(
@@ -1550,6 +1586,7 @@ def adaptive_train_loop(
                 holdout=round(holdout, 4),
                 target=round(target, 4),
             )
+            _write_adaptive_progress("completed")
             return report
 
         gap = target - holdout
@@ -1564,12 +1601,14 @@ def adaptive_train_loop(
             target=round(target, 4),
             success=report.success,
         )
+        _write_adaptive_progress("running")
         if attempt_idx < len(schedule) - 1:
             nd, ni, ns = schedule[attempt_idx + 1]
             print(f"  → Prossimo: max_depth={nd}  max_iter={ni}  bars={int(base_bars * ns)}")
 
     best_h = (best_report.holdout_accuracy or 0.0) if best_report else 0.0
     print(f"\n⚠ Tentativi esauriti. Miglior holdout: {best_h:.2%}  target={target:.2%}")
+    _write_adaptive_progress("exhausted")
     log.warning(
         "adaptive_all_attempts_failed",
         symbol=args.symbol,

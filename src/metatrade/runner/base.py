@@ -12,9 +12,11 @@ Each runner subclass calls process_bar() with appropriate account data.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from pathlib import Path
 
 from metatrade.alerting.command_handler import CommandHandler
 from metatrade.alerting.command_receiver import TelegramCommandReceiver
@@ -53,6 +55,53 @@ class RunStats:
     trades_vetoed: int = 0
     kill_switch_activations: int = 0
     weight_updates: int = 0           # signals evaluated against market
+
+
+def _format_adaptive_progress(data: dict) -> str:
+    """Format adaptive_progress.json into a human-readable Telegram message."""
+    status_icon = {
+        "running": "🔁",
+        "completed": "✅",
+        "exhausted": "⚠️",
+        "failed": "❌",
+    }.get(data.get("status", ""), "❓")
+
+    symbol = data.get("symbol", "?")
+    tf = data.get("timeframe", "?")
+    target = data.get("target")
+    current = data.get("current_model_acc")
+    done = data.get("attempts_done", 0)
+    max_att = data.get("max_attempts", "?")
+    best_h = data.get("best_holdout")
+    updated = data.get("updated_at_utc", "")[:16].replace("T", " ")
+
+    lines = [
+        f"{status_icon} <b>{symbol} {tf}</b>  [{data.get('status', '?').upper()}]",
+        f"  Target:   {target:.2%}" if target else "",
+        f"  Modello attuale: {current:.2%}" if current else "  Nessun modello precedente",
+        f"  Tentativi: {done}/{max_att}",
+        f"  Miglior holdout: {best_h:.2%}" if best_h else "  Miglior holdout: —",
+        f"  Aggiornato: {updated} UTC",
+    ]
+
+    attempts = data.get("attempts", [])
+    if attempts:
+        lines.append("")
+        lines.append("<b>Dettaglio tentativi:</b>")
+        for a in attempts:
+            att_n = a.get("attempt", "?")
+            h = a.get("holdout")
+            h_str = f"{h:.2%}" if h is not None else "n/a"
+            ok = "✓" if a.get("success") else "✗"
+            depth = a.get("max_depth", "?")
+            itr = a.get("max_iter", "?")
+            dur = a.get("duration_sec")
+            dur_str = f"{dur:.0f}s" if dur else ""
+            lines.append(
+                f"  [{ok}] #{att_n} — holdout={h_str}  depth={depth}  iter={itr}  {dur_str}"
+            )
+
+    return "\n".join(l for l in lines if l != "")
 
 
 class BaseRunner:
@@ -342,6 +391,7 @@ class BaseRunner:
         ch.register("/accuracy",  self._cmd_accuracy)
         ch.register("/daily",     self._cmd_daily)
         ch.register("/retrain",   self._cmd_retrain)
+        ch.register("/training",  self._cmd_training)
         ch.register("/pause",     self._cmd_pause)
         ch.register("/resume",    self._cmd_resume)
         ch.register("/stop",      self._cmd_stop)
@@ -483,6 +533,40 @@ class BaseRunner:
         if launched:
             return "🚀 Training avviato manualmente."
         return "❌ Impossibile avviare il training (script non trovato o errore di sistema)."
+
+    def _cmd_training(self, _args: str) -> str:
+        if self._retrain_scheduler is None:
+            return "⚠️ Retraining non abilitato (ML_RETRAIN_ENABLED=false)."
+
+        # Find adaptive_progress.json in the model registry dir
+        try:
+            from metatrade.ml.config import MLConfig as _MLCfg
+            model_dir = Path(_MLCfg().model_registry_dir)
+        except Exception:
+            model_dir = Path("data/models")
+
+        progress_file = model_dir / "adaptive_progress.json"
+
+        if not self._retrain_scheduler.is_training:
+            nxt = self._retrain_scheduler.next_slot
+            idle_msg = f"⏸ Non in training.\nProssimo slot: {nxt.strftime('%Y-%m-%d %H:%M UTC')}"
+            if not progress_file.exists():
+                return idle_msg
+            # Show results of last completed run
+            try:
+                data = json.loads(progress_file.read_text(encoding="utf-8"))
+                return idle_msg + "\n\n" + _format_adaptive_progress(data)
+            except Exception:
+                return idle_msg
+
+        # Training in corso — leggi progress file
+        if not progress_file.exists():
+            return "🔁 Training in corso (nessun dato di progresso ancora disponibile)."
+        try:
+            data = json.loads(progress_file.read_text(encoding="utf-8"))
+            return "🔁 <b>Training in corso</b>\n\n" + _format_adaptive_progress(data)
+        except Exception as exc:
+            return f"🔁 Training in corso (errore lettura progress: {exc})."
 
     def _cmd_pause(self, _args: str) -> str:
         self.pause()

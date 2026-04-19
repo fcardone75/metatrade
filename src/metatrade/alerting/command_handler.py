@@ -104,6 +104,7 @@ class CommandHandler:
             "/accuracy": "Accuracy live dettagliata",
             "/daily": "Riepilogo giornata on-demand",
             "/retrain": "Avvia retraining manuale",
+            "/training": "Stato training adattivo (tentativi, holdout, target)",
             "/pause": "Pausa nuove entry (exit continuano)",
             "/resume": "Riprende entry dopo /pause",
             "/stop": "Stop completo (richiede conferma)",
