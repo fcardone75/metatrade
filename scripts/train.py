@@ -43,6 +43,7 @@ import itertools
 import json
 import sys
 import time
+import traceback
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -723,12 +724,37 @@ def train_single_timeframe(
                 f"Nessun modello sopra la soglia min_accuracy ({ml_cfg.min_accuracy:.0%}). "
                 "Prova --bars piu' alto, --min-accuracy piu' basso, o verifica i dati."
             )
+        # Compute overfitting ratio: best train acc / best test acc
+        best_fold = result.folds[result.best_fold_index] if result.folds else None
+        overfit_ratio = (
+            round(best_fold.train_accuracy / max(best_fold.test_accuracy, 0.001), 3)
+            if best_fold else None
+        )
+        fold_accuracies = [round(f.test_accuracy, 4) for f in result.folds]
+        class_dist: dict | None = None
+        if model is not None and model.metrics is not None:
+            class_dist = {str(k): v for k, v in model.metrics.class_distribution.items()}
         log.warning(
             "train_timeframe_below_threshold",
             symbol=args.symbol,
             timeframe=timeframe,
             best_test_accuracy=round(float(result.best_test_accuracy), 4),
+            mean_test_accuracy=round(float(result.mean_test_accuracy), 4),
             min_accuracy=ml_cfg.min_accuracy,
+            n_folds=len(result.folds),
+            n_folds_above_threshold=sum(
+                1 for f in result.folds if f.test_accuracy >= ml_cfg.min_accuracy
+            ),
+            best_fold_train_accuracy=round(best_fold.train_accuracy, 4) if best_fold else None,
+            overfit_ratio=overfit_ratio,
+            fold_test_accuracies=fold_accuracies,
+            class_distribution=class_dist,
+            forward_bars=ml_cfg.forward_bars,
+            atr_threshold_mult=ml_cfg.atr_threshold_mult,
+            max_depth=ml_cfg.max_depth,
+            max_iter=ml_cfg.max_iter,
+            holdout_accuracy=round(result.holdout_accuracy, 4) if result.holdout_accuracy else None,
+            bars_used=len(bars),
             message=msg,
         )
         print(f"WARNING: {msg}", file=sys.stderr)
@@ -916,7 +942,13 @@ class TriedParamsCache:
             try:
                 with open(self._path, encoding="utf-8") as f:
                     self._data = json.load(f)
-            except Exception:
+            except Exception as exc:
+                log.warning(
+                    "tune_cache_load_failed",
+                    path=str(self._path),
+                    error=str(exc),
+                    traceback=traceback.format_exc(),
+                )
                 self._data = {}
 
     def _save(self) -> None:
@@ -925,6 +957,12 @@ class TriedParamsCache:
             with open(self._path, "w", encoding="utf-8") as f:
                 json.dump(self._data, f, indent=2)
         except Exception as exc:
+            log.warning(
+                "tune_cache_save_failed",
+                path=str(self._path),
+                error=str(exc),
+                traceback=traceback.format_exc(),
+            )
             print(f"WARNING: tune cache save failed: {exc}", file=sys.stderr)
 
     def was_tried(self, forward_bars: int, atr_mult: float) -> bool:
@@ -1089,7 +1127,19 @@ def auto_tune_single_timeframe(
         try:
             result, model = trainer.run(bars, feature_cache=feature_cache)
         except Exception as exc:  # noqa: BLE001
+            tb = traceback.format_exc()
             print(f"  {trial_idx+1:>5}  {fwd:>4}  {atr_mult:>8.2f}  — ERRORE: {exc}")
+            log.error(
+                "auto_tune_trial_exception",
+                symbol=args.symbol,
+                timeframe=timeframe,
+                trial=trial_idx + 1,
+                forward_bars=fwd,
+                atr_threshold_mult=atr_mult,
+                error=str(exc),
+                error_type=type(exc).__name__,
+                traceback=tb,
+            )
             continue
 
         holdout_acc = result.holdout_accuracy
@@ -1367,8 +1417,13 @@ def _compute_adaptive_target(
             if current is not None:
                 current = float(current)
                 return max(current + min_improvement_pp, absolute_min), current
-    except Exception:
-        pass
+    except Exception as exc:
+        log.warning(
+            "adaptive_target_compute_failed",
+            error=str(exc),
+            error_type=type(exc).__name__,
+            traceback=traceback.format_exc(),
+        )
     return min_accuracy, None
 
 
@@ -1452,6 +1507,18 @@ def adaptive_train_loop(
         if args.multires and args.source == "mt5":
             higher_tf_bars = load_higher_tf_bars_mt5(aargs, timeframe)
 
+        log.info(
+            "adaptive_attempt_start",
+            symbol=args.symbol,
+            timeframe=timeframe,
+            attempt=attempt_idx + 1,
+            max_attempts=len(schedule),
+            max_depth=max_depth,
+            max_iter=max_iter,
+            bars=attempt_bars,
+            target=round(target, 4),
+        )
+
         report = auto_tune_single_timeframe(
             args=aargs,
             timeframe=timeframe,
@@ -1475,16 +1542,42 @@ def adaptive_train_loop(
         holdout = report.holdout_accuracy or 0.0
         if report.success and holdout >= target:
             print(f"\n✓ Target raggiunto al tentativo {attempt_idx + 1}: {holdout:.2%} >= {target:.2%}")
+            log.info(
+                "adaptive_target_reached",
+                symbol=args.symbol,
+                timeframe=timeframe,
+                attempt=attempt_idx + 1,
+                holdout=round(holdout, 4),
+                target=round(target, 4),
+            )
             return report
 
         gap = target - holdout
         print(f"\n  ✗ holdout={holdout:.2%}  gap={gap:+.2%}  target={target:.2%}")
+        log.warning(
+            "adaptive_attempt_failed",
+            symbol=args.symbol,
+            timeframe=timeframe,
+            attempt=attempt_idx + 1,
+            holdout=round(holdout, 4),
+            gap=round(gap, 4),
+            target=round(target, 4),
+            success=report.success,
+        )
         if attempt_idx < len(schedule) - 1:
             nd, ni, ns = schedule[attempt_idx + 1]
             print(f"  → Prossimo: max_depth={nd}  max_iter={ni}  bars={int(base_bars * ns)}")
 
     best_h = (best_report.holdout_accuracy or 0.0) if best_report else 0.0
     print(f"\n⚠ Tentativi esauriti. Miglior holdout: {best_h:.2%}  target={target:.2%}")
+    log.warning(
+        "adaptive_all_attempts_failed",
+        symbol=args.symbol,
+        timeframe=timeframe,
+        best_holdout=round(best_h, 4),
+        target=round(target, 4),
+        attempts=len(schedule),
+    )
     if best_report is None:
         return TimeframeTrainReport(
             timeframe=timeframe,

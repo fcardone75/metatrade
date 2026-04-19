@@ -196,11 +196,17 @@ class RetrainScheduler:
             now_utc=datetime.now(UTC).isoformat(),
             cmd=" ".join(cmd[:6]) + " ...",
         )
+        # Redirect training output to a rotating log file so errors are visible
+        # even when the scheduler runs in background (stdout/stderr are not a tty).
+        log_dir = Path("logs")
+        log_dir.mkdir(parents=True, exist_ok=True)
+        train_log = log_dir / "retrain.log"
         try:
+            log_fh = open(train_log, "a", encoding="utf-8")  # noqa: SIM115
             self._process = subprocess.Popen(  # noqa: S603
                 cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=log_fh,
+                stderr=log_fh,
             )
         except OSError as exc:
             log.error("retrain_scheduler_launch_failed", error=str(exc))
