@@ -387,6 +387,7 @@ def build_ml_stack(
             "--timeframe", args.timeframe,
             "--model-dir", str(args.model_dir),
             "--holdout-fraction", "0.2",
+            "--adaptive",
         ]
         retrain_scheduler = RetrainScheduler(
             config=ml_cfg,
