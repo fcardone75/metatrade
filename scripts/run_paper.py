@@ -14,8 +14,8 @@ The script:
   2. Connects to MetaTrader 5 (must be open and logged in)
   3. Streams live bars on a polling loop (configurable interval)
   4. Passes each closed bar through the full signal pipeline
-  5. Logs every signal, decision, and simulated order to console
-  6. Prints a P&L summary on Ctrl+C
+  5. Logs every signal, decision, and simulated order
+  6. Logs a P&L summary on Ctrl+C
 
 Requires: Windows + MetaTrader 5 terminal open and logged in.
 """
@@ -63,7 +63,7 @@ _TIMEFRAME_MAP: dict[str, Timeframe] = {
     "D1": Timeframe.D1,
 }
 
-# Timeframe → bar duration in seconds (for polling interval)
+# Timeframe -> bar duration in seconds (for polling interval)
 _TF_SECONDS: dict[Timeframe, int] = {
     Timeframe.M1: 60,
     Timeframe.M5: 300,
@@ -105,9 +105,9 @@ def load_registry(args: argparse.Namespace) -> ModelRegistry | None:
     if args.model_version:
         snap = registry.load_from_disk(args.symbol, args.model_version)
         if snap is None:
-            print(f"ERROR: Model version {args.model_version!r} not found in {args.model_dir}", file=sys.stderr)
+            log.error("model_not_found", version=args.model_version, model_dir=str(args.model_dir))
             sys.exit(1)
-        print(f"Loaded model {snap.version} (test_acc={snap.tags.get('best_test_acc', '?')})")
+        log.info("model_loaded", version=snap.version, test_acc=snap.tags.get("best_test_acc", "?"))
     else:
         active = registry.get_active()
         if active is None:
@@ -116,15 +116,11 @@ def load_registry(args: argparse.Namespace) -> ModelRegistry | None:
                 version = latest[0].stem.removeprefix(f"{args.symbol}_")
                 active = registry.load_from_disk(args.symbol, version)
             if args.no_ml:
-                print("No ML model found — running with technical indicators only.")
+                log.info("ml_disabled", msg="running with technical indicators only")
                 return None
-            print(
-                "WARNING: No active ML model in registry.\n"
-                "  Run scripts/train.py first, or pass --no-ml to skip ML module.",
-                file=sys.stderr,
-            )
+            log.warning("no_active_model", msg="no active model; run scripts/train.py first or pass --no-ml")
             return None
-        print(f"Using active model {active.version} (test_acc={active.tags.get('best_test_acc', '?')})")
+        log.info("active_model", version=active.version, test_acc=active.tags.get("best_test_acc", "?"))
 
     return registry
 
@@ -169,9 +165,9 @@ def build_ml_stack(
     alerter: TelegramAlerter | None = None
     if alert_cfg.bot_token and alert_cfg.chat_id and alert_cfg.enabled:
         alerter = TelegramAlerter(alert_cfg)
-        print(f"  Telegram alerts: ON  (chat_id={alert_cfg.chat_id})")
+        log.info("telegram_alerts_enabled", chat_id=alert_cfg.chat_id)
     else:
-        print("  Telegram alerts: OFF (set ALERT_BOT_TOKEN + ALERT_CHAT_ID in .env to enable)")
+        log.info("telegram_alerts_disabled")
 
     ml_cfg = MLConfig(model_registry_dir=str(args.model_dir))
 
@@ -194,9 +190,9 @@ def build_ml_stack(
             config=ml_cfg,
             alerter=alerter,
         )
-        print(f"  Model watcher:   ON  (poll every {ml_cfg.model_watcher_poll_sec}s, min holdout {ml_cfg.candidate_min_holdout:.0%})")
+        log.info("model_watcher_enabled", poll_sec=ml_cfg.model_watcher_poll_sec, min_holdout=f"{ml_cfg.candidate_min_holdout:.0%}")
     else:
-        print("  Model watcher:   OFF (set ML_MODEL_WATCHER_ENABLED=true to enable)")
+        log.info("model_watcher_disabled")
 
     retrain_scheduler: RetrainScheduler | None = None
     if ml_cfg.retrain_enabled:
@@ -213,14 +209,14 @@ def build_ml_stack(
             alerter=alerter,
         )
         unit = f"every {ml_cfg.retrain_every_hours}h" if ml_cfg.retrain_trigger == "hours" else f"every {ml_cfg.retrain_every_bars} bars"
-        print(f"  Retraining:      ON  ({unit})")
+        log.info("retrain_scheduler_enabled", schedule=unit)
     else:
-        print("  Retraining:      OFF (set ML_RETRAIN_ENABLED=true + ML_RETRAIN_EVERY_HOURS=3 to enable)")
+        log.info("retrain_scheduler_disabled")
 
     command_handler: CommandHandler | None = None
     if alerter is not None and alert_cfg.commands_enabled:
         command_handler = CommandHandler()
-        print(f"  Telegram commands: ON  (poll every {alert_cfg.poll_interval_sec}s)")
+        log.info("telegram_commands_enabled", poll_sec=alert_cfg.poll_interval_sec)
 
     return alerter, live_tracker, model_watcher, retrain_scheduler, command_handler
 
@@ -241,7 +237,7 @@ def main() -> None:
         try:
             from metatrade.market_data.collectors.mt5_collector import MT5Collector
         except Exception as exc:
-            print(f"ERROR: Cannot import MT5 collector: {exc}", file=sys.stderr)
+            log.error("mt5_import_error", error=str(exc))
             sys.exit(1)
 
         collector = MT5Collector(store=None)
@@ -258,9 +254,9 @@ def main() -> None:
         date_to = datetime.now(timezone.utc)
         date_from = date_to - timedelta(seconds=tf_secs * (args.warmup_bars + 10))
 
-        print(f"Loading {args.warmup_bars} warmup bars for {args.symbol}/{args.timeframe} …")
+        log.info("loading_warmup_bars", symbol=args.symbol, timeframe=args.timeframe, bars=args.warmup_bars)
         bars = collector.collect(args.symbol, tf, date_from, date_to)
-        print(f"  Got {len(bars)} bars.")
+        log.info("warmup_bars_loaded", count=len(bars))
 
         # ── 3. Build runner ───────────────────────────────────────────────────
         registry = load_registry(args)
@@ -276,7 +272,7 @@ def main() -> None:
         module_cfg = make_module_cfg(args)
         modules = build_modules(args.timeframe.lower(), module_cfg=module_cfg, registry=registry)
 
-        print("\nBuilding ML/alert stack …")
+        log.info("building_ml_stack")
         alerter, live_tracker, model_watcher, retrain_scheduler, command_handler = (
             build_ml_stack(args, registry, telemetry)
         )
@@ -305,10 +301,13 @@ def main() -> None:
         if len(runner._bar_buffer) > 500:
             runner._bar_buffer = runner._bar_buffer[-500:]
 
-        print(f"\nPaper trading started — {args.symbol}/{args.timeframe}")
-        print(f"  Modules    : {[m.__class__.__name__ for m in modules]}")
-        print(f"  Balance    : {runner.broker.get_account().balance}")
-        print("  Press Ctrl+C to stop and view summary.\n")
+        log.info(
+            "paper_trading_started",
+            symbol=args.symbol,
+            timeframe=args.timeframe,
+            modules=[m.__class__.__name__ for m in modules],
+            balance=str(runner.broker.get_account().balance),
+        )
 
         poll_interval = args.poll_interval if args.poll_interval > 0 else tf_secs
         last_bar_time: datetime | None = bars[-1].timestamp_utc if bars else None
@@ -342,17 +341,20 @@ def main() -> None:
                 decision = runner.on_bar(bar)
 
                 if decision is None:
-                    print(f"[{ts_str}] HOLD  (no signal)")
+                    log.info("bar_hold", ts=ts_str)
                 elif hasattr(decision, "approved") and decision.approved:
                     ps = decision.position_size
-                    print(
-                        f"[{ts_str}] TRADE  side={decision.side.value}  "
-                        f"lot={float(ps.lot_size):.2f}  "
-                        f"sl={ps.stop_loss_price}  tp={ps.take_profit_price}"
+                    log.info(
+                        "bar_trade",
+                        ts=ts_str,
+                        side=decision.side.value,
+                        lot=float(ps.lot_size),
+                        sl=str(ps.stop_loss_price),
+                        tp=str(ps.take_profit_price),
                     )
                 else:
                     veto_code = decision.veto.veto_code if decision.veto else "?"
-                    print(f"[{ts_str}] VETOED  ({veto_code})")
+                    log.info("bar_vetoed", ts=ts_str, veto_code=veto_code)
 
             time.sleep(poll_interval)
 
@@ -365,15 +367,14 @@ def main() -> None:
             )
         account = runner.broker.get_account()
         stats = runner.stats
-        print("\n" + "=" * 50)
-        print("PAPER TRADING SUMMARY")
-        print("=" * 50)
-        print(f"  Bars processed  : {stats.bars_processed}")
-        print(f"  Trades executed : {stats.trades_executed}")
-        print(f"  Trades vetoed   : {stats.trades_vetoed}")
-        print(f"  Final balance   : {account.balance}")
-        print(f"  Final equity    : {account.equity}")
-        print("=" * 50)
+        log.info(
+            "paper_session_summary",
+            bars_processed=stats.bars_processed,
+            trades_executed=stats.trades_executed,
+            trades_vetoed=stats.trades_vetoed,
+            final_balance=str(account.balance),
+            final_equity=str(account.equity),
+        )
     finally:
         if session_id is not None:
             summary = None

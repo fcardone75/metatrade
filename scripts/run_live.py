@@ -136,10 +136,10 @@ def require_confirmation(args: argparse.Namespace) -> None:
     """Force explicit confirmation before going live."""
     if args.confirm:
         return
-    print("WARNING: You are about to start LIVE trading with REAL MONEY.")
-    print("   Add --confirm to the command to proceed.")
-    print()
-    print("   For paper trading (no real money) use: scripts/run_paper.py")
+    log.warning(
+        "live_confirmation_required",
+        msg="Add --confirm to the command to proceed. For paper trading use scripts/run_paper.py",
+    )
     sys.exit(0)
 
 
@@ -147,10 +147,7 @@ def validate_mt5_access_mode(args: argparse.Namespace) -> None:
     """Accept either explicit credentials or an already logged-in MT5 terminal."""
     if args.mt5_login and args.mt5_password and args.mt5_server:
         return
-    print(
-        "No explicit MT5 credentials provided - using the account currently logged into the MT5 terminal.",
-        file=sys.stderr,
-    )
+    log.warning("mt5_using_terminal_session", msg="no explicit MT5 credentials provided — using account currently logged into the MT5 terminal")
 
 
 def apply_runner_defaults(args: argparse.Namespace) -> argparse.Namespace:
@@ -190,9 +187,9 @@ def load_registry(args: argparse.Namespace) -> ModelRegistry | None:
     if args.model_version:
         snap = registry.load_from_disk(args.symbol, args.model_version)
         if snap is None:
-            print(f"ERROR: Model {args.model_version!r} not found in {args.model_dir}", file=sys.stderr)
+            log.error("model_not_found", version=args.model_version, model_dir=str(args.model_dir))
             sys.exit(1)
-        print(f"Model loaded: {snap.version}")
+        log.info("model_loaded", version=snap.version)
     else:
         active = registry.get_active()
         if active is None:
@@ -201,14 +198,11 @@ def load_registry(args: argparse.Namespace) -> ModelRegistry | None:
                 version = latest[0].stem.removeprefix(f"{args.symbol}_")
                 active = registry.load_from_disk(args.symbol, version)
             if args.no_ml:
-                print("No ML model - running with technical indicators only.")
+                log.info("ml_disabled", msg="running with technical indicators only")
                 return None
-            print(
-                "WARNING: No active model. Run scripts/train.py first, or pass --no-ml.",
-                file=sys.stderr,
-            )
+            log.warning("no_active_model", msg="no active model; run scripts/train.py first or pass --no-ml")
             return None
-        print(f"Active model: {active.version}")
+        log.info("active_model", version=active.version)
 
     return registry
 
@@ -264,16 +258,13 @@ def _is_market_closed(dt: datetime) -> bool:
     return False
 
 
-def _print_monitor_action(act: dict) -> None:
-    ts_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    reason = str(act.get("reason") or "")
-    # Windows console often uses cp1252; avoid Unicode arrows in stdout.
-    reason = reason.replace("\u2192", "->").replace("\u2190", "<-")
-    print(
-        f"[{ts_str}] MONITOR  {act['action']:14s} "
-        f"ticket={act['ticket']}  "
-        f"sl={act['new_sl'] or '-':<10}  "
-        f"{reason[:60]}"
+def _log_monitor_action(act: dict) -> None:
+    log.info(
+        "position_monitor_action",
+        action=act["action"],
+        ticket=act["ticket"],
+        new_sl=act.get("new_sl"),
+        reason=str(act.get("reason") or ""),
     )
 
 
@@ -331,7 +322,7 @@ def _run_position_monitor(
             try:
                 actions = runner.monitor_positions_once(exit_engine, symbol=symbol)
                 for act in actions:
-                    _print_monitor_action(act)
+                    _log_monitor_action(act)
             except Exception as exc:
                 log.warning("position_monitor_error", error=str(exc))
 
@@ -353,9 +344,9 @@ def build_ml_stack(
     alerter: TelegramAlerter | None = None
     if alert_cfg.bot_token and alert_cfg.chat_id and alert_cfg.enabled:
         alerter = TelegramAlerter(alert_cfg)
-        print(f"  Telegram alerts: ON  (chat_id={alert_cfg.chat_id})")
+        log.info("telegram_alerts_enabled", chat_id=alert_cfg.chat_id)
     else:
-        print("  Telegram alerts: OFF (set ALERT_BOT_TOKEN + ALERT_CHAT_ID in .env)")
+        log.info("telegram_alerts_disabled")
 
     ml_cfg = MLConfig(model_registry_dir=str(args.model_dir))
 
@@ -377,7 +368,7 @@ def build_ml_stack(
             config=ml_cfg,
             alerter=alerter,
         )
-        print(f"  Model watcher:   ON  (poll ogni {ml_cfg.model_watcher_poll_sec}s)")
+        log.info("model_watcher_enabled", poll_sec=ml_cfg.model_watcher_poll_sec)
 
     retrain_scheduler: RetrainScheduler | None = None
     if ml_cfg.retrain_enabled:
@@ -395,12 +386,12 @@ def build_ml_stack(
             alerter=alerter,
         )
         unit = f"ogni {ml_cfg.retrain_every_hours}h" if ml_cfg.retrain_trigger == "hours" else f"ogni {ml_cfg.retrain_every_bars} barre"
-        print(f"  Retraining:      ON  ({unit})")
+        log.info("retrain_scheduler_enabled", schedule=unit)
 
     command_handler: CommandHandler | None = None
     if alerter is not None and alert_cfg.commands_enabled:
         command_handler = CommandHandler()
-        print(f"  Comandi Telegram: ON  (poll ogni {alert_cfg.poll_interval_sec}s)")
+        log.info("telegram_commands_enabled", poll_sec=alert_cfg.poll_interval_sec)
 
     return alerter, live_tracker, model_watcher, retrain_scheduler, command_handler
 
@@ -423,7 +414,7 @@ def main() -> None:
         from metatrade.market_data.collectors.mt5_collector import MT5Collector
         from metatrade.broker.mt5_adapter import MT5BrokerAdapter
     except Exception as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        log.error("mt5_import_error", error=str(exc))
         sys.exit(1)
 
     collector = MT5Collector(store=None)
@@ -450,9 +441,9 @@ def main() -> None:
     date_to = datetime.now(timezone.utc)
     date_from = date_to - timedelta(seconds=tf_secs * (args.warmup_bars + 10))
 
-    print(f"Loading {args.warmup_bars} warmup bars ...")
+    log.info("loading_warmup_bars", symbol=args.symbol, timeframe=args.timeframe, bars=args.warmup_bars)
     bars = collector.collect(args.symbol, tf, date_from, date_to)
-    print(f"  Got {len(bars)} bars.")
+    log.info("warmup_bars_loaded", count=len(bars))
 
     # 3. Build runner
     registry = load_registry(args)
@@ -468,7 +459,7 @@ def main() -> None:
     module_cfg = make_module_cfg(args)
     modules = build_modules(args.timeframe.lower(), module_cfg=module_cfg, registry=registry)
 
-    print("\nBuilding ML/alert stack …")
+    log.info("building_ml_stack")
     alerter, live_tracker, model_watcher, retrain_scheduler, command_handler = (
         build_ml_stack(args, registry, telemetry)
     )
@@ -530,17 +521,19 @@ def main() -> None:
     )
 
     account = broker.get_account()
-    print(f"\nLIVE trading started - {args.symbol}/{args.timeframe}")
-    if exit_gen is not None and exit_sel is not None:
-        print("  Exit profile: ON (candidati SL/TP + selettore deterministico; ML profilo opzionale)")
-    else:
-        print("  Exit profile: OFF (solo SL/TP da risk/Chandelier)")
-    print(f"  Account  : {account.login if hasattr(account, 'login') else 'N/A'}")
-    print(f"  Balance  : {account.balance}")
-    print(f"  Equity   : {account.equity}")
-    print(f"  Modules  : {[m.__class__.__name__ for m in modules]}")
-    print(f"  Risk/trade: {args.max_risk_pct:.1%}  Daily limit: {args.daily_loss_limit_pct:.1%}  Kill: {args.kill_drawdown_pct:.1%}")
-    print("  Press Ctrl+C to stop (Windows: se non risponde, Ctrl+Pause/Break o chiudi da Gestione attività).\n")
+    log.info(
+        "live_trading_started",
+        symbol=args.symbol,
+        timeframe=args.timeframe,
+        exit_profile=exit_gen is not None,
+        account=account.login if hasattr(account, "login") else "N/A",
+        balance=str(account.balance),
+        equity=str(account.equity),
+        modules=[m.__class__.__name__ for m in modules],
+        max_risk_pct=f"{args.max_risk_pct:.1%}",
+        daily_loss_limit_pct=f"{args.daily_loss_limit_pct:.1%}",
+        kill_drawdown_pct=f"{args.kill_drawdown_pct:.1%}",
+    )
 
     poll_interval = args.poll_interval if args.poll_interval > 0 else tf_secs
     _running = [True]
@@ -550,7 +543,7 @@ def main() -> None:
     def _stop(sig, frame):
         _running[0] = False
         _stop_event.set()
-        print("\nStopping ...")
+        log.info("shutdown_requested")
 
     signal.signal(signal.SIGINT, _stop)
     if sys.platform == "win32" and hasattr(signal, "SIGBREAK"):
@@ -561,7 +554,7 @@ def main() -> None:
         for attempt in range(1, _MAX_RECONNECT_ATTEMPTS + 1):
             if not _running[0] or _stop_event.is_set():
                 return False
-            print(f"  MT5 reconnect attempt {attempt}/{_MAX_RECONNECT_ATTEMPTS} …")
+            log.info("mt5_reconnect_attempt", attempt=attempt, max_attempts=_MAX_RECONNECT_ATTEMPTS)
             try:
                 collector.initialize(
                     login=args.mt5_login,
@@ -570,7 +563,7 @@ def main() -> None:
                     path=args.mt5_path,
                     timeout=args.mt5_timeout_ms,
                 )
-                print("  MT5 reconnected.")
+                log.info("mt5_reconnected", attempt=attempt)
                 if alerter:
                     alerter.alert_error("MT5", f"Riconnesso dopo {attempt} tentativo/i.")
                 return True
@@ -585,8 +578,7 @@ def main() -> None:
 
         # ── Market-closed guard ───────────────────────────────────────────────
         if _is_market_closed(now_utc):
-            ts_str = now_utc.strftime("%Y-%m-%d %H:%M")
-            print(f"[{ts_str}] Market closed — sleeping {_MARKET_CLOSED_SLEEP_SEC // 60} min …", flush=True)
+            log.info("market_closed", sleep_min=_MARKET_CLOSED_SLEEP_SEC // 60)
             _interruptible_wait(float(_MARKET_CLOSED_SLEEP_SEC), _stop_event, _running)
             continue
 
@@ -600,9 +592,9 @@ def main() -> None:
             _consecutive_errors[0] += 1
             log.warning("mt5_fetch_error", error=str(exc), consecutive=_consecutive_errors[0])
             if _consecutive_errors[0] >= 3:
-                print(f"  MT5 fetch failed {_consecutive_errors[0]}x — attempting reconnect …")
+                log.warning("mt5_fetch_failed_reconnecting", consecutive=_consecutive_errors[0])
                 if not _try_reconnect():
-                    print("  Reconnect failed. Sleeping 5 min before retrying …")
+                    log.error("mt5_reconnect_exhausted", msg="sleeping 5 min before retrying")
                     if alerter:
                         alerter.alert_error("MT5", "Disconnesso — reconnect fallito.")
                     _interruptible_wait(300.0, _stop_event, _running)
@@ -636,20 +628,22 @@ def main() -> None:
                 break
 
             if decision is None:
-                print(f"[{ts_str}] HOLD")
+                log.info("bar_hold", ts=ts_str)
             elif hasattr(decision, "approved") and decision.approved:
                 ps = decision.position_size
-                print(
-                    f"[{ts_str}] ORDER SUBMITTED  side={decision.side.value}  "
-                    f"lot={float(ps.lot_size):.2f}  sl={ps.stop_loss_price}  tp={ps.take_profit_price}"
+                log.info(
+                    "bar_order_submitted",
+                    ts=ts_str,
+                    side=decision.side.value,
+                    lot=float(ps.lot_size),
+                    sl=str(ps.stop_loss_price),
+                    tp=str(ps.take_profit_price),
                 )
             else:
                 veto_code = decision.veto.veto_code if decision.veto else "?"
-                # Use ASCII output so Windows consoles do not fail on Unicode.
-                icon = "KILL" if "KILL" in veto_code else "VETO"
-                print(f"[{ts_str}] {icon} VETOED  ({veto_code})")
+                log.info("bar_vetoed", ts=ts_str, veto_code=veto_code)
                 if "KILL" in veto_code:
-                    print("  Kill switch triggered - stopping runner.")
+                    log.warning("kill_switch_triggered", veto_code=veto_code)
                     _running[0] = False
                     break
 
@@ -675,15 +669,14 @@ def main() -> None:
     )
 
     account = broker.get_account()
-    print("\n" + "=" * 55)
-    print("LIVE TRADING SESSION SUMMARY")
-    print("=" * 55)
-    print(f"  Bars processed  : {stats.bars_processed}")
-    print(f"  Trades executed : {stats.trades_executed}")
-    print(f"  Trades vetoed   : {stats.trades_vetoed}")
-    print(f"  Final balance   : {account.balance}")
-    print(f"  Final equity    : {account.equity}")
-    print("=" * 55)
+    log.info(
+        "live_session_summary",
+        bars_processed=stats.bars_processed,
+        trades_executed=stats.trades_executed,
+        trades_vetoed=stats.trades_vetoed,
+        final_balance=str(account.balance),
+        final_equity=str(account.equity),
+    )
 
     telemetry.finish_session(
         session_id,

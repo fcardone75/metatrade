@@ -149,7 +149,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--forward-bars", type=int, default=5, help="Bars ahead for label generation")
     p.add_argument("--max-iter", type=int, default=200, help="HistGradientBoosting max iterations")
     p.add_argument("--max-depth", type=int, default=5, help="RandomForest max depth")
-    p.add_argument("--min-accuracy", type=float, default=0.52, help="Min accuracy to accept model")
+    _env_min_acc = MLConfig().min_accuracy
+    p.add_argument("--min-accuracy", type=float, default=_env_min_acc, help="Min accuracy to accept model")
     p.add_argument(
         "--atr-threshold-mult",
         type=float,
@@ -281,13 +282,13 @@ def parse_timeframe_list(args: argparse.Namespace) -> list[str]:
         raw = args.timeframes.replace(",", " ").split()
         out = [t.strip().upper() for t in raw if t.strip()]
         if not out:
-            print("ERROR: --timeframes e' vuoto.", file=sys.stderr)
+            log.error("timeframes_empty", msg="--timeframes e' vuoto.")
             sys.exit(1)
         for t in out:
             if t not in _TIMEFRAME_MAP:
-                print(
-                    f"ERROR: timeframe sconosciuto {t!r}. Validi: {', '.join(_TIMEFRAME_MAP)}.",
-                    file=sys.stderr,
+                log.error(
+                    "timeframe_unknown",
+                    msg=f"timeframe sconosciuto {t!r}. Validi: {', '.join(_TIMEFRAME_MAP)}.",
                 )
                 sys.exit(1)
         return out
@@ -298,9 +299,11 @@ def resolve_promote_timeframe(timeframes: list[str], args: argparse.Namespace) -
     if args.promote_timeframe:
         target = args.promote_timeframe.strip().upper()
         if target not in timeframes:
-            print(
-                f"ERROR: --promote-timeframe={target!r} non e' tra i timeframe addestrati: {timeframes}.",
-                file=sys.stderr,
+            log.error(
+                "promote_timeframe_invalid",
+                promote_timeframe=target,
+                trained_timeframes=timeframes,
+                msg=f"--promote-timeframe={target!r} non e' tra i timeframe addestrati.",
             )
             sys.exit(1)
         return target
@@ -316,10 +319,9 @@ def resolve_csv_path(file_arg: Path, timeframe: str, *, multi: bool) -> Path:
             .replace("{timeframe}", timeframe)
         )
     if multi:
-        print(
-            "ERROR: con piu' timeframe da CSV usa un segnaposto in --file, "
-            "es. data/EURUSD_{TIMEFRAME}.csv",
-            file=sys.stderr,
+        log.error(
+            "csv_path_missing_placeholder",
+            msg="con piu' timeframe da CSV usa un segnaposto in --file, es. data/EURUSD_{TIMEFRAME}.csv",
         )
         sys.exit(1)
     return file_arg
@@ -339,18 +341,18 @@ def load_from_csv(path: Path, symbol: str, timeframe: str):
     from metatrade.market_data.collectors.csv_collector import CsvCollector
 
     if not path.exists():
-        print(f"ERROR: file CSV non trovato: {path}", file=sys.stderr)
+        log.error("csv_file_not_found", path=str(path))
         sys.exit(1)
 
     tf = _TIMEFRAME_MAP[timeframe]
     collector = CsvCollector()
-    print(f"Caricamento barre da {path} ...")
+    log.info("csv_loading", path=str(path), symbol=symbol, timeframe=timeframe)
     bars = collector.collect_file(
         file_path=path,
         symbol=symbol,
         timeframe=tf,
     )
-    print(f"  Caricate {len(bars)} barre ({timeframe}).")
+    log.info("csv_loaded", n_bars=len(bars), timeframe=timeframe)
     return bars
 
 
@@ -379,10 +381,10 @@ def load_from_mt5(args: argparse.Namespace, timeframe: str, *, bars_count: int |
     minutes = _TF_MINUTES.get(timeframe, 60) * n_bars
     date_from = date_to - timedelta(minutes=minutes)
 
-    print(f"Scarico {n_bars} barre {args.symbol}/{timeframe} da MT5 ...")
+    log.info("mt5_downloading", symbol=args.symbol, timeframe=timeframe, n_bars=n_bars)
     bars = collector.collect(args.symbol, tf, date_from, date_to)
     collector.shutdown()
-    print(f"  Scaricate {len(bars)} barre.")
+    log.info("mt5_downloaded", n_bars=len(bars), symbol=args.symbol, timeframe=timeframe)
     return bars
 
 
@@ -445,20 +447,21 @@ def _atomic_write_training_progress(path: Path, payload: dict[str, Any]) -> None
             pass
 
 
-def _print_fold_table(result: WalkForwardResult) -> None:
-    print(f"{'Fold':>5}  {'Train bars':>11}  {'Test bars':>10}  {'Train acc':>10}  {'Test acc':>9}")
-    print("-" * 55)
+def _log_fold_table(result: WalkForwardResult) -> None:
     for fold in result.folds:
-        print(
-            f"{fold.fold_index:>5}  "
-            f"{fold.train_end - fold.train_start:>11}  "
-            f"{fold.n_test_samples:>10}  "
-            f"{fold.train_metrics.accuracy:>10.2%}  "
-            f"{fold.test_accuracy:>9.2%}",
+        log.info(
+            "fold_result",
+            fold_index=fold.fold_index,
+            train_bars=fold.train_end - fold.train_start,
+            n_test_samples=fold.n_test_samples,
+            train_accuracy=round(fold.train_metrics.accuracy, 4),
+            test_accuracy=round(float(fold.test_accuracy), 4),
         )
-    print("-" * 55)
-    print(f"{'Mean':>5}  {'':>11}  {'':>10}  {'':>10}  {result.mean_test_accuracy:>9.2%}")
-    print(f"{'Best':>5}  {'':>11}  {'':>10}  {'':>10}  {result.best_test_accuracy:>9.2%}")
+    log.info(
+        "walk_forward_summary",
+        mean_test_accuracy=round(float(result.mean_test_accuracy), 4),
+        best_test_accuracy=round(float(result.best_test_accuracy), 4),
+    )
 
 
 def train_single_timeframe(
@@ -524,14 +527,20 @@ def train_single_timeframe(
         f"  [session: {ml_cfg.session_filter_utc_start}–{ml_cfg.session_filter_utc_end} UTC]"
         if ml_cfg.session_filter_utc_start is not None else ""
     )
-    print(f"\n=== Walk-forward: {args.symbol} {timeframe} ({len(bars)} barre) ===")
-    print(f"  train_window={ml_cfg.train_window_bars}  test_window={ml_cfg.test_window_bars}  step={ml_cfg.step_bars}")
-    print(f"  forward_bars={ml_cfg.forward_bars}  atr_threshold_mult={ml_cfg.atr_threshold_mult}  class_weight={ml_cfg.class_weight}")
-    if multires_label:
-        print(multires_label)
-    if session_label:
-        print(session_label)
-    print()
+    log.info(
+        "walk_forward_start",
+        symbol=args.symbol,
+        timeframe=timeframe,
+        n_bars=len(bars),
+        train_window=ml_cfg.train_window_bars,
+        test_window=ml_cfg.test_window_bars,
+        step=ml_cfg.step_bars,
+        forward_bars=ml_cfg.forward_bars,
+        atr_threshold_mult=ml_cfg.atr_threshold_mult,
+        class_weight=ml_cfg.class_weight,
+        multires=multires_label or None,
+        session=session_label or None,
+    )
 
     n_bars = len(bars)
     est_folds = _estimate_max_walk_forward_folds(
@@ -540,9 +549,7 @@ def train_single_timeframe(
         ml_cfg.test_window_bars,
         ml_cfg.step_bars,
     )
-    print(f"  Fold stimati: ~{est_folds}  |  Calcolo feature + label in corso...")
-    print(f"  (Il primo fold puo' richiedere 20-60s per il feature engineering)")
-    print()
+    log.info("walk_forward_estimated_folds", estimated_folds=est_folds)
 
     prog_path = training_progress_path(args.model_dir)
     _atomic_write_training_progress(
@@ -597,16 +604,19 @@ def train_single_timeframe(
         else:
             eta_str = f"{eta_sec/60:.1f}m"
 
-        # Console line — overwrite same line for compact output
+        # Log fold progress
         status_char = "+" if test_acc >= ml_cfg.min_accuracy else "-"
-        print(
-            f"  [{status_char}] Fold {done:>3}/{est_folds}"
-            f"  acc={test_acc:.2%}"
-            f"  {dist_str}"
-            f"  fold={fold_dur:.1f}s"
-            f"  elapsed={elapsed_total:.0f}s"
-            f"  ETA~{eta_str}",
-            flush=True,
+        log.debug(
+            "fold_progress",
+            status=status_char,
+            fold_done=done,
+            fold_total=est_folds,
+            pct=round(pct, 1),
+            test_accuracy=round(test_acc, 4),
+            class_distribution=dist_str,
+            fold_sec=round(fold_dur, 1),
+            elapsed_sec=round(elapsed_total, 0),
+            eta=eta_str,
         )
 
         payload: dict[str, Any] = {
@@ -639,7 +649,7 @@ def train_single_timeframe(
 
     def on_precompute_progress(current: int, total: int) -> None:
         pct = 100.0 * current / max(total, 1)
-        print(f"  Precomputing features: {pct:.0f}%  ({current}/{total} bars)", end="\r", flush=True)
+        log.debug("precompute_progress", pct=round(pct, 1), current=current, total=total)
         _atomic_write_training_progress(
             prog_path,
             {
@@ -662,20 +672,26 @@ def train_single_timeframe(
     )
 
     # Summary after all folds
-    print()
-    print(f"  Walk-forward completato: {len(result.folds)} fold in {time.perf_counter()-t0:.0f}s")
+    _wf_elapsed = round(time.perf_counter() - t0, 0)
     if result.folds:
         above = sum(1 for f in result.folds if f.test_accuracy >= ml_cfg.min_accuracy)
-        print(f"  Fold sopra soglia ({ml_cfg.min_accuracy:.0%}): {above}/{len(result.folds)}")
-        print(f"  Test accuracy — mean: {result.mean_test_accuracy:.2%}  best: {result.best_test_accuracy:.2%}")
-    if result.holdout_accuracy is not None:
-        print(f"  Holdout accuracy ({result.holdout_n_samples} campioni): {result.holdout_accuracy:.2%}")
-    print()
+        log.info(
+            "walk_forward_complete",
+            n_folds=len(result.folds),
+            elapsed_sec=_wf_elapsed,
+            folds_above_threshold=above,
+            min_accuracy=ml_cfg.min_accuracy,
+            mean_test_accuracy=round(float(result.mean_test_accuracy), 4),
+            best_test_accuracy=round(float(result.best_test_accuracy), 4),
+            holdout_accuracy=round(float(result.holdout_accuracy), 4) if result.holdout_accuracy is not None else None,
+            holdout_n_samples=result.holdout_n_samples if result.holdout_accuracy is not None else None,
+        )
+    else:
+        log.info("walk_forward_complete", n_folds=0, elapsed_sec=_wf_elapsed)
 
     if not result.folds:
         msg = "Nessun fold prodotto: dati insufficienti."
         log.error("train_timeframe_failed", symbol=args.symbol, timeframe=timeframe, reason=msg)
-        print(f"ERROR: {msg}", file=sys.stderr)
         _atomic_write_training_progress(
             prog_path,
             {
@@ -702,20 +718,21 @@ def train_single_timeframe(
             artifact_path=None,
         )
 
-    _print_fold_table(result)
-    print()
+    _log_fold_table(result)
 
-    # Print label distribution from the best fold's training metrics
+    # Log label distribution from the best fold's training metrics
     if model is not None and model.metrics is not None:
         cd = model.metrics.class_distribution
         total = sum(cd.values()) or 1
-        labels = {1: "BUY", -1: "SELL", 0: "HOLD"}
-        dist_parts = [
-            f"{labels.get(k, str(k))}={v} ({v/total:.0%})"
-            for k, v in sorted(cd.items())
-        ]
-        print(f"  Class distribution (best fold train): {', '.join(dist_parts)}")
-        print()
+        log.info(
+            "class_distribution",
+            buy=cd.get(1, 0),
+            sell=cd.get(-1, 0),
+            hold=cd.get(0, 0),
+            buy_pct=round(cd.get(1, 0) / total, 4),
+            sell_pct=round(cd.get(-1, 0) / total, 4),
+            hold_pct=round(cd.get(0, 0) / total, 4),
+        )
 
     # Gate on OUT-OF-SAMPLE (test) accuracy, not in-sample.
     # model.is_trained uses in-sample accuracy from fit() — a model can have
@@ -767,7 +784,6 @@ def train_single_timeframe(
             bars_used=len(bars),
             message=msg,
         )
-        print(f"WARNING: {msg}", file=sys.stderr)
         _atomic_write_training_progress(
             prog_path,
             {
@@ -820,13 +836,15 @@ def train_single_timeframe(
     artifact_path = args.model_dir / f"{args.symbol}_{snapshot.version}.pkl"
     duration_sec = round(time.perf_counter() - t0, 3)
 
-    print(f"Modello salvato e registrato ({timeframe}).")
-    print(f"  Versione : {snapshot.version}")
-    print(f"  Symbol   : {snapshot.symbol}")
-    print(f"  Accuracy : {result.best_test_accuracy:.2%} (miglior fold)")
-    print(f"  File     : {artifact_path}")
-    print(f"  Durata   : {duration_sec}s")
-    print()
+    log.info(
+        "model_saved",
+        timeframe=timeframe,
+        version=snapshot.version,
+        symbol=snapshot.symbol,
+        best_test_accuracy=round(float(result.best_test_accuracy), 4),
+        artifact_path=str(artifact_path),
+        duration_sec=duration_sec,
+    )
 
     fold_details = [fold_to_dict(f) for f in result.folds]
     telemetry.record_training_run(
@@ -973,7 +991,6 @@ class TriedParamsCache:
                 error=str(exc),
                 traceback=traceback.format_exc(),
             )
-            print(f"WARNING: tune cache save failed: {exc}", file=sys.stderr)
 
     def was_tried(self, forward_bars: int, atr_mult: float) -> bool:
         return self._key(forward_bars, atr_mult) in self._data
@@ -1035,34 +1052,40 @@ def auto_tune_single_timeframe(
 
     cache = TriedParamsCache(args.model_dir, args.symbol)
 
-    print(f"\n=== Auto-tune: {args.symbol} {timeframe} ({n_bars} barre) ===")
-    print(f"  holdout={base_ml_cfg.holdout_fraction:.0%}  target={target:.0%}  max_trials={max_trials}")
-    if cache.summary():
-        print(f"  cache: {cache.summary()}")
-    print()
+    log.info(
+        "auto_tune_start",
+        symbol=args.symbol,
+        timeframe=timeframe,
+        n_bars=n_bars,
+        holdout_fraction=base_ml_cfg.holdout_fraction,
+        target=target,
+        max_trials=max_trials,
+        cache_summary=cache.summary() or None,
+    )
 
     # ── Precompute feature cache once ─────────────────────────────────────────
     trainer_base = WalkForwardTrainer(base_ml_cfg)
 
     precompute_start = time.perf_counter()
-    print("  [1/2] Precomputing feature cache (una sola volta per tutti i trial)...")
+    log.info("feature_precompute_start", symbol=args.symbol, timeframe=timeframe)
 
     def _precompute_progress(current: int, total: int) -> None:
         pct = 100.0 * current / max(total, 1)
-        print(f"    Features: {pct:.0f}%  ({current}/{total})", end="\r", flush=True)
+        log.debug("feature_precompute_progress", pct=round(pct, 1), current=current, total=total)
 
     feature_cache = trainer_base.precompute_features(
         bars,
         higher_tf_bars=higher_tf_bars,
         on_progress=_precompute_progress,
     )
-    print(f"    Features: 100%  ({n_bars}/{n_bars}) — {time.perf_counter()-precompute_start:.1f}s")
-    print()
+    log.info(
+        "feature_precompute_done",
+        n_bars=n_bars,
+        elapsed_sec=round(time.perf_counter() - precompute_start, 1),
+    )
 
     # ── Grid search ───────────────────────────────────────────────────────────
-    print(f"  [2/2] Grid search ({max_trials} trial)...")
-    print(f"  {'Trial':>5}  {'fwd':>4}  {'atr_mult':>8}  {'folds':>6}  {'mean_test':>10}  {'holdout':>8}  {'elapsed':>8}")
-    print("  " + "-" * 62)
+    log.info("auto_tune_grid_search_start", max_trials=max_trials)
 
     best_holdout: float = -1.0
     best_result: WalkForwardResult | None = None
@@ -1092,13 +1115,17 @@ def auto_tune_single_timeframe(
     ]
     if len(pending_grid) < len(_AUTO_TUNE_GRID[:max_trials]):
         skipped = len(_AUTO_TUNE_GRID[:max_trials]) - len(pending_grid)
-        print(f"  Skipping {skipped} combo(s) già testati (da cache).")
+        log.info("auto_tune_skipped_cached_combos", skipped=skipped)
         # If all combos already tried, seed best_* from cache so we can still save
         best_known = cache.best_known()
         if best_known is not None and not pending_grid:
             best_fwd, best_atr, best_holdout_cached = best_known
-            print(f"  Tutti i combo già testati. Miglior noto: fwd={best_fwd}  atr={best_atr}  holdout={best_holdout_cached:.2%}")
-            print("  Nessun nuovo trial da eseguire.")
+            log.info(
+                "auto_tune_all_combos_cached",
+                best_forward_bars=best_fwd,
+                best_atr_mult=best_atr,
+                best_holdout=round(best_holdout_cached, 4),
+            )
             return TimeframeTrainReport(
                 timeframe=timeframe,
                 success=False,
@@ -1114,7 +1141,6 @@ def auto_tune_single_timeframe(
                 artifact_path=None,
                 holdout_accuracy=best_holdout_cached,
             )
-        print()
 
     for trial_idx, (fwd, atr_mult) in enumerate(pending_grid):
         trial_cfg = MLConfig(
@@ -1138,7 +1164,6 @@ def auto_tune_single_timeframe(
             result, model = trainer.run(bars, feature_cache=feature_cache)
         except Exception as exc:  # noqa: BLE001
             tb = traceback.format_exc()
-            print(f"  {trial_idx+1:>5}  {fwd:>4}  {atr_mult:>8.2f}  — ERRORE: {exc}")
             log.error(
                 "auto_tune_trial_exception",
                 symbol=args.symbol,
@@ -1153,13 +1178,17 @@ def auto_tune_single_timeframe(
             continue
 
         holdout_acc = result.holdout_accuracy
-        holdout_str = f"{holdout_acc:.2%}" if holdout_acc is not None else "  n/a  "
-        marker = " *" if (holdout_acc is not None and holdout_acc > best_holdout) else "  "
-        print(
-            f"  {trial_idx+1:>5}  {fwd:>4}  {atr_mult:>8.2f}"
-            f"  {result.n_folds:>6}  {result.mean_test_accuracy:>10.2%}"
-            f"  {holdout_str:>8}  {time.perf_counter()-trial_t0:>7.1f}s{marker}",
-            flush=True,
+        is_best = holdout_acc is not None and holdout_acc > best_holdout
+        log.info(
+            "auto_tune_trial_result",
+            trial=trial_idx + 1,
+            forward_bars=fwd,
+            atr_threshold_mult=atr_mult,
+            n_folds=result.n_folds,
+            mean_test_accuracy=round(float(result.mean_test_accuracy), 4),
+            holdout_accuracy=round(float(holdout_acc), 4) if holdout_acc is not None else None,
+            trial_sec=round(time.perf_counter() - trial_t0, 1),
+            is_best=is_best,
         )
 
         cache.record(fwd, atr_mult, holdout_acc if holdout_acc is not None else 0.0, None)
@@ -1188,15 +1217,17 @@ def auto_tune_single_timeframe(
         )
 
         if holdout_acc is not None and holdout_acc >= target:
-            print(f"\n  Target {target:.0%} raggiunto al trial {trial_idx+1} — stop anticipato.")
+            log.info(
+                "auto_tune_target_reached",
+                target=target,
+                trial=trial_idx + 1,
+                holdout_accuracy=round(holdout_acc, 4),
+            )
             break
-
-    print("  " + "-" * 62)
-    print()
 
     if best_result is None or best_model is None or best_cfg is None:
         msg = "Auto-tune: nessun trial ha prodotto folds validi."
-        print(f"ERROR: {msg}", file=sys.stderr)
+        log.error("auto_tune_no_valid_folds", symbol=args.symbol, timeframe=timeframe, msg=msg)
         return TimeframeTrainReport(
             timeframe=timeframe,
             success=False,
@@ -1213,10 +1244,16 @@ def auto_tune_single_timeframe(
             holdout_accuracy=None,
         )
 
-    print(f"  Miglior trial #{best_trial_idx+1}: forward_bars={best_cfg.forward_bars}  atr_mult={best_cfg.atr_threshold_mult}")
-    print(f"  Holdout accuracy: {best_holdout:.2%}  ({best_result.holdout_n_samples} campioni)")
-    print(f"  Walk-forward — mean: {best_result.mean_test_accuracy:.2%}  best: {best_result.best_test_accuracy:.2%}")
-    print()
+    log.info(
+        "auto_tune_best_trial",
+        trial=best_trial_idx + 1,
+        forward_bars=best_cfg.forward_bars,
+        atr_threshold_mult=best_cfg.atr_threshold_mult,
+        holdout_accuracy=round(best_holdout, 4),
+        holdout_n_samples=best_result.holdout_n_samples,
+        mean_test_accuracy=round(float(best_result.mean_test_accuracy), 4),
+        best_test_accuracy=round(float(best_result.best_test_accuracy), 4),
+    )
 
     test_acc_ok = best_result.best_test_accuracy >= best_cfg.min_accuracy
     if not test_acc_ok:
@@ -1225,7 +1262,15 @@ def auto_tune_single_timeframe(
             f"{best_result.best_test_accuracy:.0%} sotto la soglia {best_cfg.min_accuracy:.0%}. "
             "Modello non salvato. Prova --auto-tune-target piu' basso o piu' barre."
         )
-        print(f"WARNING: {msg}", file=sys.stderr)
+        log.warning(
+            "auto_tune_below_threshold",
+            symbol=args.symbol,
+            timeframe=timeframe,
+            best_holdout=round(best_holdout, 4),
+            best_test_accuracy=round(float(best_result.best_test_accuracy), 4),
+            min_accuracy=best_cfg.min_accuracy,
+            msg=msg,
+        )
         return TimeframeTrainReport(
             timeframe=timeframe,
             success=False,
@@ -1271,14 +1316,16 @@ def auto_tune_single_timeframe(
     duration_sec = round(time.perf_counter() - t0, 3)
     fold_details = [fold_to_dict(f) for f in best_result.folds]
 
-    print(f"Modello auto-tune salvato ({timeframe}).")
-    print(f"  Versione      : {snapshot.version}")
-    print(f"  forward_bars  : {best_cfg.forward_bars}")
-    print(f"  atr_mult      : {best_cfg.atr_threshold_mult}")
-    print(f"  Holdout acc   : {best_holdout:.2%}")
-    print(f"  File          : {artifact_path}")
-    print(f"  Durata totale : {duration_sec}s")
-    print()
+    log.info(
+        "auto_tune_model_saved",
+        timeframe=timeframe,
+        version=snapshot.version,
+        forward_bars=best_cfg.forward_bars,
+        atr_threshold_mult=best_cfg.atr_threshold_mult,
+        holdout_accuracy=round(best_holdout, 4),
+        artifact_path=str(artifact_path),
+        duration_sec=duration_sec,
+    )
 
     telemetry.record_training_run(
         symbol=args.symbol,
@@ -1376,7 +1423,7 @@ def write_json_report(model_dir: Path, payload: dict[str, Any]) -> Path:
 
 # Each row: (max_depth, max_iter, bar_scale)
 # 20-step schedule: 4 phases × 5 depths, reducing model complexity while
-# gradually scaling bars. M1 overfits heavily → depth/iter reduction matters
+# gradually scaling bars. M1 overfits heavily -> depth/iter reduction matters
 # more than more data. Bars capped at 100k in adaptive_train_loop.
 _ADAPTIVE_SCHEDULE: list[tuple[int, int, float]] = [
     # Phase 1 — depth 4 (softer than default 5)
@@ -1415,8 +1462,8 @@ def _compute_adaptive_target(
 ) -> tuple[float, float | None]:
     """Return (target_accuracy, current_model_holdout_or_None).
 
-    No model → target = min_accuracy.
-    Has model → target = max(current_holdout + min_improvement_pp, absolute_min).
+    No model -> target = min_accuracy.
+    Has model -> target = max(current_holdout + min_improvement_pp, absolute_min).
     """
     try:
         _cfg = MLConfig(model_registry_dir=str(model_dir))
@@ -1454,22 +1501,22 @@ def adaptive_train_loop(
     )
     schedule = _ADAPTIVE_SCHEDULE[: args.adaptive_max_attempts]
 
-    print(f"\n{'='*60}")
-    print(f" ADAPTIVE TRAINING  |  {args.symbol} {timeframe}")
-    if current_acc is not None:
-        print(f" Modello attuale: {current_acc:.2%}  →  Target: {target:.2%}")
-    else:
-        print(f" Nessun modello attivo  |  Target: {target:.2%}")
-    print(f" Max tentativi: {len(schedule)}  |  Strategia: riduzione complessità progressiva")
-    print("=" * 60)
+    log.info(
+        "adaptive_training_start",
+        symbol=args.symbol,
+        timeframe=timeframe,
+        target=round(target, 4),
+        current_model_accuracy=round(current_acc, 4) if current_acc is not None else None,
+        max_attempts=len(schedule),
+    )
 
     best_report: TimeframeTrainReport | None = None
     attempt_history: list[dict] = []
     _adaptive_progress_path = args.model_dir / "adaptive_progress.json"
 
-    def _write_adaptive_progress(status: str) -> None:
+    def _write_adaptive_progress(status: str, *, error_msg: str | None = None) -> None:
         best_h = (best_report.holdout_accuracy or 0.0) if best_report else 0.0
-        payload = {
+        payload: dict[str, object] = {
             "status": status,
             "symbol": args.symbol,
             "timeframe": timeframe,
@@ -1481,6 +1528,8 @@ def adaptive_train_loop(
             "attempts": attempt_history,
             "updated_at_utc": datetime.now(UTC).isoformat(),
         }
+        if error_msg is not None:
+            payload["error"] = error_msg
         _atomic_write_training_progress(_adaptive_progress_path, payload)
 
     _write_adaptive_progress("running")
@@ -1488,10 +1537,16 @@ def adaptive_train_loop(
     for attempt_idx, (max_depth, max_iter, bar_scale) in enumerate(schedule):
         attempt_bars = min(int(base_bars * bar_scale), 100_000)
 
-        print(f"\n-- Tentativo {attempt_idx + 1}/{len(schedule)} --------------------------")
-        print(f"   max_depth={max_depth}  max_iter={max_iter}  bars={attempt_bars}")
-        if best_report and best_report.holdout_accuracy:
-            print(f"   Miglior holdout finora: {best_report.holdout_accuracy:.2%}  target={target:.2%}")
+        log.info(
+            "adaptive_attempt_begin",
+            attempt=attempt_idx + 1,
+            max_attempts=len(schedule),
+            max_depth=max_depth,
+            max_iter=max_iter,
+            bars=attempt_bars,
+            best_holdout_so_far=round(best_report.holdout_accuracy, 4) if best_report and best_report.holdout_accuracy else None,
+            target=round(target, 4),
+        )
 
         # Build per-attempt args (shallow copy + overrides)
         aargs = argparse.Namespace(**vars(args))
@@ -1502,7 +1557,7 @@ def adaptive_train_loop(
         aargs.auto_tune_target = target
         aargs.holdout_fraction = max(args.holdout_fraction, 0.2)
 
-        # Reset tried-params cache — different max_depth/iter → combos behave differently
+        # Reset tried-params cache — different max_depth/iter -> combos behave differently
         cache_file = args.model_dir / f"{args.symbol}_tune_cache.json"
         if cache_file.exists():
             cache_file.unlink()
@@ -1587,7 +1642,6 @@ def adaptive_train_loop(
         attempt_history.append(attempt_record)
 
         if report.success and holdout >= target:
-            print(f"\n✓ Target raggiunto al tentativo {attempt_idx + 1}: {holdout:.2%} >= {target:.2%}")
             log.info(
                 "adaptive_target_reached",
                 symbol=args.symbol,
@@ -1600,7 +1654,6 @@ def adaptive_train_loop(
             return report
 
         gap = target - holdout
-        print(f"\n  ✗ holdout={holdout:.2%}  gap={gap:+.2%}  target={target:.2%}")
         log.warning(
             "adaptive_attempt_failed",
             symbol=args.symbol,
@@ -1614,10 +1667,14 @@ def adaptive_train_loop(
         _write_adaptive_progress("running")
         if attempt_idx < len(schedule) - 1:
             nd, ni, ns = schedule[attempt_idx + 1]
-            print(f"  → Prossimo: max_depth={nd}  max_iter={ni}  bars={int(base_bars * ns)}")
+            log.info(
+                "adaptive_next_attempt_preview",
+                next_max_depth=nd,
+                next_max_iter=ni,
+                next_bars=int(base_bars * ns),
+            )
 
     best_h = (best_report.holdout_accuracy or 0.0) if best_report else 0.0
-    print(f"\n[!] Tentativi esauriti. Miglior holdout: {best_h:.2%}  target={target:.2%}")
     _write_adaptive_progress("exhausted")
     log.warning(
         "adaptive_all_attempts_failed",
@@ -1657,7 +1714,7 @@ def main() -> None:
     multi = len(timeframes) > 1
 
     if args.source == "csv" and args.file is None:
-        print("ERROR: --file obbligatorio con --source csv", file=sys.stderr)
+        log.error("missing_csv_file", msg="--file obbligatorio con --source csv")
         sys.exit(1)
 
     log.info(
@@ -1668,12 +1725,14 @@ def main() -> None:
         promote_timeframe=promote_tf,
         source=args.source,
     )
-    print("\n" + "=" * 60)
-    print(f" Training ML  |  {args.symbol}  |  timeframe: {', '.join(timeframes)}")
-    print(f" Sorgente: {args.source}  |  modello attivo in dashboard: {promote_tf}")
-    if multi:
-        print(" Nota: ogni run produce un artifact; solo uno e' marcato attivo in telemetria.")
-    print("=" * 60 + "\n")
+    log.info(
+        "training_session_start",
+        symbol=args.symbol,
+        timeframes=timeframes,
+        source=args.source,
+        promote_timeframe=promote_tf,
+        multi=multi,
+    )
 
     # --adaptive implies --auto-tune and forces holdout >= 0.2
     if args.adaptive:
@@ -1682,10 +1741,9 @@ def main() -> None:
             args.holdout_fraction = 0.2
 
     if args.auto_tune and args.holdout_fraction <= 0.0:
-        print(
-            "ERROR: --auto-tune richiede --holdout-fraction > 0 "
-            "(es. --holdout-fraction 0.2) per valutare i risultati su dati non visti.",
-            file=sys.stderr,
+        log.error(
+            "auto_tune_missing_holdout",
+            msg="--auto-tune richiede --holdout-fraction > 0 (es. --holdout-fraction 0.2) per valutare i risultati su dati non visti.",
         )
         sys.exit(1)
 
@@ -1737,55 +1795,67 @@ def main() -> None:
                 higher_tf_bars = load_higher_tf_bars_csv(args.file, args.symbol, tf)
 
         is_active = tf == promote_tf
-        if args.adaptive:
-            report = adaptive_train_loop(
-                args=args,
-                timeframe=tf,
-                base_bars=args.bars,
-                telemetry=telemetry,
+        try:
+            if args.adaptive:
+                report = adaptive_train_loop(
+                    args=args,
+                    timeframe=tf,
+                    base_bars=args.bars,
+                    telemetry=telemetry,
+                )
+            elif args.auto_tune:
+                report = auto_tune_single_timeframe(
+                    args=args,
+                    timeframe=tf,
+                    bars=bars,
+                    base_ml_cfg=ml_cfg,
+                    telemetry=telemetry,
+                    telemetry_is_active=is_active,
+                    higher_tf_bars=higher_tf_bars,
+                )
+            else:
+                report = train_single_timeframe(
+                    args=args,
+                    timeframe=tf,
+                    bars=bars,
+                    ml_cfg=ml_cfg,
+                    telemetry=telemetry,
+                    telemetry_is_active=is_active,
+                    higher_tf_bars=higher_tf_bars,
+                )
+        except Exception as exc:  # noqa: BLE001
+            import traceback as _tb
+            _atomic_write_training_progress(
+                prog_base,
+                {
+                    "status": "error",
+                    "phase": "training_exception",
+                    "symbol": args.symbol,
+                    "timeframe": tf,
+                    "message": str(exc),
+                    "traceback": _tb.format_exc(),
+                    "updated_at_utc": datetime.now(UTC).isoformat(),
+                },
             )
-        elif args.auto_tune:
-            report = auto_tune_single_timeframe(
-                args=args,
-                timeframe=tf,
-                bars=bars,
-                base_ml_cfg=ml_cfg,
-                telemetry=telemetry,
-                telemetry_is_active=is_active,
-                higher_tf_bars=higher_tf_bars,
-            )
-        else:
-            report = train_single_timeframe(
-                args=args,
-                timeframe=tf,
-                bars=bars,
-                ml_cfg=ml_cfg,
-                telemetry=telemetry,
-                telemetry_is_active=is_active,
-                higher_tf_bars=higher_tf_bars,
-            )
+            log.error("training_exception", timeframe=tf, error=str(exc), error_type=type(exc).__name__)
+            sys.exit(1)
         reports.append(report)
 
     ok_count = sum(1 for r in reports if r.success)
     fail_count = len(reports) - ok_count
 
-    print("\n" + "=" * 60)
-    print(" RIEPILOGO FINALE")
-    print("=" * 60)
-    print(f"{'TF':<6} {'Esito':<10} {'Barre':>7} {'Mean test':>10} {'Best test':>10} {'Holdout':>8} {'Versione':<22}")
-    print("-" * 70)
     for r in reports:
-        status = "OK" if r.success else "FALLITO"
-        mean_s = f"{r.mean_test_accuracy:.2%}" if r.mean_test_accuracy is not None else "-"
-        best_s = f"{r.best_test_accuracy:.2%}" if r.best_test_accuracy is not None else "-"
-        holdout_s = f"{r.holdout_accuracy:.2%}" if r.holdout_accuracy is not None else "-"
-        ver = (r.model_version or "-")[:20]
-        print(f"{r.timeframe:<6} {status:<10} {r.bars_used:>7} {mean_s:>10} {best_s:>10} {holdout_s:>8} {ver:<22}")
-        if r.error and not r.success:
-            print(f"        ({r.error})")
-    print("-" * 70)
-    print(f" Completati con successo: {ok_count}/{len(reports)}  |  attivo (telemetria): {promote_tf}")
-    print("=" * 60 + "\n")
+        log.info(
+            "timeframe_report",
+            timeframe=r.timeframe,
+            success=r.success,
+            bars_used=r.bars_used,
+            mean_test_accuracy=round(r.mean_test_accuracy, 4) if r.mean_test_accuracy is not None else None,
+            best_test_accuracy=round(r.best_test_accuracy, 4) if r.best_test_accuracy is not None else None,
+            holdout_accuracy=round(r.holdout_accuracy, 4) if r.holdout_accuracy is not None else None,
+            model_version=r.model_version,
+            error=r.error if not r.success else None,
+        )
 
     log.info(
         "train_batch_done",
@@ -1820,8 +1890,7 @@ def main() -> None:
             "runs": [asdict(r) for r in reports],
         }
         out_path = write_json_report(args.model_dir, payload)
-        print(f"Report JSON: {out_path.resolve()}")
-        log.info("train_report_written", path=str(out_path.resolve()))
+        log.info("report_written", path=str(out_path.resolve()))
 
     if ok_count == 0:
         _atomic_write_training_progress(
@@ -1835,7 +1904,7 @@ def main() -> None:
                 "updated_at_utc": datetime.now(UTC).isoformat(),
             },
         )
-        print("ERROR: nessun training completato con successo.", file=sys.stderr)
+        log.error("batch_failed", symbol=args.symbol, msg="nessun training completato con successo.")
         sys.exit(1)
     if fail_count:
         _atomic_write_training_progress(
@@ -1864,7 +1933,7 @@ def main() -> None:
             "updated_at_utc": datetime.now(UTC).isoformat(),
         },
     )
-    print("Fatto. Puoi avviare paper o live con il modello desiderato (versione in data/models).")
+    log.info("training_done", symbol=args.symbol, ok=ok_count, promote_timeframe=promote_tf)
 
 
 if __name__ == "__main__":

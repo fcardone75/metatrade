@@ -37,7 +37,7 @@ _SRC = Path(__file__).parent.parent / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from metatrade.core.log import configure_logging
+from metatrade.core.log import configure_logging, get_logger
 from metatrade.core.enums import Timeframe
 from metatrade.ml.config import MLConfig
 from metatrade.ml.registry import ModelRegistry
@@ -46,6 +46,7 @@ from metatrade.runner.config import RunnerConfig
 from metatrade.runner.module_config import ModuleConfig
 from metatrade.runner.module_builder import build_modules
 
+log = get_logger(__name__)
 
 _TIMEFRAME_MAP: dict[str, Timeframe] = {
     "M1": Timeframe.M1,
@@ -117,10 +118,10 @@ def load_bars(args: argparse.Namespace) -> list:
         from metatrade.market_data.collectors.csv_collector import CsvCollector
 
         if args.file is None:
-            print("ERROR: --file is required when --source csv", file=sys.stderr)
+            log.error("missing_csv_file", msg="--file is required when --source csv")
             sys.exit(1)
         collector = CsvCollector()
-        print(f"Loading bars from {args.file} …")
+        log.info("loading_bars_csv", file=str(args.file))
         bars = collector.collect_file(
             file_path=args.file,
             symbol=args.symbol,
@@ -142,11 +143,11 @@ def load_bars(args: argparse.Namespace) -> list:
         }
         date_to = datetime.now(timezone.utc)
         date_from = date_to - timedelta(minutes=tf_minutes.get(tf, 60) * args.bars)
-        print(f"Fetching {args.bars} bars of {args.symbol}/{args.timeframe} from MT5 …")
+        log.info("loading_bars_mt5", symbol=args.symbol, timeframe=args.timeframe, bars=args.bars)
         bars = collector.collect(args.symbol, tf, date_from, date_to)
         collector.shutdown()
 
-    print(f"  Loaded {len(bars)} bars.")
+    log.info("bars_loaded", count=len(bars))
     return bars
 
 
@@ -157,23 +158,20 @@ def load_registry(args: argparse.Namespace) -> ModelRegistry | None:
     if args.model_version:
         snap = registry.load_from_disk(args.symbol, args.model_version)
         if snap is None:
-            print(f"ERROR: Model {args.model_version!r} not found in {args.model_dir}", file=sys.stderr)
+            log.error("model_not_found", version=args.model_version, model_dir=str(args.model_dir))
             sys.exit(1)
         registry.register(snap.classifier, snap.symbol, version=snap.version, tags=snap.tags)
         registry.promote(snap.version)
-        print(f"Model loaded: {snap.version}")
+        log.info("model_loaded", version=snap.version)
     else:
         active = registry.get_active()
         if active is None:
             if args.no_ml:
-                print("No ML model — running with technical indicators only.")
+                log.info("no_ml_model", msg="running with technical indicators only")
                 return None
-            print(
-                "WARNING: No active model. Run scripts/train.py first, or pass --no-ml.",
-                file=sys.stderr,
-            )
+            log.warning("no_active_model", msg="no active model; run scripts/train.py first or pass --no-ml")
             return None
-        print(f"Active model: {active.version}")
+        log.info("active_model", version=active.version)
 
     return registry
 
@@ -196,7 +194,7 @@ def main() -> None:
     bars = load_bars(args)
 
     if len(bars) < 50:
-        print(f"ERROR: Not enough bars ({len(bars)}) to run a backtest.", file=sys.stderr)
+        log.error("insufficient_bars", count=len(bars), msg="not enough bars to run a backtest")
         sys.exit(1)
 
     # ── 2. Load model ─────────────────────────────────────────────────────────
@@ -212,13 +210,15 @@ def main() -> None:
         min_signals=1 if args.no_ml else 2,
     )
 
-    print(
-        f"\nRunning backtest on {len(bars)} bars of {args.symbol}/{args.timeframe} …"
+    log.info(
+        "backtest_starting",
+        symbol=args.symbol,
+        timeframe=args.timeframe,
+        bars=len(bars),
+        modules=[m.__class__.__name__ for m in modules],
+        initial_balance=args.initial_balance,
+        max_risk_pct=args.max_risk_pct,
     )
-    print(f"  Modules     : {[m.__class__.__name__ for m in modules]}")
-    print(f"  Balance     : {args.initial_balance:,.2f}")
-    print(f"  Risk/trade  : {args.max_risk_pct:.1%}")
-    print()
 
     runner = BacktestRunner(
         config=runner_cfg,
@@ -229,41 +229,38 @@ def main() -> None:
     )
     result = runner.run()
 
-    # ── 4. Print summary ──────────────────────────────────────────────────────
-    print("=" * 60)
-    print("BACKTEST RESULTS")
-    print("=" * 60)
-    print(f"  Symbol          : {args.symbol}/{args.timeframe}")
-    print(f"  Bars processed  : {result.stats.bars_processed}")
-    print(f"  Total trades    : {result.n_trades}")
-    print(f"  Winning trades  : {result.n_winning}")
-    print(f"  Losing trades   : {result.n_losing}")
-
-    if result.n_trades > 0:
-        print(f"  Win rate        : {result.win_rate:.1%}")
-    else:
-        print(f"  Win rate        : n/a")
-
-    print(f"  Total P&L       : {float(result.total_pnl):+,.2f}")
-    print(f"  Return          : {result.return_pct:+.2%}")
-    print(f"  Initial balance : {float(result.initial_balance):,.2f}")
-    print(f"  Final balance   : {float(result.final_balance):,.2f}")
-    print(f"  Weight updates  : {result.stats.weight_updates}")
-    print("=" * 60)
+    # ── 4. Log summary ────────────────────────────────────────────────────────
+    log.info(
+        "backtest_results",
+        symbol=args.symbol,
+        timeframe=args.timeframe,
+        bars_processed=result.stats.bars_processed,
+        n_trades=result.n_trades,
+        n_winning=result.n_winning,
+        n_losing=result.n_losing,
+        win_rate=f"{result.win_rate:.1%}" if result.n_trades > 0 else "n/a",
+        total_pnl=f"{float(result.total_pnl):+,.2f}",
+        return_pct=f"{result.return_pct:+.2%}",
+        initial_balance=f"{float(result.initial_balance):,.2f}",
+        final_balance=f"{float(result.final_balance):,.2f}",
+        weight_updates=result.stats.weight_updates,
+    )
 
     # Trade-level breakdown (last 10 if many)
     if result.trades:
-        print()
         display = result.trades[-10:] if len(result.trades) > 10 else result.trades
         if len(result.trades) > 10:
-            print(f"  (showing last 10 of {len(result.trades)} trades)")
-        print(f"  {'#':>4}  {'Side':>4}  {'Entry':>10}  {'Exit':>10}  {'Lots':>6}  {'P&L':>10}  {'Reason'}")
-        print("  " + "-" * 58)
-        for i, t in enumerate(display):
-            print(
-                f"  {t.bar_index:>4}  {t.side.value:>4}  {float(t.entry_price):>10.5f}  "
-                f"{float(t.exit_price):>10.5f}  {float(t.lot_size):>6.2f}  "
-                f"{float(t.pnl):>+10.2f}  {t.exit_reason}"
+            log.info("trade_breakdown_truncated", showing=10, total=len(result.trades))
+        for t in display:
+            log.info(
+                "trade_result",
+                bar_index=t.bar_index,
+                side=t.side.value,
+                entry_price=float(t.entry_price),
+                exit_price=float(t.exit_price),
+                lot_size=float(t.lot_size),
+                pnl=float(t.pnl),
+                exit_reason=t.exit_reason,
             )
 
 

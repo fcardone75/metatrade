@@ -13,7 +13,7 @@ Usage:
     bus = EventBus()
 
     async def on_signal(event: Event) -> None:
-        print(event.payload)
+        log.info("signal_received", payload=event.payload)
 
     bus.subscribe("SIGNAL_GENERATED", on_signal)
 

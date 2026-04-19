@@ -21,11 +21,11 @@ Usage:
 Walk-forward structure (rolling, non-anchored):
     Total bars  = N
     Fold width  = N // folds
-    Train width = fold_width × train_pct
-    Test width  = fold_width × (1 - train_pct)
+    Train width = fold_width x train_pct
+    Test width  = fold_width x (1 - train_pct)
 
     Fold 1: bars[0           : fold_width]
-    Fold 2: bars[fold_width  : 2×fold_width]
+    Fold 2: bars[fold_width  : 2xfold_width]
     ...
 
 Each fold:
@@ -33,14 +33,7 @@ Each fold:
   2. Run BacktestRunner on the test window only
   3. Compute: win_rate, return_pct, sharpe_ratio, max_drawdown, n_trades
 
-Output:
-    Fold  Bars  Trades  Win%   Return    Sharpe    MaxDD
-       1  1000      47  53.2%   +2.14%    0.82    -1.23%
-       2  1000      51  51.0%   +1.87%    0.71    -1.45%
-    ─────────────────────────────────────────────────────────
-    Mean          49.2  52.1%   +1.95%    0.76    -1.34%
-
-Stability check: if ≥ 2 folds produce negative returns → print UNSTABLE warning.
+Stability check: if >= 2 folds produce negative returns -> logs UNSTABLE warning.
 """
 
 from __future__ import annotations
@@ -57,12 +50,14 @@ _SRC = Path(__file__).parent.parent / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
+from metatrade.core.log import configure_logging, get_logger
 from metatrade.core.enums import Timeframe
 from metatrade.runner.backtest_runner import BacktestResult, BacktestRunner
 from metatrade.runner.config import RunnerConfig
 from metatrade.runner.module_config import ModuleConfig
 from metatrade.runner.module_builder import build_modules
 
+log = get_logger(__name__)
 
 _TIMEFRAME_MAP: dict[str, Timeframe] = {
     "M1": Timeframe.M1,
@@ -115,7 +110,7 @@ def load_bars(args: argparse.Namespace) -> list:
     if args.source == "csv":
         from metatrade.market_data.collectors.csv_collector import CsvCollector
         if args.file is None:
-            print("ERROR: --file is required when --source csv", file=sys.stderr)
+            log.error("missing_csv_file", msg="--file is required when --source csv")
             sys.exit(1)
         collector = CsvCollector()
         bars = collector.collect_file(
@@ -207,7 +202,7 @@ def train_on_window(bars: list, args: argparse.Namespace) -> object | None:
         registry.promote(snap.version)
         return registry
     except Exception as exc:
-        print(f"  [ML training skipped: {exc}]")
+        log.warning("ml_training_skipped", error=str(exc))
         return None
 
 
@@ -259,18 +254,20 @@ def run_fold(
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main() -> None:
+    configure_logging()
     args = parse_args()
 
-    print(f"Loading bars ({args.source}) …")
+    log.info("loading_bars", source=args.source)
     all_bars = load_bars(args)
     n = len(all_bars)
-    print(f"  {n} bars loaded.")
+    log.info("bars_loaded", count=n)
 
     if n < args.folds * 100:
-        print(
-            f"ERROR: Not enough bars ({n}) for {args.folds} folds "
-            f"(need at least {args.folds * 100}).",
-            file=sys.stderr,
+        log.error(
+            "insufficient_bars",
+            count=n,
+            folds=args.folds,
+            required=args.folds * 100,
         )
         sys.exit(1)
 
@@ -278,18 +275,14 @@ def main() -> None:
     train_width = int(fold_width * args.train_pct)
     test_width = fold_width - train_width
 
-    print(f"\nWalk-forward configuration:")
-    print(f"  Folds       : {args.folds}")
-    print(f"  Fold width  : {fold_width} bars")
-    print(f"  Train window: {train_width} bars ({args.train_pct:.0%})")
-    print(f"  Test window : {test_width} bars ({1 - args.train_pct:.0%})")
-    print(f"  ML          : {'disabled' if args.no_ml else 'enabled (retrain each fold)'}")
-    print()
-
-    # ── Header ────────────────────────────────────────────────────────────────
-    col = "{:>5}  {:>5}  {:>7}  {:>6}  {:>9}  {:>8}  {:>8}"
-    print(col.format("Fold", "Bars", "Trades", "Win%", "Return", "Sharpe", "MaxDD"))
-    print("─" * 58)
+    log.info(
+        "walk_forward_config",
+        folds=args.folds,
+        fold_width=fold_width,
+        train_width=train_width,
+        test_width=test_width,
+        ml="disabled" if args.no_ml else "enabled (retrain each fold)",
+    )
 
     fold_results: list[dict] = []
 
@@ -299,76 +292,58 @@ def main() -> None:
         test_bars  = all_bars[start + train_width : start + fold_width]
 
         if len(test_bars) < 50:
-            print(f"  Fold {fold_idx}: skipped (insufficient test bars: {len(test_bars)})")
+            log.warning("fold_skipped", fold=fold_idx, test_bars=len(test_bars))
             continue
 
         metrics = run_fold(fold_idx, train_bars, test_bars, args)
         fold_results.append(metrics)
 
-        win_str = f"{metrics['win_rate']:.1%}" if metrics["n_trades"] > 0 else "  n/a"
-        print(
-            col.format(
-                metrics["fold"],
-                metrics["test_bars"],
-                metrics["n_trades"],
-                win_str,
-                f"{metrics['return_pct']:+.2%}",
-                f"{metrics['sharpe']:.2f}",
-                f"{-metrics['max_dd']:.2%}",
-            )
+        log.info(
+            "fold_result",
+            fold=metrics["fold"],
+            test_bars=metrics["test_bars"],
+            n_trades=metrics["n_trades"],
+            win_rate=f"{metrics['win_rate']:.1%}" if metrics["n_trades"] > 0 else "n/a",
+            return_pct=f"{metrics['return_pct']:+.2%}",
+            sharpe=f"{metrics['sharpe']:.2f}",
+            max_dd=f"{-metrics['max_dd']:.2%}",
         )
 
     if not fold_results:
-        print("No folds completed.")
+        log.warning("no_folds_completed")
         return
 
     # ── Aggregates ────────────────────────────────────────────────────────────
-    print("─" * 58)
     avg_trades  = sum(r["n_trades"] for r in fold_results) / len(fold_results)
     avg_win     = sum(r["win_rate"] for r in fold_results if r["n_trades"] > 0)
     n_with_trades = sum(1 for r in fold_results if r["n_trades"] > 0)
-    avg_win_str = f"{avg_win / n_with_trades:.1%}" if n_with_trades > 0 else "  n/a"
+    avg_win_rate = avg_win / n_with_trades if n_with_trades > 0 else None
     avg_return  = sum(r["return_pct"] for r in fold_results) / len(fold_results)
     avg_sharpe  = sum(r["sharpe"] for r in fold_results) / len(fold_results)
     avg_maxdd   = sum(r["max_dd"] for r in fold_results) / len(fold_results)
 
-    print(
-        col.format(
-            "Mean",
-            "—",
-            f"{avg_trades:.1f}",
-            avg_win_str,
-            f"{avg_return:+.2%}",
-            f"{avg_sharpe:.2f}",
-            f"{-avg_maxdd:.2%}",
-        )
+    log.info(
+        "walk_forward_summary",
+        avg_trades=f"{avg_trades:.1f}",
+        avg_win_rate=f"{avg_win_rate:.1%}" if avg_win_rate is not None else "n/a",
+        avg_return_pct=f"{avg_return:+.2%}",
+        avg_sharpe=f"{avg_sharpe:.2f}",
+        avg_max_dd=f"{-avg_maxdd:.2%}",
     )
-    print()
 
     # ── Stability check ───────────────────────────────────────────────────────
     n_negative = sum(1 for r in fold_results if r["return_pct"] < 0)
     if n_negative >= 2:
-        print(
-            f"⚠️  UNSTABLE: {n_negative}/{len(fold_results)} folds produced negative returns.\n"
-            f"   The system does not generalise consistently across time windows.\n"
-            f"   Consider: tighter risk settings, different consensus threshold,\n"
-            f"   or gathering more training data before going live."
+        log.warning(
+            "stability_unstable",
+            negative_folds=n_negative,
+            total_folds=len(fold_results),
+            msg="system does not generalise consistently across time windows",
         )
     elif n_negative == 1:
-        print(
-            f"⚡ MARGINAL: 1 fold produced a negative return. "
-            f"Monitor closely before going live."
-        )
+        log.warning("stability_marginal", negative_folds=1)
     else:
-        print(
-            f"✅ STABLE: all {len(fold_results)} folds produced positive returns "
-            f"(avg Sharpe {avg_sharpe:.2f})."
-        )
-
-    print()
-    print(f"Avg return : {avg_return:+.2%}")
-    print(f"Avg Sharpe : {avg_sharpe:.2f}")
-    print(f"Avg max DD : {avg_maxdd:.2%}")
+        log.info("stability_stable", folds=len(fold_results), avg_sharpe=avg_sharpe)
 
 
 if __name__ == "__main__":
