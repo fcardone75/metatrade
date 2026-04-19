@@ -223,6 +223,23 @@ def make_module_cfg(args: argparse.Namespace) -> ModuleConfig:
 
 
 _TICK_POLL_SECS = 0.05   # 50 ms polling in tick mode (interval == 0)
+_MARKET_CLOSED_SLEEP_SEC = 900   # 15 min between checks when market is closed
+_RECONNECT_SLEEP_SEC = 30        # wait before MT5 reconnect attempt
+_MAX_RECONNECT_ATTEMPTS = 5
+
+
+def _is_market_closed(dt: datetime) -> bool:
+    """Return True when the forex market is closed (Saturday all day, or Sunday before 22:00 UTC).
+
+    Forex closes Friday ~22:00 UTC and reopens Sunday ~22:00 UTC.
+    This is a conservative check: treats Saturday and Sunday-before-22h as closed.
+    """
+    wd = dt.weekday()  # 0=Mon … 6=Sun
+    if wd == 5:  # Saturday: always closed
+        return True
+    if wd == 6 and dt.hour < 22:  # Sunday before 22:00 UTC
+        return True
+    return False
 
 
 def _print_monitor_action(act: dict) -> None:
@@ -490,6 +507,7 @@ def main() -> None:
 
     poll_interval = args.poll_interval if args.poll_interval > 0 else tf_secs
     _running = [True]
+    _consecutive_errors = [0]
 
     def _stop(sig, frame):
         _running[0] = False
@@ -497,16 +515,63 @@ def main() -> None:
 
     signal.signal(signal.SIGINT, _stop)
 
-    # 4. Live loop
+    def _try_reconnect() -> bool:
+        """Attempt to re-initialize the MT5 collector. Returns True on success."""
+        for attempt in range(1, _MAX_RECONNECT_ATTEMPTS + 1):
+            print(f"  MT5 reconnect attempt {attempt}/{_MAX_RECONNECT_ATTEMPTS} …")
+            try:
+                collector.initialize(
+                    login=args.mt5_login,
+                    password=args.mt5_password,
+                    server=args.mt5_server,
+                    path=args.mt5_path,
+                    timeout=args.mt5_timeout_ms,
+                )
+                print("  MT5 reconnected.")
+                if alerter:
+                    alerter.alert_error("MT5", f"Riconnesso dopo {attempt} tentativo/i.")
+                return True
+            except Exception as exc:
+                log.warning("mt5_reconnect_failed", attempt=attempt, error=str(exc))
+                time.sleep(_RECONNECT_SLEEP_SEC)
+        return False
+
+    # 4. Live loop — runs continuously even when the market is closed (Windows service mode)
     while _running[0]:
-        date_to = datetime.now(timezone.utc)
+        now_utc = datetime.now(timezone.utc)
+
+        # ── Market-closed guard ───────────────────────────────────────────────
+        if _is_market_closed(now_utc):
+            ts_str = now_utc.strftime("%Y-%m-%d %H:%M")
+            print(f"[{ts_str}] Market closed — sleeping {_MARKET_CLOSED_SLEEP_SEC // 60} min …", flush=True)
+            for _ in range(_MARKET_CLOSED_SLEEP_SEC):
+                if not _running[0]:
+                    break
+                time.sleep(1)
+            continue
+
+        date_to = now_utc
         date_from = date_to - timedelta(seconds=tf_secs * 5)
 
         try:
             new_bars = collector.collect(args.symbol, tf, date_from, date_to)
+            _consecutive_errors[0] = 0
         except Exception as exc:
-            log.warning("mt5_fetch_error", error=str(exc))
-            time.sleep(5)
+            _consecutive_errors[0] += 1
+            log.warning("mt5_fetch_error", error=str(exc), consecutive=_consecutive_errors[0])
+            if _consecutive_errors[0] >= 3:
+                print(f"  MT5 fetch failed {_consecutive_errors[0]}x — attempting reconnect …")
+                if not _try_reconnect():
+                    print("  Reconnect failed. Sleeping 5 min before retrying …")
+                    if alerter:
+                        alerter.alert_error("MT5", "Disconnesso — reconnect fallito.")
+                    for _ in range(300):
+                        if not _running[0]:
+                            break
+                        time.sleep(1)
+                _consecutive_errors[0] = 0
+            else:
+                time.sleep(5)
             continue
 
         if last_bar_time is not None:

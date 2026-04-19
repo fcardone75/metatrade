@@ -859,6 +859,83 @@ _AUTO_TUNE_GRID = list(itertools.product(
 ))
 
 
+# ─── Tried-params cache ───────────────────────────────────────────────────────
+
+class TriedParamsCache:
+    """Persist tried (forward_bars, atr_mult) combos so restarts skip them.
+
+    File: ``{model_dir}/{symbol}_tune_cache.json``
+
+    Each entry records the holdout accuracy and when it was tried.  On restart
+    the cache is loaded and already-tried combos are skipped in the grid search.
+    Delete the file to reset the cache and retry all combinations.
+    """
+
+    def __init__(self, model_dir: Path, symbol: str) -> None:
+        self._path = model_dir / f"{symbol}_tune_cache.json"
+        self._data: dict[str, dict] = {}
+        self._load()
+
+    def _key(self, forward_bars: int, atr_mult: float) -> str:
+        return f"{forward_bars}_{atr_mult:.2f}"
+
+    def _load(self) -> None:
+        if self._path.exists():
+            try:
+                with open(self._path, encoding="utf-8") as f:
+                    self._data = json.load(f)
+            except Exception:
+                self._data = {}
+
+    def _save(self) -> None:
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._path, "w", encoding="utf-8") as f:
+                json.dump(self._data, f, indent=2)
+        except Exception as exc:
+            print(f"WARNING: tune cache save failed: {exc}", file=sys.stderr)
+
+    def was_tried(self, forward_bars: int, atr_mult: float) -> bool:
+        return self._key(forward_bars, atr_mult) in self._data
+
+    def get_result(self, forward_bars: int, atr_mult: float) -> dict | None:
+        return self._data.get(self._key(forward_bars, atr_mult))
+
+    def record(
+        self,
+        forward_bars: int,
+        atr_mult: float,
+        holdout: float | None,
+        version: str | None,
+    ) -> None:
+        self._data[self._key(forward_bars, atr_mult)] = {
+            "forward_bars": forward_bars,
+            "atr_mult": atr_mult,
+            "holdout": holdout,
+            "version": version,
+            "tried_at": datetime.now(UTC).isoformat(),
+        }
+        self._save()
+
+    def best_known(self) -> tuple[int, float, float] | None:
+        """Return (forward_bars, atr_mult, holdout) of best cached result, or None."""
+        best = max(
+            (v for v in self._data.values() if v.get("holdout") is not None),
+            key=lambda v: v["holdout"],
+            default=None,
+        )
+        if best is None:
+            return None
+        return best["forward_bars"], best["atr_mult"], best["holdout"]
+
+    def summary(self) -> str:
+        n = len(self._data)
+        best = self.best_known()
+        if best:
+            return f"{n} tried, best holdout {best[2]:.2%} (fwd={best[0]}, atr={best[1]:.2f})"
+        return f"{n} tried, no valid results yet"
+
+
 def auto_tune_single_timeframe(
     *,
     args: argparse.Namespace,
@@ -876,8 +953,12 @@ def auto_tune_single_timeframe(
     target = args.auto_tune_target
     max_trials = min(args.auto_tune_max_trials, len(_AUTO_TUNE_GRID))
 
+    cache = TriedParamsCache(args.model_dir, args.symbol)
+
     print(f"\n=== Auto-tune: {args.symbol} {timeframe} ({n_bars} barre) ===")
     print(f"  holdout={base_ml_cfg.holdout_fraction:.0%}  target={target:.0%}  max_trials={max_trials}")
+    if cache.summary():
+        print(f"  cache: {cache.summary()}")
     print()
 
     # ── Precompute feature cache once ─────────────────────────────────────────
@@ -923,7 +1004,39 @@ def auto_tune_single_timeframe(
         },
     )
 
-    for trial_idx, (fwd, atr_mult) in enumerate(_AUTO_TUNE_GRID[:max_trials]):
+    # Filter out already-tried combos to avoid redundant runs across restarts
+    pending_grid = [
+        (fwd, atr_mult)
+        for fwd, atr_mult in _AUTO_TUNE_GRID[:max_trials]
+        if not cache.was_tried(fwd, atr_mult)
+    ]
+    if len(pending_grid) < len(_AUTO_TUNE_GRID[:max_trials]):
+        skipped = len(_AUTO_TUNE_GRID[:max_trials]) - len(pending_grid)
+        print(f"  Skipping {skipped} combo(s) già testati (da cache).")
+        # If all combos already tried, seed best_* from cache so we can still save
+        best_known = cache.best_known()
+        if best_known is not None and not pending_grid:
+            best_fwd, best_atr, best_holdout_cached = best_known
+            print(f"  Tutti i combo già testati. Miglior noto: fwd={best_fwd}  atr={best_atr}  holdout={best_holdout_cached:.2%}")
+            print("  Nessun nuovo trial da eseguire.")
+            return TimeframeTrainReport(
+                timeframe=timeframe,
+                success=False,
+                error="Auto-tune: tutti i combo già testati in sessioni precedenti.",
+                bars_used=n_bars,
+                duration_sec=round(time.perf_counter() - t0, 3),
+                model_version=None,
+                mean_test_accuracy=None,
+                best_test_accuracy=None,
+                best_fold_index=None,
+                n_folds=0,
+                folds=[],
+                artifact_path=None,
+                holdout_accuracy=best_holdout_cached,
+            )
+        print()
+
+    for trial_idx, (fwd, atr_mult) in enumerate(pending_grid):
         trial_cfg = MLConfig(
             train_window_bars=base_ml_cfg.train_window_bars,
             test_window_bars=base_ml_cfg.test_window_bars,
@@ -956,6 +1069,8 @@ def auto_tune_single_timeframe(
             f"  {holdout_str:>8}  {time.perf_counter()-trial_t0:>7.1f}s{marker}",
             flush=True,
         )
+
+        cache.record(fwd, atr_mult, holdout_acc if holdout_acc is not None else 0.0, None)
 
         if holdout_acc is not None and holdout_acc > best_holdout:
             best_holdout = holdout_acc
@@ -1058,6 +1173,7 @@ def auto_tune_single_timeframe(
         },
     )
     registry.promote(snapshot.version)
+    cache.record(best_cfg.forward_bars, best_cfg.atr_threshold_mult, best_holdout, snapshot.version)
 
     artifact_path = args.model_dir / f"{args.symbol}_{snapshot.version}.pkl"
     duration_sec = round(time.perf_counter() - t0, 3)

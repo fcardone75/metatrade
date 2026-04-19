@@ -94,11 +94,16 @@ class MLConfig(BaseConfig):
     # Whether to automatically launch train.py in the background.
     retrain_enabled: bool = Field(default=False)
 
-    # Trigger mode: "hours" = every N wall-clock hours; "bars" = every N bars.
+    # Trigger mode: "hours" = fixed daily slots; "bars" = every N bars.
     retrain_trigger: str = Field(default="hours")
 
-    # Retrain every N hours (used when retrain_trigger="hours").
-    retrain_every_hours: int = Field(default=6, ge=1)
+    # Interval between training slots in hours (used when trigger="hours").
+    # First slot = retrain_schedule_start_hour, then every N hours.
+    # Example: start=9, every=3 → slots at 09:00, 12:00, 15:00, 18:00, 21:00 UTC.
+    retrain_every_hours: int = Field(default=3, ge=1)
+
+    # UTC hour for the first daily training slot (0–23).  Default 9 = 09:00 UTC.
+    retrain_schedule_start_hour: int = Field(default=9, ge=0, lt=24)
 
     # Retrain every N bars processed (used when retrain_trigger="bars").
     retrain_every_bars: int = Field(default=5000, ge=100)
