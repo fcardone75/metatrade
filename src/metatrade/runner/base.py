@@ -361,6 +361,13 @@ class BaseRunner:
         paused_str = "  ⏸ IN PAUSA\n" if self._paused else ""
         mv = self._model_watcher.state.current_version if self._model_watcher else None
         model_str = f"\n  Modello:   {mv}" if mv else ""
+        retrain_str = ""
+        if self._retrain_scheduler is not None:
+            if self._retrain_scheduler.is_training:
+                retrain_str = "\n  Training:  🔁 in corso"
+            else:
+                nxt = self._retrain_scheduler.next_slot
+                retrain_str = f"\n  Prossimo training: {nxt.strftime('%H:%M UTC')}"
         return (
             f"🤖 <b>MetaTrade — {self._symbol} {self._timeframe or ''}</b>  "
             f"[{self._run_mode.value.upper()}]\n"
@@ -371,6 +378,7 @@ class BaseRunner:
             f"  Trade:     {self._stats.trades_executed}"
             f"{uptime_str}"
             f"{model_str}"
+            f"{retrain_str}"
         )
 
     def _cmd_positions(self, _args: str) -> str:
@@ -468,10 +476,13 @@ class BaseRunner:
 
     def _cmd_retrain(self, _args: str) -> str:
         if self._retrain_scheduler is None:
-            return "⚠️ RetrainScheduler non configurato."
+            return "⚠️ RetrainScheduler non configurato (ML_RETRAIN_ENABLED=false)."
         if self._retrain_scheduler.is_training:
-            return "🔁 Training già in corso."
-        return "⚠️ Retraining manuale: usa il flag ML_RETRAIN_ENABLED e attendi il prossimo trigger."
+            return "🔁 Training già in corso — attendi che finisca."
+        launched = self._retrain_scheduler.trigger_now()
+        if launched:
+            return "🚀 Training avviato manualmente."
+        return "❌ Impossibile avviare il training (script non trovato o errore di sistema)."
 
     def _cmd_pause(self, _args: str) -> str:
         self.pause()

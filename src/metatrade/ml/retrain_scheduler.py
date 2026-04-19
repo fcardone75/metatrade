@@ -169,7 +169,21 @@ class RetrainScheduler:
             return False
         return bar_utc >= self.next_slot
 
+    def trigger_now(self) -> bool:
+        """Force an immediate training run, bypassing the schedule.
+
+        Returns True if the subprocess was launched successfully.
+        """
+        if self.is_training:
+            return False
+        return self._launch_raw(symbol="manual", timeframe="manual")
+
     def _launch(self, bar: Bar) -> bool:
+        symbol = bar.symbol
+        tf = str(bar.timeframe.value) if hasattr(bar.timeframe, "value") else str(bar.timeframe)
+        return self._launch_raw(symbol=symbol, timeframe=tf)
+
+    def _launch_raw(self, symbol: str, timeframe: str) -> bool:
         if not self._script.exists():
             log.warning("retrain_scheduler_script_not_found", path=str(self._script))
             return False
@@ -179,7 +193,7 @@ class RetrainScheduler:
             "retrain_scheduler_launch",
             trigger=self._cfg.retrain_trigger,
             bars_since_last=self._bars_since_last,
-            bar_utc=bar.timestamp_utc.isoformat(),
+            now_utc=datetime.now(UTC).isoformat(),
             cmd=" ".join(cmd[:6]) + " ...",
         )
         try:
@@ -197,8 +211,6 @@ class RetrainScheduler:
         self._last_triggered_slot = self.next_slot
 
         if self._alerter is not None:
-            symbol = bar.symbol
-            tf = str(bar.timeframe.value) if hasattr(bar.timeframe, "value") else str(bar.timeframe)
             unit_val = (
                 self._cfg.retrain_every_bars
                 if self._cfg.retrain_trigger.lower() == "bars"
@@ -206,7 +218,7 @@ class RetrainScheduler:
             )
             self._alerter.alert_retrain_started(
                 symbol=symbol,
-                timeframe=tf,
+                timeframe=timeframe,
                 trigger=self._cfg.retrain_trigger,
                 bars_or_hours=unit_val,
             )
