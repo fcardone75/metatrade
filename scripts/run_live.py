@@ -81,18 +81,18 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--timeframe", default="H1", choices=list(_TIMEFRAME_MAP))
     p.add_argument("--warmup-bars", type=int, default=200, help="Bars to preload on startup")
     p.add_argument("--poll-interval", type=float, default=0, help="Seconds between MT5 polls (0 = auto)")
-    # Risk parameters
-    p.add_argument("--max-risk-pct", type=float, default=0.01, help="Max risk per trade (default 1%%)")
-    p.add_argument("--daily-loss-limit-pct", type=float, default=0.05, help="Daily loss limit (default 5%%)")
-    p.add_argument("--kill-drawdown-pct", type=float, default=0.10, help="Hard kill drawdown (default 10%%)")
-    p.add_argument("--max-open-positions", type=int, default=1, help="Max concurrent positions (default 1)")
+    # Risk parameters (None = use RUNNER_* from .env via apply_runner_defaults)
+    p.add_argument("--max-risk-pct", type=float, default=None, help="Max risk per trade (.env RUNNER_MAX_RISK_PCT if omitted)")
+    p.add_argument("--daily-loss-limit-pct", type=float, default=None, help="Daily loss limit (.env RUNNER_DAILY_LOSS_LIMIT_PCT if omitted)")
+    p.add_argument("--kill-drawdown-pct", type=float, default=None, help="Hard kill drawdown (.env RUNNER_AUTO_KILL_DRAWDOWN_PCT if omitted)")
+    p.add_argument("--max-open-positions", type=int, default=None, help="Max concurrent positions (.env RUNNER_MAX_OPEN_POSITIONS if omitted)")
     # MT5 connection
     p.add_argument("--mt5-login", type=int, default=0)
     p.add_argument("--mt5-password", default="")
     p.add_argument("--mt5-server", default="")
     p.add_argument("--mt5-path", default="", help="Path to terminal64.exe if MT5 is not auto-detected")
     p.add_argument("--mt5-timeout-ms", type=int, default=60000, help="MT5 initialization timeout in milliseconds")
-    p.add_argument("--magic-number", type=int, default=20240601, help="MT5 magic number for order tagging")
+    p.add_argument("--magic-number", type=int, default=None, help="MT5 magic number (.env RUNNER_MAGIC_NUMBER if omitted)")
     p.add_argument(
         "--min-stop-pips",
         type=float,
@@ -150,6 +150,22 @@ def validate_mt5_access_mode(args: argparse.Namespace) -> None:
         "No explicit MT5 credentials provided - using the account currently logged into the MT5 terminal.",
         file=sys.stderr,
     )
+
+
+def apply_runner_defaults(args: argparse.Namespace) -> argparse.Namespace:
+    """Fill risk / magic from .env (RUNNER_*) when CLI flags are omitted."""
+    rc = RunnerConfig.load()
+    if args.max_risk_pct is None:
+        args.max_risk_pct = rc.max_risk_pct
+    if args.daily_loss_limit_pct is None:
+        args.daily_loss_limit_pct = rc.daily_loss_limit_pct
+    if args.kill_drawdown_pct is None:
+        args.kill_drawdown_pct = rc.auto_kill_drawdown_pct
+    if args.max_open_positions is None:
+        args.max_open_positions = rc.max_open_positions
+    if args.magic_number is None:
+        args.magic_number = rc.magic_number
+    return args
 
 
 def apply_mt5_defaults(args: argparse.Namespace) -> argparse.Namespace:
@@ -338,6 +354,7 @@ def build_ml_stack(
 def main() -> None:
     configure_logging()
     args = parse_args()
+    args = apply_runner_defaults(args)
     args = apply_mt5_defaults(args)
     require_confirmation(args)
     validate_mt5_access_mode(args)
@@ -453,7 +470,10 @@ def main() -> None:
         runner._bar_buffer.append(bar)
     if len(runner._bar_buffer) > 500:
         runner._bar_buffer = runner._bar_buffer[-500:]
-    last_bar_time = closed_bars[-1].timestamp_utc if closed_bars else last_bar_time
+    # Ultima barra chiusa nota (None se warmup vuoto / nessuna candela ancora chiusa)
+    last_bar_time: datetime | None = (
+        closed_bars[-1].timestamp_utc if closed_bars else None
+    )
 
     account = broker.get_account()
     print(f"\nLIVE trading started - {args.symbol}/{args.timeframe}")
@@ -469,7 +489,6 @@ def main() -> None:
     print("  Press Ctrl+C to stop.\n")
 
     poll_interval = args.poll_interval if args.poll_interval > 0 else tf_secs
-    last_bar_time: datetime | None = bars[-1].timestamp_utc if bars else None
     _running = [True]
 
     def _stop(sig, frame):
