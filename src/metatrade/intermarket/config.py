@@ -18,6 +18,8 @@ e.g. ``INTERMARKET_ENABLED=true``, ``INTERMARKET_CORR_LOOKBACK_BARS=200``.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from pydantic import Field
 
 from metatrade.core.config_base import BaseConfig
@@ -110,7 +112,7 @@ class IntermarketConfig(BaseConfig):
 
     model_config = {
         "env_prefix": "INTERMARKET_",
-        "env_file": ".env",
+        "env_file": str(Path(__file__).parent.parent.parent.parent / ".env"),
         "env_file_encoding": "utf-8",
         "case_sensitive": False,
         "extra": "ignore",

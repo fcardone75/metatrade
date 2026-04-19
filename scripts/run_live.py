@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import signal
 import sys
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -508,9 +509,11 @@ def main() -> None:
     poll_interval = args.poll_interval if args.poll_interval > 0 else tf_secs
     _running = [True]
     _consecutive_errors = [0]
+    _stop_event = threading.Event()
 
     def _stop(sig, frame):
         _running[0] = False
+        _stop_event.set()
         print("\nStopping ...")
 
     signal.signal(signal.SIGINT, _stop)
@@ -544,10 +547,7 @@ def main() -> None:
         if _is_market_closed(now_utc):
             ts_str = now_utc.strftime("%Y-%m-%d %H:%M")
             print(f"[{ts_str}] Market closed — sleeping {_MARKET_CLOSED_SLEEP_SEC // 60} min …", flush=True)
-            for _ in range(_MARKET_CLOSED_SLEEP_SEC):
-                if not _running[0]:
-                    break
-                time.sleep(1)
+            _stop_event.wait(timeout=_MARKET_CLOSED_SLEEP_SEC)
             continue
 
         date_to = now_utc
@@ -565,10 +565,7 @@ def main() -> None:
                     print("  Reconnect failed. Sleeping 5 min before retrying …")
                     if alerter:
                         alerter.alert_error("MT5", "Disconnesso — reconnect fallito.")
-                    for _ in range(300):
-                        if not _running[0]:
-                            break
-                        time.sleep(1)
+                    _stop_event.wait(timeout=300)
                 _consecutive_errors[0] = 0
             else:
                 time.sleep(5)

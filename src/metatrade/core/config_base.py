@@ -19,10 +19,17 @@ Example:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from pydantic import ConfigDict, ValidationError
 from pydantic_settings import BaseSettings
 
 from metatrade.core.errors import ConfigurationError
+
+# Resolve .env relative to the project root (two levels up from this file:
+# src/metatrade/core/config_base.py → project root).
+# This works regardless of the CWD when the script is launched.
+_ENV_FILE = Path(__file__).parent.parent.parent.parent / ".env"
 
 
 class BaseConfig(BaseSettings):
@@ -30,14 +37,14 @@ class BaseConfig(BaseSettings):
 
     Reads from:
     1. Environment variables
-    2. .env file in the current working directory
+    2. .env file (resolved from project root, not CWD)
     3. Field defaults
 
     In that priority order (env vars win over .env, .env wins over defaults).
     """
 
     model_config = ConfigDict(
-        env_file=".env",
+        env_file=str(_ENV_FILE),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
