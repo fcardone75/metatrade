@@ -113,39 +113,55 @@ def _format_adaptive_progress(data: dict, fold_data: dict | None = None) -> str:
         f"  Aggiornato: {updated} UTC",
     ]
 
-    # ── Fold-level progress for the current attempt ───────────────────────────
-    if fold_data and fold_data.get("status") == "walk_forward":
-        folds_done = fold_data.get("folds_completed", 0)
-        folds_est = fold_data.get("estimated_folds_upper_bound", "?")
-        pct = fold_data.get("progress_pct_approx")
-        last_acc = fold_data.get("test_accuracy_last")
-        elapsed = fold_data.get("elapsed_sec")
-        eta = fold_data.get("eta_sec")
+    # ── Current-attempt progress from training_progress.json ─────────────────
+    if fold_data:
+        fold_status = fold_data.get("status")
 
-        pct_str = f"  {pct:.1f}%" if pct is not None else ""
-        acc_str = f"  last acc={last_acc:.2%}" if last_acc is not None else ""
+        if fold_status == "walk_forward":
+            folds_done = fold_data.get("folds_completed", 0)
+            folds_est = fold_data.get("estimated_folds_upper_bound", "?")
+            pct = fold_data.get("progress_pct_approx")
+            last_acc = fold_data.get("test_accuracy_last")
+            elapsed = fold_data.get("elapsed_sec")
+            eta = fold_data.get("eta_sec")
 
-        if elapsed is not None and elapsed >= 60:
-            elapsed_str = f"{elapsed/60:.1f}m"
-        elif elapsed is not None:
-            elapsed_str = f"{elapsed:.0f}s"
-        else:
-            elapsed_str = ""
+            pct_str = f"  {pct:.1f}%" if pct is not None else ""
+            acc_str = f"  last acc={last_acc:.2%}" if last_acc is not None else ""
 
-        if eta is not None and eta >= 60:
-            eta_str = f"ETA ~{eta/60:.0f}m"
-        elif eta is not None:
-            eta_str = f"ETA ~{eta:.0f}s"
-        else:
-            eta_str = ""
+            if elapsed is not None and elapsed >= 60:
+                el_str = f"{elapsed/60:.1f}m"
+            elif elapsed is not None:
+                el_str = f"{elapsed:.0f}s"
+            else:
+                el_str = ""
 
-        fold_line = f"  Fold corrente: {folds_done}/{folds_est}{pct_str}{acc_str}"
-        time_line = "  " + "  ".join(filter(None, [elapsed_str and f"Elapsed: {elapsed_str}", eta_str]))
-        lines.append("")
-        lines.append("<b>Tentativo in corso:</b>")
-        lines.append(fold_line)
-        if time_line.strip():
-            lines.append(time_line)
+            if eta is not None and eta >= 60:
+                eta_str = f"ETA ~{eta/60:.0f}m"
+            elif eta is not None:
+                eta_str = f"ETA ~{eta:.0f}s"
+            else:
+                eta_str = ""
+
+            fold_line = f"  Fold corrente: {folds_done}/{folds_est}{pct_str}{acc_str}"
+            time_line = "  " + "  ".join(filter(None, [el_str and f"Elapsed: {el_str}", eta_str]))
+            lines.append("")
+            lines.append("<b>Tentativo in corso:</b>")
+            lines.append(fold_line)
+            if time_line.strip():
+                lines.append(time_line)
+
+        elif fold_status == "auto_tune":
+            trials_done = fold_data.get("trials_done", 0)
+            max_trials = fold_data.get("max_trials", "?")
+            best_h = fold_data.get("best_holdout")
+            best_fwd = fold_data.get("best_forward_bars")
+            best_atr = fold_data.get("best_atr_mult")
+            best_str = f"{best_h:.2%}" if best_h is not None else "—"
+            cfg_str = f"  (fwd={best_fwd}, atr={best_atr})" if best_fwd else ""
+            lines.append("")
+            lines.append("<b>Auto-tune in corso:</b>")
+            lines.append(f"  Trial: {trials_done}/{max_trials}")
+            lines.append(f"  Miglior holdout finora: {best_str}{cfg_str}")
 
     attempts = data.get("attempts", [])
     if attempts:
