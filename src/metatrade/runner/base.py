@@ -633,9 +633,17 @@ class BaseRunner:
             idle_msg = f"⏸ Non in training.\nProssimo slot: {nxt.strftime('%Y-%m-%d %H:%M UTC')}"
             if not progress_file.exists():
                 return idle_msg
-            # Show results of last completed run
             try:
                 data = json.loads(progress_file.read_text(encoding="utf-8"))
+                # Detect stale "running" state: process is dead but JSON not updated
+                if data.get("status") == "running":
+                    log.warning("training_progress_stale_running_status")
+                    return (
+                        "💀 <b>Training interrotto inaspettatamente</b>\n"
+                        "(processo terminato senza aggiornare lo stato)\n\n"
+                        + _format_adaptive_progress(data)
+                        + "\n\nUsa /retrain per riavviare o /removetraining per azzerare."
+                    )
                 return idle_msg + "\n\n" + _format_adaptive_progress(data)
             except Exception:
                 return idle_msg
