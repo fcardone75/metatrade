@@ -79,12 +79,27 @@ class RetrainScheduler:
 
         self._bars_since_last += 1
 
+        if self._process is not None and not self.is_training:
+            # Harvest completed process and check exit code
+            exit_code = self._process.poll()
+            symbol = bar.symbol
+            tf = str(bar.timeframe.value) if hasattr(bar.timeframe, "value") else str(bar.timeframe)
+            if exit_code != 0 and self._alerter is not None:
+                self._alerter.alert_retrain_failed(
+                    symbol=symbol,
+                    timeframe=tf,
+                    exit_code=exit_code if exit_code is not None else -1,
+                )
+                log.warning(
+                    "retrain_scheduler_process_failed",
+                    exit_code=exit_code,
+                    symbol=symbol,
+                )
+            self._process = None
+
         # Don't overlap: wait for the previous run to finish
         if self.is_training:
             return False
-        # Harvest completed process
-        if self._process is not None:
-            self._process = None
 
         if self._should_trigger():
             return self._launch(bar)
@@ -124,4 +139,21 @@ class RetrainScheduler:
 
         self._bars_since_last = 0
         self._last_trigger_ts = time.monotonic()
+
+        # Notify via Telegram that retraining has started
+        if self._alerter is not None:
+            symbol = bar.symbol
+            tf = str(bar.timeframe.value) if hasattr(bar.timeframe, "value") else str(bar.timeframe)
+            unit_val = (
+                self._cfg.retrain_every_bars
+                if self._cfg.retrain_trigger.lower() == "bars"
+                else self._cfg.retrain_every_hours
+            )
+            self._alerter.alert_retrain_started(
+                symbol=symbol,
+                timeframe=tf,
+                trigger=self._cfg.retrain_trigger,
+                bars_or_hours=unit_val,
+            )
+
         return True

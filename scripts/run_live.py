@@ -32,10 +32,16 @@ _SRC = Path(__file__).parent.parent / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
+from metatrade.alerting.command_handler import CommandHandler
+from metatrade.alerting.config import AlertConfig
+from metatrade.alerting.telegram_alerter import TelegramAlerter
 from metatrade.core.enums import RunMode, Timeframe
 from metatrade.core.log import configure_logging, get_logger
 from metatrade.ml.config import MLConfig
+from metatrade.ml.live_tracker import LiveAccuracyTracker
+from metatrade.ml.model_watcher import ModelWatcher
 from metatrade.ml.registry import ModelRegistry
+from metatrade.ml.retrain_scheduler import RetrainScheduler
 from metatrade.market_data.config import MarketDataConfig
 from metatrade.runner.config import RunnerConfig
 from metatrade.runner.module_config import ModuleConfig
@@ -268,6 +274,67 @@ def _run_position_monitor(
         time.sleep(min(sleep_secs, max(0.0, remaining)))
 
 
+def build_ml_stack(
+    args: argparse.Namespace,
+    registry: ModelRegistry | None,
+    telemetry: TelemetryStore,
+) -> tuple[TelegramAlerter | None, LiveAccuracyTracker | None, ModelWatcher | None, RetrainScheduler | None, CommandHandler | None]:
+    """Build alerter + ML lifecycle stack from env config."""
+    alert_cfg = AlertConfig()
+    alerter: TelegramAlerter | None = None
+    if alert_cfg.bot_token and alert_cfg.chat_id and alert_cfg.enabled:
+        alerter = TelegramAlerter(alert_cfg)
+        print(f"  Telegram alerts: ON  (chat_id={alert_cfg.chat_id})")
+    else:
+        print("  Telegram alerts: OFF (set ALERT_BOT_TOKEN + ALERT_CHAT_ID in .env)")
+
+    ml_cfg = MLConfig(model_registry_dir=str(args.model_dir))
+
+    tf_minutes = {"M1": 1, "M5": 5, "M15": 15, "M30": 30, "H1": 60, "H4": 240, "D1": 1440}
+    live_tracker = LiveAccuracyTracker(
+        symbol=args.symbol,
+        timeframe=args.timeframe,
+        forward_bars=5,
+        tf_minutes=tf_minutes.get(args.timeframe, 60),
+        telemetry=telemetry,
+        min_samples=ml_cfg.live_accuracy_min_samples,
+    )
+
+    model_watcher: ModelWatcher | None = None
+    if ml_cfg.model_watcher_enabled and registry is not None:
+        model_watcher = ModelWatcher(
+            registry=registry,
+            symbol=args.symbol,
+            config=ml_cfg,
+            alerter=alerter,
+        )
+        print(f"  Model watcher:   ON  (poll ogni {ml_cfg.model_watcher_poll_sec}s)")
+
+    retrain_scheduler: RetrainScheduler | None = None
+    if ml_cfg.retrain_enabled:
+        train_args = [
+            "--source", "mt5",
+            "--symbol", args.symbol,
+            "--timeframe", args.timeframe,
+            "--model-dir", str(args.model_dir),
+            "--holdout-fraction", "0.2",
+        ]
+        retrain_scheduler = RetrainScheduler(
+            config=ml_cfg,
+            train_args=train_args,
+            alerter=alerter,
+        )
+        unit = f"ogni {ml_cfg.retrain_every_hours}h" if ml_cfg.retrain_trigger == "hours" else f"ogni {ml_cfg.retrain_every_bars} barre"
+        print(f"  Retraining:      ON  ({unit})")
+
+    command_handler: CommandHandler | None = None
+    if alerter is not None and alert_cfg.commands_enabled:
+        command_handler = CommandHandler()
+        print(f"  Comandi Telegram: ON  (poll ogni {alert_cfg.poll_interval_sec}s)")
+
+    return alerter, live_tracker, model_watcher, retrain_scheduler, command_handler
+
+
 def main() -> None:
     configure_logging()
     args = parse_args()
@@ -330,6 +397,11 @@ def main() -> None:
     module_cfg = make_module_cfg(args)
     modules = build_modules(args.timeframe.lower(), module_cfg=module_cfg, registry=registry)
 
+    print("\nBuilding ML/alert stack …")
+    alerter, live_tracker, model_watcher, retrain_scheduler, command_handler = (
+        build_ml_stack(args, registry, telemetry)
+    )
+
     runner_cfg = RunnerConfig(
         symbol=args.symbol,
         max_risk_pct=args.max_risk_pct,
@@ -349,10 +421,9 @@ def main() -> None:
         exit_gen = ExitProfileCandidateGenerator()
         exit_sel = ExitProfileSelector()
 
-    # Exit engine — used both by the pipeline (per-bar) and the near-real-time
-    # position monitor (sub-bar, every position_monitor_interval seconds).
+    # Exit engine — wired to alerter for trade-closed notifications
     from metatrade.exit_engine.engine import ExitEngine
-    exit_engine = ExitEngine()
+    exit_engine = ExitEngine(alerter=alerter)
 
     runner = LiveRunner(
         config=runner_cfg,
@@ -363,6 +434,11 @@ def main() -> None:
         timeframe=args.timeframe,
         exit_profile_generator=exit_gen,
         exit_profile_selector=exit_sel,
+        alerter=alerter,
+        live_tracker=live_tracker,
+        model_watcher=model_watcher,
+        retrain_scheduler=retrain_scheduler,
+        command_handler=command_handler,
     )
     runner.connect()
 
@@ -468,8 +544,13 @@ def main() -> None:
 
     # 5. Summary
     runner.disconnect()
-
     stats = runner.stats
+    account = broker.get_account()
+    runner.stop(
+        n_trades=stats.trades_executed,
+        total_pnl=account.equity - account.balance,
+    )
+
     account = broker.get_account()
     print("\n" + "=" * 55)
     print("LIVE TRADING SESSION SUMMARY")

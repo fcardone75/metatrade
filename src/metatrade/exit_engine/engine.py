@@ -27,6 +27,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
+from metatrade.alerting.telegram_alerter import TelegramAlerter
 from metatrade.core.log import get_logger
 from metatrade.exit_engine.config import ExitEngineConfig
 from metatrade.exit_engine.contracts import (
@@ -65,6 +66,7 @@ class ExitEngine:
         cfg: ExitEngineConfig | None = None,
         store: IReputationStore | None = None,
         extra_rules: list[IExitRule] | None = None,
+        alerter: TelegramAlerter | None = None,
     ) -> None:
         self._cfg = cfg or ExitEngineConfig()
         self._reputation = ReputationModel(cfg=self._cfg.reputation, store=store)
@@ -80,6 +82,8 @@ class ExitEngine:
         ]
         if extra_rules:
             self._rules.extend(extra_rules)
+
+        self._alerter = alerter
 
         # Signals accumulated during the lifetime of each open position.
         # Keyed by position_id → list of (ExitSignal, price_at_signal).
@@ -191,6 +195,27 @@ class ExitEngine:
             pnl_pips=float(outcome.pnl_pips),
             rule_updates=updates,
         )
+
+        # Fire Telegram notification for trade close
+        if self._alerter is not None:
+            try:
+                duration_bars = None
+                if outcome.opened_at_utc and outcome.closed_at_utc:
+                    delta = outcome.closed_at_utc - outcome.opened_at_utc
+                    duration_bars = max(1, int(delta.total_seconds() / 60))
+                self._alerter.alert_trade_closed(
+                    symbol=outcome.symbol,
+                    side=outcome.side.value,
+                    pnl=float(outcome.pnl_currency),
+                    exit_reason=outcome.exit_reason,
+                    entry=outcome.entry_price,
+                    exit_price=outcome.exit_price,
+                    pnl_pips=float(outcome.pnl_pips),
+                    duration_bars=duration_bars,
+                )
+            except Exception as exc:
+                log.warning("exit_engine_alert_trade_closed_failed", error=str(exc))
+
         return updates
 
     def apply_decay(self, now: datetime | None = None) -> None:

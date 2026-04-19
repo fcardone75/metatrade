@@ -18,12 +18,17 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
+from metatrade.alerting.command_handler import CommandHandler
+from metatrade.alerting.telegram_alerter import TelegramAlerter
 from metatrade.broker.interface import IBrokerAdapter
 from metatrade.core.contracts.market import Bar
 from metatrade.core.contracts.risk import RiskDecision, RiskVeto
 from metatrade.core.enums import RunMode
 from metatrade.core.log import get_logger
 from metatrade.execution.order_manager import OrderManager
+from metatrade.ml.live_tracker import LiveAccuracyTracker
+from metatrade.ml.model_watcher import ModelWatcher
+from metatrade.ml.retrain_scheduler import RetrainScheduler
 from metatrade.observability.store import TelemetryStore
 from metatrade.runner.base import BaseRunner
 from metatrade.runner.config import RunnerConfig
@@ -61,6 +66,11 @@ class LiveRunner(BaseRunner):
         timeframe: str | None = None,
         exit_profile_generator: object | None = None,
         exit_profile_selector: object | None = None,
+        alerter: TelegramAlerter | None = None,
+        live_tracker: LiveAccuracyTracker | None = None,
+        model_watcher: ModelWatcher | None = None,
+        retrain_scheduler: RetrainScheduler | None = None,
+        command_handler: CommandHandler | None = None,
     ) -> None:
         super().__init__(
             config,
@@ -70,6 +80,12 @@ class LiveRunner(BaseRunner):
             timeframe=timeframe,
             exit_profile_generator=exit_profile_generator,
             exit_profile_selector=exit_profile_selector,
+            alerter=alerter,
+            live_tracker=live_tracker,
+            model_watcher=model_watcher,
+            retrain_scheduler=retrain_scheduler,
+            command_handler=command_handler,
+            run_mode=RunMode.LIVE,
         )
         self._broker = broker
         self._order_manager = order_manager or OrderManager(

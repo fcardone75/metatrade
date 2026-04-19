@@ -18,8 +18,8 @@ from metatrade.alerting.telegram_alerter import TelegramAlerter
 class TestAlertConfig:
     def test_defaults(self) -> None:
         cfg = AlertConfig()
-        assert cfg.bot_token is None
-        assert cfg.chat_id is None
+        assert cfg.bot_token == ""
+        assert cfg.chat_id == ""
         assert cfg.enabled is True
         assert cfg.min_pnl_alert == pytest.approx(0.0)
         assert cfg.timeout_secs == 5
@@ -44,11 +44,11 @@ class TestAlertConfig:
 
 class TestIsActive:
     def test_inactive_without_token(self) -> None:
-        a = TelegramAlerter(AlertConfig(bot_token=None, chat_id="123"))
+        a = TelegramAlerter(AlertConfig(bot_token="", chat_id="123"))
         assert not a._is_active()
 
     def test_inactive_without_chat_id(self) -> None:
-        a = TelegramAlerter(AlertConfig(bot_token="tok", chat_id=None))
+        a = TelegramAlerter(AlertConfig(bot_token="tok", chat_id=""))
         assert not a._is_active()
 
     def test_inactive_when_disabled(self) -> None:
@@ -214,9 +214,20 @@ class TestAlertHelpers:
 
     def test_daily_summary(self) -> None:
         alerter = self._alerter()
-        msg = self._capture_message(
-            alerter, alerter.send_daily_summary, 15, 250.0, 0.60, 10250.0
+        captured: list[str] = []
+        alerter._post = lambda t: captured.append(t)  # type: ignore[assignment]
+        alerter.alert_daily_summary(
+            symbol="EURUSD",
+            timeframe="M1",
+            n_trades=15,
+            total_pnl=250.0,
+            pnl_pips=None,
+            win_rate=0.60,
+            max_dd=0.0,
+            balance=10250.0,
         )
+        assert captured, "No message sent"
+        msg = captured[0]
         assert "📊" in msg
         assert "15" in msg
         assert "60.0%" in msg
@@ -232,4 +243,13 @@ class TestAlertHelpers:
         )
         alerter.alert_trade_closed("EURUSD", "BUY", Decimal("50.00"), "tp")
         alerter.alert_drawdown(Decimal("9500"), Decimal("10000"), 0.05)
-        alerter.send_daily_summary(5, Decimal("100.00"), 0.6, Decimal("10100.00"))
+        alerter.alert_daily_summary(
+            symbol="EURUSD",
+            timeframe="M1",
+            n_trades=5,
+            total_pnl=Decimal("100.00"),
+            pnl_pips=None,
+            win_rate=0.6,
+            max_dd=Decimal("0"),
+            balance=Decimal("10100.00"),
+        )

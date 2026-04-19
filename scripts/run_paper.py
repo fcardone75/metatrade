@@ -33,10 +33,16 @@ _SRC = Path(__file__).parent.parent / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
+from metatrade.alerting.command_handler import CommandHandler
+from metatrade.alerting.config import AlertConfig
+from metatrade.alerting.telegram_alerter import TelegramAlerter
 from metatrade.core.enums import Timeframe
 from metatrade.core.log import configure_logging, get_logger
 from metatrade.ml.config import MLConfig
+from metatrade.ml.live_tracker import LiveAccuracyTracker
+from metatrade.ml.model_watcher import ModelWatcher
 from metatrade.ml.registry import ModelRegistry
+from metatrade.ml.retrain_scheduler import RetrainScheduler
 from metatrade.market_data.config import MarketDataConfig
 from metatrade.runner.config import RunnerConfig
 from metatrade.runner.module_config import ModuleConfig
@@ -149,6 +155,76 @@ def apply_mt5_defaults(args: argparse.Namespace) -> argparse.Namespace:
     return args
 
 
+def build_ml_stack(
+    args: argparse.Namespace,
+    registry: ModelRegistry | None,
+    telemetry: TelemetryStore,
+) -> tuple[TelegramAlerter | None, LiveAccuracyTracker | None, ModelWatcher | None, RetrainScheduler | None, CommandHandler | None]:
+    """Build alerter + ML lifecycle stack from env config.
+
+    Returns (alerter, live_tracker, model_watcher, retrain_scheduler, command_handler).
+    All components are None when their respective env flags are disabled.
+    """
+    alert_cfg = AlertConfig()
+    alerter: TelegramAlerter | None = None
+    if alert_cfg.bot_token and alert_cfg.chat_id and alert_cfg.enabled:
+        alerter = TelegramAlerter(alert_cfg)
+        print(f"  Telegram alerts: ON  (chat_id={alert_cfg.chat_id})")
+    else:
+        print("  Telegram alerts: OFF (set ALERT_BOT_TOKEN + ALERT_CHAT_ID in .env to enable)")
+
+    ml_cfg = MLConfig(model_registry_dir=str(args.model_dir))
+
+    live_tracker: LiveAccuracyTracker | None = None
+    tf_minutes = {"M1": 1, "M5": 5, "M15": 15, "M30": 30, "H1": 60, "H4": 240, "D1": 1440}
+    live_tracker = LiveAccuracyTracker(
+        symbol=args.symbol,
+        timeframe=args.timeframe,
+        forward_bars=5,
+        tf_minutes=tf_minutes.get(args.timeframe, 60),
+        telemetry=telemetry,
+        min_samples=ml_cfg.live_accuracy_min_samples,
+    )
+
+    model_watcher: ModelWatcher | None = None
+    if ml_cfg.model_watcher_enabled and registry is not None:
+        model_watcher = ModelWatcher(
+            registry=registry,
+            symbol=args.symbol,
+            config=ml_cfg,
+            alerter=alerter,
+        )
+        print(f"  Model watcher:   ON  (poll every {ml_cfg.model_watcher_poll_sec}s, min holdout {ml_cfg.candidate_min_holdout:.0%})")
+    else:
+        print("  Model watcher:   OFF (set ML_MODEL_WATCHER_ENABLED=true to enable)")
+
+    retrain_scheduler: RetrainScheduler | None = None
+    if ml_cfg.retrain_enabled:
+        train_args = [
+            "--source", "mt5",
+            "--symbol", args.symbol,
+            "--timeframe", args.timeframe,
+            "--model-dir", str(args.model_dir),
+            "--holdout-fraction", "0.2",
+        ]
+        retrain_scheduler = RetrainScheduler(
+            config=ml_cfg,
+            train_args=train_args,
+            alerter=alerter,
+        )
+        unit = f"every {ml_cfg.retrain_every_hours}h" if ml_cfg.retrain_trigger == "hours" else f"every {ml_cfg.retrain_every_bars} bars"
+        print(f"  Retraining:      ON  ({unit})")
+    else:
+        print("  Retraining:      OFF (set ML_RETRAIN_ENABLED=true + ML_RETRAIN_EVERY_HOURS=3 to enable)")
+
+    command_handler: CommandHandler | None = None
+    if alerter is not None and alert_cfg.commands_enabled:
+        command_handler = CommandHandler()
+        print(f"  Telegram commands: ON  (poll every {alert_cfg.poll_interval_sec}s)")
+
+    return alerter, live_tracker, model_watcher, retrain_scheduler, command_handler
+
+
 def main() -> None:
     configure_logging()
     args = parse_args()
@@ -200,6 +276,11 @@ def main() -> None:
         module_cfg = make_module_cfg(args)
         modules = build_modules(args.timeframe.lower(), module_cfg=module_cfg, registry=registry)
 
+        print("\nBuilding ML/alert stack …")
+        alerter, live_tracker, model_watcher, retrain_scheduler, command_handler = (
+            build_ml_stack(args, registry, telemetry)
+        )
+
         runner_cfg = RunnerConfig(
             symbol=args.symbol,
             max_risk_pct=args.max_risk_pct,
@@ -211,6 +292,11 @@ def main() -> None:
             telemetry=telemetry,
             session_id=session_id,
             timeframe=args.timeframe,
+            alerter=alerter,
+            live_tracker=live_tracker,
+            model_watcher=model_watcher,
+            retrain_scheduler=retrain_scheduler,
+            command_handler=command_handler,
         )
 
         # Pre-fill buffer with warmup bars (without triggering signals)
@@ -271,6 +357,12 @@ def main() -> None:
             time.sleep(poll_interval)
 
         # ── 5. Summary ────────────────────────────────────────────────────────
+        if runner is not None:
+            account_final = runner.broker.get_account()
+            runner.stop(
+                n_trades=runner.stats.trades_executed,
+                total_pnl=account_final.equity - account_final.balance,
+            )
         account = runner.broker.get_account()
         stats = runner.stats
         print("\n" + "=" * 50)

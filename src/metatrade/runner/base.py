@@ -16,6 +16,8 @@ from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
+from metatrade.alerting.command_handler import CommandHandler
+from metatrade.alerting.command_receiver import TelegramCommandReceiver
 from metatrade.alerting.telegram_alerter import TelegramAlerter
 from metatrade.consensus.adaptive_threshold import AdaptiveThresholdManager
 from metatrade.core.utils.session import is_in_session
@@ -79,6 +81,9 @@ class BaseRunner:
         live_tracker: LiveAccuracyTracker | None = None,
         model_watcher: ModelWatcher | None = None,
         retrain_scheduler: RetrainScheduler | None = None,
+        command_handler: CommandHandler | None = None,
+        run_mode: RunMode = RunMode.PAPER,
+        symbol: str | None = None,
     ) -> None:
         """
         Args:
@@ -195,6 +200,29 @@ class BaseRunner:
         self._model_watcher = model_watcher
         self._retrain_scheduler = retrain_scheduler
 
+        # ── Command handler and receiver (optional) ────────────────────────────
+        self._command_handler = command_handler
+        self._command_receiver: TelegramCommandReceiver | None = None
+        if command_handler is not None and alerter is not None:
+            self._command_receiver = TelegramCommandReceiver(
+                config=alerter._cfg,
+                handler=command_handler,
+            )
+            self._register_commands()
+
+        # ── Session / pause state ──────────────────────────────────────────────
+        self._paused: bool = False
+        self._run_mode: RunMode = run_mode
+        self._symbol: str = symbol or config.symbol
+        self._session_started: bool = False
+        self._session_start_time: datetime | None = None
+        self._last_account: AccountState | None = None
+
+        # ── Daily summary deduplication ────────────────────────────────────────
+        # Store the last date for which the daily summary was sent so we
+        # fire it exactly once per UTC day at daily_summary_hour_utc.
+        self._daily_summary_sent_date: date | None = None
+
     @property
     def stats(self) -> RunStats:
         return self._stats
@@ -234,6 +262,233 @@ class BaseRunner:
         avg = sum(weights) / len(weights)
         # 5 → 0.0, 50 → 0.5, 95 → 1.0
         return max(0.0, min(1.0, (avg - 5.0) / 90.0))
+
+    # ── Session lifecycle ──────────────────────────────────────────────────────
+
+    def start(self, balance: Decimal | None = None, model_version: str | None = None) -> None:
+        """Notify session start and begin background services."""
+        if self._command_receiver is not None:
+            self._command_receiver.start()
+        if self._alerter is not None and not self._session_started:
+            acc_balance = balance or (self._last_account.balance if self._last_account else Decimal("0"))
+            sess_filter = None
+            start_h = self._config.session_filter_utc_start
+            end_h = self._config.session_filter_utc_end
+            if start_h is not None and end_h is not None:
+                sess_filter = f"{start_h:02d}:00–{end_h:02d}:00 UTC"
+            self._alerter.alert_session_start(
+                mode=self._run_mode.value,
+                symbol=self._symbol,
+                timeframe=self._timeframe or "",
+                balance=acc_balance,
+                model_version=model_version,
+                session_filter=sess_filter,
+            )
+        self._session_started = True
+        self._session_start_time = datetime.now(UTC)
+
+    def stop(
+        self,
+        n_trades: int | None = None,
+        total_pnl: float | Decimal = Decimal("0"),
+        win_rate: float | None = None,
+    ) -> None:
+        """Notify session end and stop background services."""
+        if self._command_receiver is not None:
+            self._command_receiver.stop()
+        if self._alerter is not None:
+            balance = self._last_account.balance if self._last_account else Decimal("0")
+            duration_min = None
+            if self._session_start_time is not None:
+                elapsed = datetime.now(UTC) - self._session_start_time
+                duration_min = int(elapsed.total_seconds() / 60)
+            self._alerter.alert_session_end(
+                mode=self._run_mode.value,
+                symbol=self._symbol,
+                n_trades=n_trades if n_trades is not None else self._stats.trades_executed,
+                total_pnl=total_pnl,
+                win_rate=win_rate,
+                balance=balance,
+                duration_min=duration_min,
+            )
+        self._session_started = False
+
+    # ── Pause / resume ─────────────────────────────────────────────────────────
+
+    def pause(self) -> None:
+        """Pause new trade entries (exits continue unaffected)."""
+        self._paused = True
+        log.info("runner_paused", symbol=self._symbol)
+
+    def resume(self) -> None:
+        """Resume new trade entries after a pause."""
+        self._paused = False
+        log.info("runner_resumed", symbol=self._symbol)
+
+    # ── Command registration ───────────────────────────────────────────────────
+
+    def _register_commands(self) -> None:
+        """Register runner command callbacks in the CommandHandler."""
+        if self._command_handler is None:
+            return
+        ch = self._command_handler
+        ch.register("/status",    self._cmd_status)
+        ch.register("/positions", self._cmd_positions)
+        ch.register("/balance",   self._cmd_balance)
+        ch.register("/model",     self._cmd_model)
+        ch.register("/accuracy",  self._cmd_accuracy)
+        ch.register("/daily",     self._cmd_daily)
+        ch.register("/retrain",   self._cmd_retrain)
+        ch.register("/pause",     self._cmd_pause)
+        ch.register("/resume",    self._cmd_resume)
+        ch.register("/stop",      self._cmd_stop)
+
+    # ── Command callbacks ──────────────────────────────────────────────────────
+
+    def _cmd_status(self, _args: str) -> str:
+        acc = self._last_account
+        if acc is None:
+            return "🤖 MetaTrade — nessun dato disponibile (nessuna barra processata)."
+        uptime_str = ""
+        if self._session_start_time is not None:
+            elapsed = datetime.now(UTC) - self._session_start_time
+            h, rem = divmod(int(elapsed.total_seconds()), 3600)
+            m = rem // 60
+            uptime_str = f"\n  Uptime:    {h}h {m}m"
+        paused_str = "  ⏸ IN PAUSA\n" if self._paused else ""
+        mv = self._model_watcher.state.current_version if self._model_watcher else None
+        model_str = f"\n  Modello:   {mv}" if mv else ""
+        return (
+            f"🤖 <b>MetaTrade — {self._symbol} {self._timeframe or ''}</b>  "
+            f"[{self._run_mode.value.upper()}]\n"
+            f"{paused_str}"
+            f"  Balance:   ${float(acc.balance):.2f}\n"
+            f"  Equity:    ${float(acc.equity):.2f}\n"
+            f"  Posizioni: {acc.open_positions_count}\n"
+            f"  Trade:     {self._stats.trades_executed}"
+            f"{uptime_str}"
+            f"{model_str}"
+        )
+
+    def _cmd_positions(self, _args: str) -> str:
+        acc = self._last_account
+        n = acc.open_positions_count if acc else 0
+        return f"📋 <b>Posizioni aperte ({n})</b>\n\nDettagli disponibili tramite il broker."
+
+    def _cmd_balance(self, _args: str) -> str:
+        acc = self._last_account
+        if acc is None:
+            return "⚠️ Nessun dato account disponibile."
+        dd_str = ""
+        if self._peak_equity > Decimal("0"):
+            dd_pct = float((self._peak_equity - acc.equity) / self._peak_equity) * 100
+            dd_str = f"\n  DD curr:   {dd_pct:.2f}%"
+        return (
+            f"💰 <b>Account snapshot</b>\n"
+            f"  Balance:   ${float(acc.balance):.2f}\n"
+            f"  Equity:    ${float(acc.equity):.2f}\n"
+            f"  Free margin: ${float(acc.free_margin):.2f}\n"
+            f"  Used margin: ${float(acc.used_margin):.2f}"
+            f"{dd_str}"
+        )
+
+    def _cmd_model(self, _args: str) -> str:
+        if self._model_watcher is None:
+            return "🧠 ModelWatcher non configurato."
+        state = self._model_watcher.state
+        mv = state.current_version or "nessuno"
+        h_str = f"{state.current_holdout:.1%}" if state.current_holdout else "n/a"
+        live_str = ""
+        if self._live_tracker is not None and state.current_version:
+            stats = self._live_tracker.live_accuracy_stats(state.current_version)
+            reliable = "✅" if stats.is_reliable else "⏳"
+            live_str = (
+                f"\n  Live acc:  {stats.accuracy:.1%}  "
+                f"({stats.n_correct}/{stats.n_evaluated}) {reliable}"
+            )
+        return (
+            f"🧠 <b>Modello attivo</b> — {self._symbol}\n"
+            f"  Versione:  {mv}\n"
+            f"  Holdout:   {h_str}"
+            f"{live_str}"
+        )
+
+    def _cmd_accuracy(self, _args: str) -> str:
+        if self._live_tracker is None:
+            return "📊 LiveAccuracyTracker non configurato."
+        mv = (
+            self._model_watcher.state.current_version
+            if self._model_watcher else None
+        )
+        if not mv:
+            return "📊 Nessun modello attivo."
+        stats = self._live_tracker.live_accuracy_stats(mv)
+        reliable = "✅ affidabile" if stats.is_reliable else f"⏳ ({stats.n_evaluated}/{stats.min_samples})"
+        return (
+            f"📊 <b>Accuracy live</b> — {self._symbol}\n"
+            f"  Modello:   {mv}\n"
+            f"  Valutati:  {stats.n_evaluated}  {reliable}\n"
+            f"  Corretti:  {stats.n_correct}\n"
+            f"  Pending:   {stats.n_pending}\n"
+            f"  Accuracy:  {stats.accuracy:.1%}"
+        )
+
+    def _cmd_daily(self, _args: str) -> str:
+        if self._alerter is None:
+            return "⚠️ Alerter non configurato."
+        if self._last_account is None:
+            return "⚠️ Nessun dato disponibile."
+        mv = (
+            self._model_watcher.state.current_version
+            if self._model_watcher else None
+        )
+        live_acc = None
+        live_n = None
+        if self._live_tracker is not None and mv:
+            stats = self._live_tracker.live_accuracy_stats(mv)
+            live_acc = stats.accuracy
+            live_n = stats.n_evaluated
+        self._alerter.alert_daily_summary(
+            symbol=self._symbol,
+            timeframe=self._timeframe or "",
+            n_trades=self._stats.trades_executed,
+            total_pnl=Decimal("0"),
+            pnl_pips=None,
+            win_rate=0.0,
+            max_dd=Decimal("0"),
+            balance=self._last_account.balance,
+            model_version=mv,
+            live_accuracy=live_acc,
+            live_samples=live_n,
+        )
+        return "📊 Riepilogo giornaliero inviato."
+
+    def _cmd_retrain(self, _args: str) -> str:
+        if self._retrain_scheduler is None:
+            return "⚠️ RetrainScheduler non configurato."
+        if self._retrain_scheduler.is_training:
+            return "🔁 Training già in corso."
+        return "⚠️ Retraining manuale: usa il flag ML_RETRAIN_ENABLED e attendi il prossimo trigger."
+
+    def _cmd_pause(self, _args: str) -> str:
+        self.pause()
+        from datetime import datetime as _dt
+        now = _dt.now(UTC).strftime("%H:%M UTC")
+        return f"⏸ Runner in pausa — nuove entry bloccate.\nOra: {now}\nUsa /resume per riprendere."
+
+    def _cmd_resume(self, _args: str) -> str:
+        self.resume()
+        from datetime import datetime as _dt
+        now = _dt.now(UTC).strftime("%H:%M UTC")
+        return f"▶️ Runner ripreso — nuove entry abilitate.\nOra: {now}"
+
+    def _cmd_stop(self, _args: str) -> str:
+        self.pause()
+        log.warning("runner_stop_via_telegram")
+        return (
+            "🛑 <b>Stop confermato.</b>\n"
+            "Il runner è in pausa. Chiudi manualmente il processo per uno stop completo."
+        )
 
     def _compute_dynamic_position_cap(self, account: AccountState) -> int:
         """Compute the effective max-open-positions cap for this bar.
@@ -362,6 +617,12 @@ class BaseRunner:
                     reason=reason,
                     activated_by=activated_by,
                 )
+                if self._alerter is not None:
+                    self._alerter.alert_kill_switch(
+                        level=str(ks_level.name),
+                        reason=reason,
+                        activated_by=activated_by,
+                    )
         elif self._risk.kill_switch.is_active():
             try:
                 self._risk.kill_switch.reset(activated_by=activated_by)
@@ -436,7 +697,45 @@ class BaseRunner:
             open_positions_count=open_positions,
             run_mode=run_mode,
         )
+        self._last_account = account
         self._record_account_snapshot(account)
+
+        # ── Auto session start (first bar) ────────────────────────────────────
+        if not self._session_started:
+            self.start(balance=account_balance)
+
+        # ── Daily summary trigger ─────────────────────────────────────────────
+        if self._alerter is not None:
+            cfg_hour = getattr(self._alerter._cfg, "daily_summary_hour_utc", None)
+            if (
+                cfg_hour is not None
+                and timestamp_utc.hour == cfg_hour
+                and self._daily_summary_sent_date != timestamp_utc.date()
+            ):
+                self._daily_summary_sent_date = timestamp_utc.date()
+                mv = (
+                    self._model_watcher.state.current_version
+                    if self._model_watcher else None
+                )
+                live_acc = None
+                live_n = None
+                if self._live_tracker is not None and mv:
+                    _s = self._live_tracker.live_accuracy_stats(mv)
+                    live_acc = _s.accuracy
+                    live_n = _s.n_evaluated
+                self._alerter.alert_daily_summary(
+                    symbol=self._symbol,
+                    timeframe=self._timeframe or "",
+                    n_trades=self._stats.trades_executed,
+                    total_pnl=Decimal("0"),
+                    pnl_pips=None,
+                    win_rate=0.0,
+                    max_dd=Decimal("0"),
+                    balance=account_balance,
+                    model_version=mv,
+                    live_accuracy=live_acc,
+                    live_samples=live_n,
+                )
 
         # Compute the dynamic position cap once per bar so the risk manager
         # can use margin health, drawdown, and system confidence together.
@@ -473,6 +772,12 @@ class BaseRunner:
                     float(daily_loss),
                     float(daily_limit),
                 )
+                if self._alerter is not None:
+                    self._alerter.alert_daily_loss_limit(
+                        loss=daily_loss,
+                        limit=daily_limit,
+                        balance=account_balance,
+                    )
                 return None
 
         # ── Guard: signal cooldown ────────────────────────────────────────────
@@ -501,6 +806,12 @@ class BaseRunner:
                 )
                 return None
 
+        # ── Guard: manual pause ───────────────────────────────────────────────
+        # /pause command blocks new entries; exits continue unaffected.
+        if self._paused:
+            log.debug("runner_paused: skipping new entry for this bar")
+            return None
+
         current_close = bars[-1].close
 
         # ── Step 1a: Evaluate past signals against current price ──────────────
@@ -525,6 +836,11 @@ class BaseRunner:
                     module.module_id,
                     exc,
                 )
+                if self._alerter is not None:
+                    self._alerter.alert_error(
+                        source=f"module:{module.module_id}",
+                        error=str(exc),
+                    )
 
         if not signals:
             return None
@@ -650,6 +966,13 @@ class BaseRunner:
             )
             if dd_pct >= self._config.drawdown_recovery_threshold_pct:
                 in_recovery = True
+                if self._alerter is not None:
+                    self._alerter.alert_drawdown(
+                        equity=account_equity,
+                        peak=self._peak_equity,
+                        dd_pct=dd_pct,
+                        recovery_mode=True,
+                    )
                 log.debug(
                     "drawdown_recovery: equity=%.2f peak=%.2f dd=%.2f%% — "
                     "scaling risk by %.2f",
@@ -727,6 +1050,12 @@ class BaseRunner:
                 and "KILL_SWITCH" in decision.veto.veto_code
             ):
                 self._stats.kill_switch_activations += 1
+                if self._alerter is not None:
+                    self._alerter.alert_kill_switch(
+                        level=decision.veto.veto_code,
+                        reason=decision.veto.reason,
+                        activated_by="risk_manager",
+                    )
 
         self._record_decision(signals, consensus_result, decision, run_mode)
         return decision

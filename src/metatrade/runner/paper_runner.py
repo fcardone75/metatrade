@@ -11,9 +11,15 @@ from __future__ import annotations
 import logging
 from decimal import Decimal
 
+from metatrade.alerting.command_handler import CommandHandler
+from metatrade.alerting.telegram_alerter import TelegramAlerter
 from metatrade.broker.paper_broker import PaperBrokerAdapter as PaperBroker
 from metatrade.core.contracts.market import Bar
 from metatrade.core.contracts.risk import RiskDecision, RiskVeto
+from metatrade.core.enums import RunMode
+from metatrade.ml.live_tracker import LiveAccuracyTracker
+from metatrade.ml.model_watcher import ModelWatcher
+from metatrade.ml.retrain_scheduler import RetrainScheduler
 from metatrade.observability.store import TelemetryStore
 from metatrade.runner.base import BaseRunner
 from metatrade.runner.config import RunnerConfig
@@ -42,6 +48,11 @@ class PaperRunner(BaseRunner):
         telemetry: TelemetryStore | None = None,
         session_id: str | None = None,
         timeframe: str | None = None,
+        alerter: TelegramAlerter | None = None,
+        live_tracker: LiveAccuracyTracker | None = None,
+        model_watcher: ModelWatcher | None = None,
+        retrain_scheduler: RetrainScheduler | None = None,
+        command_handler: CommandHandler | None = None,
     ) -> None:
         super().__init__(
             config,
@@ -49,6 +60,12 @@ class PaperRunner(BaseRunner):
             telemetry=telemetry,
             session_id=session_id,
             timeframe=timeframe,
+            alerter=alerter,
+            live_tracker=live_tracker,
+            model_watcher=model_watcher,
+            retrain_scheduler=retrain_scheduler,
+            command_handler=command_handler,
+            run_mode=RunMode.PAPER,
         )
         if broker is None:
             from metatrade.broker.paper_broker import PaperBrokerAdapter
