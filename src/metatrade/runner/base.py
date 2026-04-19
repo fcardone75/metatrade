@@ -209,6 +209,9 @@ class BaseRunner:
                 handler=command_handler,
             )
             self._register_commands()
+            # Start immediately so commands work even before the first bar
+            # (e.g. weekends, market closed, startup phase).
+            self._command_receiver.start()
 
         # ── Session / pause state ──────────────────────────────────────────────
         self._paused: bool = False
