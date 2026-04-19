@@ -14,7 +14,6 @@ third-party Telegram user cannot trigger runner callbacks.
 from __future__ import annotations
 
 import json
-import logging
 import threading
 import urllib.error
 import urllib.parse
@@ -22,8 +21,9 @@ import urllib.request
 
 from metatrade.alerting.command_handler import CommandHandler
 from metatrade.alerting.config import AlertConfig
+from metatrade.core.log import get_logger
 
-log = logging.getLogger(__name__)
+log = get_logger(__name__)
 
 _TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
 
