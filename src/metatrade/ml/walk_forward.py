@@ -43,6 +43,7 @@ from datetime import datetime
 from typing import Any
 
 from metatrade.core.contracts.market import Bar
+from metatrade.core.utils.session import is_in_session
 from metatrade.ml.classifier import ClassifierMetrics, MLClassifier
 from metatrade.ml.config import MLConfig
 from metatrade.ml.features import (
@@ -114,10 +115,7 @@ def _align_htf_window(
 
 def _in_session(bar: Bar, start_utc: int, end_utc: int) -> bool:
     """True if bar's UTC hour is in [start_utc, end_utc). Handles overnight wrap."""
-    h = bar.timestamp_utc.hour
-    if start_utc < end_utc:
-        return start_utc <= h < end_utc
-    return h >= start_utc or h < end_utc
+    return is_in_session(bar.timestamp_utc, start_utc, end_utc)
 
 
 class WalkForwardTrainer:

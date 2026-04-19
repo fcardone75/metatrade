@@ -12,9 +12,11 @@ Design:
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from metatrade.ml.classifier import ClassifierMetrics, MLClassifier
@@ -143,18 +145,55 @@ class ModelRegistry:
     # ── Persistence ───────────────────────────────────────────────────────────
 
     def _write_to_disk(self, snapshot: ModelSnapshot) -> None:
-        """Serialize and atomically write a snapshot to disk."""
+        """Serialize and atomically write a snapshot + manifest to disk."""
         registry_dir = self._config.model_registry_dir
         os.makedirs(registry_dir, exist_ok=True)
 
-        filename = f"{snapshot.symbol}_{snapshot.version}.pkl"
-        target_path = os.path.join(registry_dir, filename)
-        tmp_path = target_path + ".tmp"
+        stem = f"{snapshot.symbol}_{snapshot.version}"
+        pkl_path = os.path.join(registry_dir, f"{stem}.pkl")
+        meta_path = os.path.join(registry_dir, f"{stem}_meta.json")
 
+        # Write model bytes
         data = snapshot.classifier.serialize()
-        with open(tmp_path, "wb") as f:
+        tmp_pkl = pkl_path + ".tmp"
+        with open(tmp_pkl, "wb") as f:
             f.write(data)
-        os.replace(tmp_path, target_path)  # atomic on POSIX
+        os.replace(tmp_pkl, pkl_path)
+
+        # Write metadata manifest (holdout_accuracy and tags readable without loading model)
+        manifest = {
+            "version": snapshot.version,
+            "symbol": snapshot.symbol,
+            "created_at": snapshot.created_at,
+            "tags": snapshot.tags,
+        }
+        tmp_meta = meta_path + ".tmp"
+        with open(tmp_meta, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2)
+        os.replace(tmp_meta, meta_path)
+
+    @classmethod
+    def list_disk_snapshots(cls, registry_dir: str, symbol: str) -> list[dict[str, Any]]:
+        """Return metadata for all persisted snapshots for a symbol, newest first.
+
+        Each entry is the manifest dict (version, symbol, created_at, tags).
+        Only manifests with a corresponding .pkl file are included.
+        """
+        d = Path(registry_dir)
+        if not d.exists():
+            return []
+        results: list[dict[str, Any]] = []
+        for meta_path in d.glob(f"{symbol}_*_meta.json"):
+            pkl_path = meta_path.with_name(meta_path.name.replace("_meta.json", ".pkl"))
+            if not pkl_path.exists():
+                continue
+            try:
+                manifest = json.loads(meta_path.read_text(encoding="utf-8"))
+                results.append(manifest)
+            except (json.JSONDecodeError, OSError):
+                continue
+        results.sort(key=lambda m: m.get("created_at", 0.0), reverse=True)
+        return results
 
     def load_from_disk(self, symbol: str, version: str) -> ModelSnapshot | None:
         """Load a previously persisted model from disk.

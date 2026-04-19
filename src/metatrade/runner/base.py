@@ -18,6 +18,10 @@ from decimal import Decimal
 
 from metatrade.alerting.telegram_alerter import TelegramAlerter
 from metatrade.consensus.adaptive_threshold import AdaptiveThresholdManager
+from metatrade.core.utils.session import is_in_session
+from metatrade.ml.live_tracker import LiveAccuracyTracker
+from metatrade.ml.model_watcher import ModelWatcher
+from metatrade.ml.retrain_scheduler import RetrainScheduler
 from metatrade.consensus.config import ConsensusConfig
 from metatrade.consensus.engine import ConsensusEngine
 from metatrade.consensus.market_accuracy_tracker import MarketAccuracyTracker
@@ -72,6 +76,9 @@ class BaseRunner:
         intermarket_engine: object | None = None,  # IntermarketEngine | None
         exit_profile_generator: object | None = None,  # ExitProfileCandidateGenerator | None
         exit_profile_selector: object | None = None,   # ExitProfileSelector | None
+        live_tracker: LiveAccuracyTracker | None = None,
+        model_watcher: ModelWatcher | None = None,
+        retrain_scheduler: RetrainScheduler | None = None,
     ) -> None:
         """
         Args:
@@ -103,6 +110,15 @@ class BaseRunner:
             exit_profile_selector:  Optional ``ExitProfileSelector``.  Required
                                     together with ``exit_profile_generator`` to
                                     enable exit profile selection.
+            live_tracker:           Optional ``LiveAccuracyTracker`` that records
+                                    ML predictions bar-by-bar and evaluates them
+                                    once ``forward_bars`` bars have elapsed.
+            model_watcher:          Optional ``ModelWatcher`` that polls the
+                                    registry directory for better trained models
+                                    and switches the active model automatically.
+            retrain_scheduler:      Optional ``RetrainScheduler`` that launches
+                                    ``scripts/train.py`` in the background at the
+                                    configured interval (hours or bars).
         """
         self._config = config
         self._modules = modules
@@ -173,6 +189,11 @@ class BaseRunner:
         # provided the feature is effectively disabled (no hard error).
         self._exit_profile_generator = exit_profile_generator
         self._exit_profile_selector = exit_profile_selector
+
+        # ── ML lifecycle components (all optional) ─────────────────────────────
+        self._live_tracker = live_tracker
+        self._model_watcher = model_watcher
+        self._retrain_scheduler = retrain_scheduler
 
     @property
     def stats(self) -> RunStats:
@@ -385,6 +406,22 @@ class BaseRunner:
 
         self._stats.bars_processed += 1
 
+        # ── Background tasks (run every bar, before all guards) ──────────────
+        # These tasks are intentionally placed before session/cooldown guards so
+        # they always advance regardless of whether a new entry is allowed.
+        _current_bar = bars[-1]
+        if self._retrain_scheduler is not None:
+            self._retrain_scheduler.on_bar(_current_bar)
+        if self._live_tracker is not None:
+            self._live_tracker.evaluate_pending(_current_bar)
+        if self._model_watcher is not None:
+            _live_stats = None
+            if self._live_tracker is not None:
+                _mv = self._model_watcher.state.current_version
+                if _mv:
+                    _live_stats = self._live_tracker.live_accuracy_stats(_mv)
+            self._model_watcher.on_bar(_current_bar, open_positions, _live_stats)
+
         used_margin = (
             account_balance - free_margin
             if account_balance >= free_margin
@@ -448,6 +485,22 @@ class BaseRunner:
             )
             return None
 
+        # ── Guard: session filter ─────────────────────────────────────────────
+        # Block new entries outside the configured trading session.
+        # Exits and stop-losses are handled by the exit engine / broker and are
+        # never subject to this check — only new trade entries are blocked here.
+        _sess_start = self._config.session_filter_utc_start
+        _sess_end = self._config.session_filter_utc_end
+        if _sess_start is not None and _sess_end is not None:
+            if not is_in_session(timestamp_utc, _sess_start, _sess_end):
+                log.debug(
+                    "session_gate: hour=%d outside [%d, %d) — skipping bar",
+                    timestamp_utc.hour,
+                    _sess_start,
+                    _sess_end,
+                )
+                return None
+
         current_close = bars[-1].close
 
         # ── Step 1a: Evaluate past signals against current price ──────────────
@@ -475,6 +528,22 @@ class BaseRunner:
 
         if not signals:
             return None
+
+        # ── Step 1b+: Record ML module predictions for live accuracy tracking ──
+        # Runs after signal collection, before any filtering.  Records every
+        # BUY/SELL prediction from ml_* modules so the LiveAccuracyTracker can
+        # evaluate directional accuracy forward_bars bars later.
+        if self._live_tracker is not None:
+            for _sig in signals:
+                if (
+                    _sig.module_id.startswith("ml_")
+                    and _sig.direction != SignalDirection.HOLD
+                ):
+                    _direction_int = 1 if _sig.direction == SignalDirection.BUY else -1
+                    _mv = str(_sig.metadata.get("model_version", "unknown"))
+                    self._live_tracker.record_prediction(
+                        _current_bar, _direction_int, float(_sig.confidence), _mv
+                    )
 
         # ── Step 1c: Record ALL signals for future threshold/weight evaluation ─
         # We record signals BEFORE filtering so that even excluded signals are

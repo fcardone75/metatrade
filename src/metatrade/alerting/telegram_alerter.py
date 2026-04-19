@@ -130,6 +130,86 @@ class TelegramAlerter:
         )
         self.send(msg)
 
+    def alert_model_switched(
+        self,
+        symbol: str,
+        old_version: str,
+        new_version: str,
+        old_holdout: float | None,
+        new_holdout: float,
+        live_accuracy: float | None,
+        reason: str,
+    ) -> None:
+        """Alert when the active model is replaced by a better candidate."""
+        live_str = f"{live_accuracy:.1%}" if live_accuracy is not None else "n/a"
+        old_h_str = f"{old_holdout:.1%}" if old_holdout is not None else "n/a"
+        msg = (
+            f"🔄 Model switched: {symbol}\n"
+            f"  Old: {old_version} (holdout: {old_h_str}, live: {live_str})\n"
+            f"  New: {new_version} (holdout: {new_holdout:.1%})\n"
+            f"  Reason: {reason}"
+        )
+        self.send(msg)
+
+    def alert_model_degraded(
+        self,
+        symbol: str,
+        model_version: str,
+        live_accuracy: float,
+        threshold: float,
+        n_evaluated: int,
+    ) -> None:
+        """Alert when live accuracy drops below the warning threshold."""
+        msg = (
+            f"⚠️ Model accuracy degraded: {symbol}\n"
+            f"  Version:  {model_version}\n"
+            f"  Live acc: {live_accuracy:.1%} (threshold: {threshold:.1%})\n"
+            f"  Samples:  {n_evaluated}"
+        )
+        self.send(msg)
+
+    def alert_retrain_complete(
+        self,
+        symbol: str,
+        timeframe: str,
+        new_version: str,
+        holdout_accuracy: float,
+        is_candidate: bool,
+        reason: str,
+    ) -> None:
+        """Alert when a background retraining run finishes."""
+        candidate_str = "✅ Promoted to candidate" if is_candidate else "ℹ️ Not a candidate"
+        msg = (
+            f"🤖 Retraining complete: {symbol} {timeframe}\n"
+            f"  Version:  {new_version}\n"
+            f"  Holdout:  {holdout_accuracy:.1%}\n"
+            f"  {candidate_str}\n"
+            f"  Reason: {reason}"
+        )
+        self.send(msg)
+
+    def alert_position_pnl(
+        self,
+        symbol: str,
+        side: str,
+        unrealized_pnl: float | Decimal,
+        entry: float | Decimal,
+        current: float | Decimal,
+        duration_bars: int,
+    ) -> None:
+        """Periodic unrealized PnL update for an open position."""
+        pnl_f = float(unrealized_pnl)
+        sign = "+" if pnl_f >= 0 else ""
+        emoji = "📈" if pnl_f >= 0 else "📉"
+        msg = (
+            f"{emoji} Open position: {symbol} {side.upper()}\n"
+            f"  Entry:   {float(entry):.5f}\n"
+            f"  Current: {float(current):.5f}\n"
+            f"  PnL:     {sign}{pnl_f:.2f} USD\n"
+            f"  Bars open: {duration_bars}"
+        )
+        self.send(msg)
+
     # ── Internals ─────────────────────────────────────────────────────────────
 
     def _is_active(self) -> bool:

@@ -86,6 +86,15 @@ class RunnerConfig(BaseConfig):
     # 0.0 = disabled. Works independently of daily_loss_limit_pct.
     daily_loss_limit_usd: float = Field(default=0.0, ge=0.0)
 
+    # ── Session filter ────────────────────────────────────────────────────────
+    # When both are set, new trade entries are blocked outside the session window.
+    # Exits and stop-losses are always processed regardless of session hours.
+    # Must mirror the ML_SESSION_FILTER_UTC_START/END used during training so
+    # the model runs only on the distribution it was trained on.
+    # Example: start=7, end=21 → London + NY sessions only.
+    session_filter_utc_start: int | None = Field(default=None, ge=0, lt=24)
+    session_filter_utc_end: int | None = Field(default=None, ge=0, lt=24)
+
     # ── Backtest-specific ─────────────────────────────────────────────────────
     initial_balance: float = Field(default=10000.0, gt=0.0)
 

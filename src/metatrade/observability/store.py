@@ -201,6 +201,27 @@ CREATE TABLE IF NOT EXISTS trade_journal (
 )
 """
 
+CREATE_ML_LIVE_PREDICTIONS_TABLE = """
+CREATE TABLE IF NOT EXISTS ml_live_predictions (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    model_version    TEXT NOT NULL,
+    symbol           TEXT NOT NULL,
+    timeframe        TEXT NOT NULL,
+    bar_ts_utc       INTEGER NOT NULL,
+    direction        INTEGER NOT NULL,
+    confidence       REAL NOT NULL,
+    entry_close      REAL NOT NULL,
+    evaluate_after_ts INTEGER NOT NULL,
+    evaluated        INTEGER NOT NULL DEFAULT 0,
+    correct          INTEGER,
+    future_close     REAL,
+    evaluated_at_utc INTEGER
+)
+"""
+
+CREATE_ML_LIVE_PREDICTIONS_IDX = "CREATE INDEX IF NOT EXISTS idx_ml_live_pred_model ON ml_live_predictions(model_version, evaluated)"
+CREATE_ML_LIVE_PREDICTIONS_TS_IDX = "CREATE INDEX IF NOT EXISTS idx_ml_live_pred_ts ON ml_live_predictions(evaluate_after_ts)"
+
 CREATE_TRADE_JOURNAL_IDX = "CREATE INDEX IF NOT EXISTS idx_trade_journal_entry ON trade_journal(entry_time_utc DESC)"
 CREATE_TRADE_JOURNAL_SYMBOL_IDX = "CREATE INDEX IF NOT EXISTS idx_trade_journal_symbol ON trade_journal(symbol, entry_time_utc DESC)"
 
@@ -272,6 +293,7 @@ class TelemetryStore:
             CREATE_RULE_REPUTATIONS_TABLE,
             CREATE_KILL_SWITCH_COMMAND_TABLE,
             CREATE_TRADE_JOURNAL_TABLE,
+            CREATE_ML_LIVE_PREDICTIONS_TABLE,
             CREATE_SESSION_IDX,
             CREATE_ACCOUNT_IDX,
             CREATE_DECISION_IDX,
@@ -279,6 +301,8 @@ class TelemetryStore:
             CREATE_TRAINING_IDX,
             CREATE_TRADE_JOURNAL_IDX,
             CREATE_TRADE_JOURNAL_SYMBOL_IDX,
+            CREATE_ML_LIVE_PREDICTIONS_IDX,
+            CREATE_ML_LIVE_PREDICTIONS_TS_IDX,
         ]
         for statement in statements:
             self._conn.execute(statement)
@@ -1061,6 +1085,126 @@ class TelemetryStore:
             d["win_rate"] = round(wins / trades, 4) if trades > 0 else None
             results.append(d)
         return results
+
+    # ── ML live prediction tracking ───────────────────────────────────────────
+
+    def record_ml_prediction(
+        self,
+        *,
+        model_version: str,
+        symbol: str,
+        timeframe: str,
+        bar_ts_utc: datetime,
+        direction: int,
+        confidence: float,
+        entry_close: float,
+        evaluate_after_ts: datetime,
+    ) -> int:
+        """Persist a live prediction for future accuracy evaluation.
+
+        Returns the new row id.
+        """
+        assert self._conn is not None
+        cur = self._conn.execute(
+            """
+            INSERT INTO ml_live_predictions
+                (model_version, symbol, timeframe, bar_ts_utc, direction,
+                 confidence, entry_close, evaluate_after_ts)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                model_version,
+                symbol,
+                timeframe,
+                _ts(bar_ts_utc),
+                direction,
+                confidence,
+                entry_close,
+                _ts(evaluate_after_ts),
+            ),
+        )
+        self._conn.commit()
+        return cur.lastrowid  # type: ignore[return-value]
+
+    def evaluate_ml_prediction(
+        self,
+        *,
+        prediction_id: int,
+        future_close: float,
+        correct: bool,
+        evaluated_at_utc: datetime,
+    ) -> None:
+        """Mark a pending prediction as evaluated."""
+        assert self._conn is not None
+        self._conn.execute(
+            """
+            UPDATE ml_live_predictions
+            SET evaluated        = 1,
+                correct          = ?,
+                future_close     = ?,
+                evaluated_at_utc = ?
+            WHERE id = ?
+            """,
+            (int(correct), future_close, _ts(evaluated_at_utc), prediction_id),
+        )
+        self._conn.commit()
+
+    def get_pending_predictions(
+        self,
+        symbol: str,
+        timeframe: str,
+        before_ts: datetime,
+    ) -> list[dict[str, Any]]:
+        """Return unevaluated predictions whose evaluation window has passed."""
+        assert self._conn is not None
+        rows = self._conn.execute(
+            """
+            SELECT id, model_version, direction, entry_close, bar_ts_utc
+            FROM ml_live_predictions
+            WHERE symbol = ? AND timeframe = ?
+              AND evaluated = 0
+              AND evaluate_after_ts <= ?
+            ORDER BY bar_ts_utc
+            """,
+            (symbol, timeframe, _ts(before_ts)),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_live_accuracy_stats(
+        self,
+        model_version: str,
+        min_samples: int = 200,
+    ) -> dict[str, Any]:
+        """Return evaluated accuracy stats for a model version.
+
+        Returns a dict with keys:
+            n_evaluated, n_correct, accuracy, is_reliable, n_pending
+        """
+        assert self._conn is not None
+        row = self._conn.execute(
+            """
+            SELECT
+                COUNT(*) FILTER (WHERE evaluated = 1) AS n_evaluated,
+                COUNT(*) FILTER (WHERE evaluated = 1 AND correct = 1) AS n_correct,
+                COUNT(*) FILTER (WHERE evaluated = 0) AS n_pending
+            FROM ml_live_predictions
+            WHERE model_version = ?
+            """,
+            (model_version,),
+        ).fetchone()
+        n_eval = int(row["n_evaluated"])
+        n_correct = int(row["n_correct"])
+        n_pending = int(row["n_pending"])
+        accuracy = n_correct / n_eval if n_eval > 0 else None
+        return {
+            "model_version": model_version,
+            "n_evaluated": n_eval,
+            "n_correct": n_correct,
+            "n_pending": n_pending,
+            "accuracy": accuracy,
+            "is_reliable": n_eval >= min_samples,
+            "min_samples": min_samples,
+        }
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 

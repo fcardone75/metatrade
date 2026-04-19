@@ -69,6 +69,40 @@ class MLConfig(BaseConfig):
     session_filter_utc_start: int | None = Field(default=None, ge=0, lt=24)
     session_filter_utc_end: int | None = Field(default=None, ge=0, lt=24)
 
+    # ── Live accuracy tracking ────────────────────────────────────────────────
+    # Minimum number of evaluated BUY/SELL predictions before the live accuracy
+    # percentage is considered statistically reliable for model-switch decisions.
+    # At 200 samples the 95% confidence interval is ±3.5 pp.
+    live_accuracy_min_samples: int = Field(default=200, ge=10)
+
+    # Emergency: if live accuracy drops below this threshold (and min_samples
+    # has been reached), the system flags a degradation warning.
+    live_accuracy_warning_below: float = Field(default=0.50, ge=0.0, le=1.0)
+
+    # ── Model watcher + promotion ─────────────────────────────────────────────
+    # Enable periodic scanning of registry dir for new/better snapshots.
+    model_watcher_enabled: bool = Field(default=False)
+
+    # How often (seconds) the watcher scans for new snapshots (default 2 min).
+    model_watcher_poll_sec: int = Field(default=120, ge=10)
+
+    # Minimum holdout accuracy a candidate must reach to be considered for
+    # promotion. Prevents promoting models that barely passed training.
+    candidate_min_holdout: float = Field(default=0.52, ge=0.0, le=1.0)
+
+    # ── Background retraining scheduler ──────────────────────────────────────
+    # Whether to automatically launch train.py in the background.
+    retrain_enabled: bool = Field(default=False)
+
+    # Trigger mode: "hours" = every N wall-clock hours; "bars" = every N bars.
+    retrain_trigger: str = Field(default="hours")
+
+    # Retrain every N hours (used when retrain_trigger="hours").
+    retrain_every_hours: int = Field(default=6, ge=1)
+
+    # Retrain every N bars processed (used when retrain_trigger="bars").
+    retrain_every_bars: int = Field(default=5000, ge=100)
+
     # ── Registry ─────────────────────────────────────────────────────────────
     # Directory where model snapshots are persisted
     model_registry_dir: str = Field(default="data/models")
