@@ -91,7 +91,7 @@ class TestSend:
         alerter = self._active_alerter()
         captured_args: list = []
 
-        def fake_urlopen(req, timeout=None):
+        def fake_urlopen(req, timeout=None, context=None):
             captured_args.append((req, timeout))
             ctx = MagicMock()
             ctx.__enter__ = MagicMock(return_value=ctx)

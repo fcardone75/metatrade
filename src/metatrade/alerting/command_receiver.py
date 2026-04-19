@@ -14,10 +14,17 @@ third-party Telegram user cannot trigger runner callbacks.
 from __future__ import annotations
 
 import json
+import ssl
 import threading
 import urllib.error
 import urllib.parse
 import urllib.request
+
+# Skip SSL verification for Telegram API — required on Windows hosts where a
+# corporate proxy or AV product inserts a self-signed cert into the TLS chain.
+_SSL_CTX = ssl.create_default_context()
+_SSL_CTX.check_hostname = False
+_SSL_CTX.verify_mode = ssl.CERT_NONE
 
 from metatrade.alerting.command_handler import CommandHandler
 from metatrade.alerting.config import AlertConfig
@@ -156,7 +163,7 @@ class TelegramCommandReceiver:
             + urllib.parse.urlencode(params)
         )
         try:
-            with urllib.request.urlopen(url, timeout=self._cfg.timeout_secs) as resp:
+            with urllib.request.urlopen(url, timeout=self._cfg.timeout_secs, context=_SSL_CTX) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except Exception as exc:
             log.warning("telegram_get_updates_failed", error=str(exc))
@@ -176,7 +183,7 @@ class TelegramCommandReceiver:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=self._cfg.timeout_secs):
+            with urllib.request.urlopen(req, timeout=self._cfg.timeout_secs, context=_SSL_CTX):
                 pass
         except Exception as exc:
             log.warning(

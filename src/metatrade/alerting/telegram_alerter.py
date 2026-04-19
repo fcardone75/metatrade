@@ -12,11 +12,16 @@ No external dependencies — uses only Python stdlib ``urllib.request``.
 from __future__ import annotations
 
 import logging
+import ssl
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from decimal import Decimal
+
+_SSL_CTX = ssl.create_default_context()
+_SSL_CTX.check_hostname = False
+_SSL_CTX.verify_mode = ssl.CERT_NONE
 
 from metatrade.alerting.config import AlertConfig
 
@@ -464,7 +469,7 @@ class TelegramAlerter:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=self._cfg.timeout_secs):
+            with urllib.request.urlopen(req, timeout=self._cfg.timeout_secs, context=_SSL_CTX):
                 pass
         except urllib.error.URLError as exc:
             log.warning("Telegram alert failed (network): %s", exc)
@@ -479,7 +484,7 @@ class TelegramAlerter:
             + "?" + urllib.parse.urlencode(params)
         )
         try:
-            with urllib.request.urlopen(url, timeout=self._cfg.timeout_secs) as resp:
+            with urllib.request.urlopen(url, timeout=self._cfg.timeout_secs, context=_SSL_CTX) as resp:
                 return _json.loads(resp.read().decode("utf-8"))
         except Exception as exc:
             log.warning("Telegram GET %s failed: %s", method, exc)
