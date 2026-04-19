@@ -227,6 +227,27 @@ _TICK_POLL_SECS = 0.05   # 50 ms polling in tick mode (interval == 0)
 _MARKET_CLOSED_SLEEP_SEC = 900   # 15 min between checks when market is closed
 _RECONNECT_SLEEP_SEC = 30        # wait before MT5 reconnect attempt
 _MAX_RECONNECT_ATTEMPTS = 5
+# Spezzare le attese così l'interprete rientra spesso in Python: su Windows Ctrl+C
+# viene gestito solo tra una istruzione e l'altra; le chiamate MT5 native possono
+# comunque ritardare l'arresto finché non ritornano.
+_INTERRUPTIBLE_CHUNK_SEC = 0.25
+
+
+def _interruptible_wait(
+    total_seconds: float,
+    stop_event: threading.Event,
+    running_ref: list[bool],
+    chunk_sec: float = _INTERRUPTIBLE_CHUNK_SEC,
+) -> None:
+    """Attende fino a ``total_seconds`` ma esce subito se shutdown o stop richiesto."""
+    if total_seconds <= 0:
+        return
+    end = time.time() + total_seconds
+    while running_ref[0] and not stop_event.is_set():
+        remaining = end - time.time()
+        if remaining <= 0:
+            return
+        time.sleep(min(chunk_sec, remaining))
 
 
 def _is_market_closed(dt: datetime) -> bool:
@@ -263,6 +284,8 @@ def _run_position_monitor(
     symbol: str,
     poll_interval: float,
     mon_interval: float,
+    stop_event: threading.Event | None = None,
+    running_ref: list[bool] | None = None,
 ) -> None:
     """Block for ``poll_interval`` seconds while running position monitoring.
 
@@ -273,13 +296,21 @@ def _run_position_monitor(
       < 0  — disable position monitoring; just sleep.
     """
     if mon_interval < 0:
-        time.sleep(poll_interval)
+        if stop_event is not None and running_ref is not None:
+            _interruptible_wait(poll_interval, stop_event, running_ref)
+        else:
+            time.sleep(poll_interval)
         return
 
     deadline = time.time() + poll_interval
     last_tick_msc: int = 0
 
     while time.time() < deadline:
+        if running_ref is not None and not running_ref[0]:
+            return
+        if stop_event is not None and stop_event.is_set():
+            return
+
         do_monitor = False
 
         if mon_interval == 0:
@@ -305,7 +336,11 @@ def _run_position_monitor(
                 log.warning("position_monitor_error", error=str(exc))
 
         remaining = deadline - time.time()
-        time.sleep(min(sleep_secs, max(0.0, remaining)))
+        slice_len = min(sleep_secs, max(0.0, remaining))
+        if stop_event is not None and running_ref is not None:
+            _interruptible_wait(slice_len, stop_event, running_ref)
+        else:
+            time.sleep(slice_len)
 
 
 def build_ml_stack(
@@ -504,7 +539,7 @@ def main() -> None:
     print(f"  Equity   : {account.equity}")
     print(f"  Modules  : {[m.__class__.__name__ for m in modules]}")
     print(f"  Risk/trade: {args.max_risk_pct:.1%}  Daily limit: {args.daily_loss_limit_pct:.1%}  Kill: {args.kill_drawdown_pct:.1%}")
-    print("  Press Ctrl+C to stop.\n")
+    print("  Press Ctrl+C to stop (Windows: se non risponde, Ctrl+Pause/Break o chiudi da Gestione attività).\n")
 
     poll_interval = args.poll_interval if args.poll_interval > 0 else tf_secs
     _running = [True]
@@ -517,10 +552,14 @@ def main() -> None:
         print("\nStopping ...")
 
     signal.signal(signal.SIGINT, _stop)
+    if sys.platform == "win32" and hasattr(signal, "SIGBREAK"):
+        signal.signal(signal.SIGBREAK, _stop)
 
     def _try_reconnect() -> bool:
         """Attempt to re-initialize the MT5 collector. Returns True on success."""
         for attempt in range(1, _MAX_RECONNECT_ATTEMPTS + 1):
+            if not _running[0] or _stop_event.is_set():
+                return False
             print(f"  MT5 reconnect attempt {attempt}/{_MAX_RECONNECT_ATTEMPTS} …")
             try:
                 collector.initialize(
@@ -536,7 +575,7 @@ def main() -> None:
                 return True
             except Exception as exc:
                 log.warning("mt5_reconnect_failed", attempt=attempt, error=str(exc))
-                time.sleep(_RECONNECT_SLEEP_SEC)
+                _interruptible_wait(float(_RECONNECT_SLEEP_SEC), _stop_event, _running)
         return False
 
     # 4. Live loop — runs continuously even when the market is closed (Windows service mode)
@@ -547,7 +586,7 @@ def main() -> None:
         if _is_market_closed(now_utc):
             ts_str = now_utc.strftime("%Y-%m-%d %H:%M")
             print(f"[{ts_str}] Market closed — sleeping {_MARKET_CLOSED_SLEEP_SEC // 60} min …", flush=True)
-            _stop_event.wait(timeout=_MARKET_CLOSED_SLEEP_SEC)
+            _interruptible_wait(float(_MARKET_CLOSED_SLEEP_SEC), _stop_event, _running)
             continue
 
         date_to = now_utc
@@ -565,10 +604,10 @@ def main() -> None:
                     print("  Reconnect failed. Sleeping 5 min before retrying …")
                     if alerter:
                         alerter.alert_error("MT5", "Disconnesso — reconnect fallito.")
-                    _stop_event.wait(timeout=300)
+                    _interruptible_wait(300.0, _stop_event, _running)
                 _consecutive_errors[0] = 0
             else:
-                time.sleep(5)
+                _interruptible_wait(5.0, _stop_event, _running)
             continue
 
         if last_bar_time is not None:
@@ -621,6 +660,8 @@ def main() -> None:
                 symbol=args.symbol,
                 poll_interval=poll_interval,
                 mon_interval=args.position_monitor_interval,
+                stop_event=_stop_event,
+                running_ref=_running,
             )
 
     # 5. Summary
