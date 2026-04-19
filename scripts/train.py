@@ -1488,7 +1488,7 @@ def adaptive_train_loop(
     for attempt_idx, (max_depth, max_iter, bar_scale) in enumerate(schedule):
         attempt_bars = min(int(base_bars * bar_scale), 100_000)
 
-        print(f"\n── Tentativo {attempt_idx + 1}/{len(schedule)} ──────────────────────────")
+        print(f"\n-- Tentativo {attempt_idx + 1}/{len(schedule)} --------------------------")
         print(f"   max_depth={max_depth}  max_iter={max_iter}  bars={attempt_bars}")
         if best_report and best_report.holdout_accuracy:
             print(f"   Miglior holdout finora: {best_report.holdout_accuracy:.2%}  target={target:.2%}")
@@ -1617,7 +1617,7 @@ def adaptive_train_loop(
             print(f"  → Prossimo: max_depth={nd}  max_iter={ni}  bars={int(base_bars * ns)}")
 
     best_h = (best_report.holdout_accuracy or 0.0) if best_report else 0.0
-    print(f"\n⚠ Tentativi esauriti. Miglior holdout: {best_h:.2%}  target={target:.2%}")
+    print(f"\n[!] Tentativi esauriti. Miglior holdout: {best_h:.2%}  target={target:.2%}")
     _write_adaptive_progress("exhausted")
     log.warning(
         "adaptive_all_attempts_failed",
