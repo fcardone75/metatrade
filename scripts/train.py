@@ -225,6 +225,38 @@ def parse_args() -> argparse.Namespace:
         metavar="N",
         help="Maximum number of parameter combinations to try during auto-tune (default: 20).",
     )
+    p.add_argument(
+        "--adaptive",
+        action="store_true",
+        default=False,
+        help=(
+            "Adaptive training loop: retries with escalating complexity-reduction until a "
+            "model beats the target accuracy. Target = min_accuracy if no model exists, "
+            "else max(current_holdout + adaptive-min-improvement, adaptive-absolute-min). "
+            "Implies --auto-tune and --holdout-fraction 0.2 if not already set."
+        ),
+    )
+    p.add_argument(
+        "--adaptive-max-attempts",
+        type=int,
+        default=20,
+        metavar="N",
+        help="Max training attempts in adaptive mode (default: 20).",
+    )
+    p.add_argument(
+        "--adaptive-min-improvement",
+        type=float,
+        default=0.01,
+        metavar="PP",
+        help="Minimum improvement over current model holdout to accept (default: 0.01 = 1pp).",
+    )
+    p.add_argument(
+        "--adaptive-absolute-min",
+        type=float,
+        default=0.53,
+        metavar="ACC",
+        help="Absolute minimum holdout required even when improving over current model (default: 0.53).",
+    )
     return p.parse_args()
 
 
@@ -1280,6 +1312,198 @@ def write_json_report(model_dir: Path, payload: dict[str, Any]) -> Path:
     return path
 
 
+# ─── Adaptive training loop ───────────────────────────────────────────────────
+
+# Each row: (max_depth, max_iter, bar_scale)
+# 20-step schedule: 4 phases × 5 depths, reducing model complexity while
+# gradually scaling bars. M1 overfits heavily → depth/iter reduction matters
+# more than more data. Bars capped at 100k in adaptive_train_loop.
+_ADAPTIVE_SCHEDULE: list[tuple[int, int, float]] = [
+    # Phase 1 — depth 4 (softer than default 5)
+    (4, 150, 1.0),
+    (4, 100, 1.1),
+    (4,  75, 1.2),
+    (4,  50, 1.3),
+    (4,  30, 1.4),
+    # Phase 2 — depth 3
+    (3, 150, 1.3),
+    (3, 100, 1.4),
+    (3,  75, 1.5),
+    (3,  50, 1.6),
+    (3,  30, 1.7),
+    # Phase 3 — depth 2
+    (2, 150, 1.6),
+    (2, 100, 1.7),
+    (2,  75, 1.8),
+    (2,  50, 1.9),
+    (2,  30, 2.0),
+    # Phase 4 — depth 1 (stumps, massima regolarizzazione)
+    (1, 150, 1.8),
+    (1, 100, 1.9),
+    (1,  75, 2.0),
+    (1,  50, 2.0),
+    (1,  30, 2.0),
+]
+
+
+def _compute_adaptive_target(
+    model_dir: Path,
+    symbol: str,
+    min_accuracy: float,
+    min_improvement_pp: float,
+    absolute_min: float,
+) -> tuple[float, float | None]:
+    """Return (target_accuracy, current_model_holdout_or_None).
+
+    No model → target = min_accuracy.
+    Has model → target = max(current_holdout + min_improvement_pp, absolute_min).
+    """
+    try:
+        _cfg = MLConfig(model_registry_dir=str(model_dir))
+        _reg = ModelRegistry(config=_cfg, persist=False)
+        active = _reg.get_active()
+        if active is not None:
+            current = active.tags.get("holdout_accuracy")
+            if current is not None:
+                current = float(current)
+                return max(current + min_improvement_pp, absolute_min), current
+    except Exception:
+        pass
+    return min_accuracy, None
+
+
+def adaptive_train_loop(
+    *,
+    args: argparse.Namespace,
+    timeframe: str,
+    base_bars: int,
+    telemetry: TelemetryStore,
+) -> TimeframeTrainReport:
+    """Retry auto-tune with escalating complexity reduction until target met."""
+    target, current_acc = _compute_adaptive_target(
+        args.model_dir,
+        args.symbol,
+        args.min_accuracy,
+        args.adaptive_min_improvement,
+        args.adaptive_absolute_min,
+    )
+    schedule = _ADAPTIVE_SCHEDULE[: args.adaptive_max_attempts]
+
+    print(f"\n{'='*60}")
+    print(f" ADAPTIVE TRAINING  |  {args.symbol} {timeframe}")
+    if current_acc is not None:
+        print(f" Modello attuale: {current_acc:.2%}  →  Target: {target:.2%}")
+    else:
+        print(f" Nessun modello attivo  |  Target: {target:.2%}")
+    print(f" Max tentativi: {len(schedule)}  |  Strategia: riduzione complessità progressiva")
+    print("=" * 60)
+
+    best_report: TimeframeTrainReport | None = None
+
+    for attempt_idx, (max_depth, max_iter, bar_scale) in enumerate(schedule):
+        attempt_bars = min(int(base_bars * bar_scale), 100_000)
+
+        print(f"\n── Tentativo {attempt_idx + 1}/{len(schedule)} ──────────────────────────")
+        print(f"   max_depth={max_depth}  max_iter={max_iter}  bars={attempt_bars}")
+        if best_report and best_report.holdout_accuracy:
+            print(f"   Miglior holdout finora: {best_report.holdout_accuracy:.2%}  target={target:.2%}")
+
+        # Build per-attempt args (shallow copy + overrides)
+        aargs = argparse.Namespace(**vars(args))
+        aargs.max_depth = max_depth
+        aargs.max_iter = max_iter
+        aargs.bars = attempt_bars
+        aargs.auto_tune = True
+        aargs.auto_tune_target = target
+        aargs.holdout_fraction = max(args.holdout_fraction, 0.2)
+
+        # Reset tried-params cache — different max_depth/iter → combos behave differently
+        cache_file = args.model_dir / f"{args.symbol}_tune_cache.json"
+        if cache_file.exists():
+            cache_file.unlink()
+
+        aml_cfg = MLConfig(
+            train_window_bars=aargs.train_window,
+            test_window_bars=aargs.test_window,
+            step_bars=aargs.step,
+            forward_bars=aargs.forward_bars,
+            atr_threshold_mult=aargs.atr_threshold_mult,
+            max_iter=max_iter,
+            max_depth=max_depth,
+            min_accuracy=aargs.min_accuracy,
+            holdout_fraction=aargs.holdout_fraction,
+            model_registry_dir=str(aargs.model_dir),
+            session_filter_utc_start=aargs.session_start_utc,
+            session_filter_utc_end=aargs.session_end_utc,
+        )
+
+        # Reload bars (may be more than previous attempt)
+        if args.source == "mt5":
+            bars = load_from_mt5(aargs, timeframe)
+        else:
+            assert aargs.file is not None
+            bars = load_from_csv(
+                resolve_csv_path(aargs.file, timeframe, multi=False),
+                aargs.symbol,
+                timeframe,
+            )
+
+        higher_tf_bars = None
+        if args.multires and args.source == "mt5":
+            higher_tf_bars = load_higher_tf_bars_mt5(aargs, timeframe)
+
+        report = auto_tune_single_timeframe(
+            args=aargs,
+            timeframe=timeframe,
+            bars=bars,
+            base_ml_cfg=aml_cfg,
+            telemetry=telemetry,
+            telemetry_is_active=True,
+            higher_tf_bars=higher_tf_bars,
+        )
+
+        # Track best result across all attempts
+        if best_report is None or (
+            report.holdout_accuracy is not None
+            and (
+                best_report.holdout_accuracy is None
+                or report.holdout_accuracy > best_report.holdout_accuracy
+            )
+        ):
+            best_report = report
+
+        holdout = report.holdout_accuracy or 0.0
+        if report.success and holdout >= target:
+            print(f"\n✓ Target raggiunto al tentativo {attempt_idx + 1}: {holdout:.2%} >= {target:.2%}")
+            return report
+
+        gap = target - holdout
+        print(f"\n  ✗ holdout={holdout:.2%}  gap={gap:+.2%}  target={target:.2%}")
+        if attempt_idx < len(schedule) - 1:
+            nd, ni, ns = schedule[attempt_idx + 1]
+            print(f"  → Prossimo: max_depth={nd}  max_iter={ni}  bars={int(base_bars * ns)}")
+
+    best_h = (best_report.holdout_accuracy or 0.0) if best_report else 0.0
+    print(f"\n⚠ Tentativi esauriti. Miglior holdout: {best_h:.2%}  target={target:.2%}")
+    if best_report is None:
+        return TimeframeTrainReport(
+            timeframe=timeframe,
+            success=False,
+            error="Adaptive training: tutti i tentativi esauriti.",
+            bars_used=0,
+            duration_sec=0.0,
+            model_version=None,
+            mean_test_accuracy=None,
+            best_test_accuracy=None,
+            best_fold_index=None,
+            n_folds=0,
+            folds=[],
+            artifact_path=None,
+            holdout_accuracy=None,
+        )
+    return best_report
+
+
 def main() -> None:
     configure_logging()
     args = parse_args()
@@ -1308,6 +1532,12 @@ def main() -> None:
     if multi:
         print(" Nota: ogni run produce un artifact; solo uno e' marcato attivo in telemetria.")
     print("=" * 60 + "\n")
+
+    # --adaptive implies --auto-tune and forces holdout >= 0.2
+    if args.adaptive:
+        args.auto_tune = True
+        if args.holdout_fraction <= 0.0:
+            args.holdout_fraction = 0.2
 
     if args.auto_tune and args.holdout_fraction <= 0.0:
         print(
@@ -1365,7 +1595,14 @@ def main() -> None:
                 higher_tf_bars = load_higher_tf_bars_csv(args.file, args.symbol, tf)
 
         is_active = tf == promote_tf
-        if args.auto_tune:
+        if args.adaptive:
+            report = adaptive_train_loop(
+                args=args,
+                timeframe=tf,
+                base_bars=args.bars,
+                telemetry=telemetry,
+            )
+        elif args.auto_tune:
             report = auto_tune_single_timeframe(
                 args=args,
                 timeframe=tf,
