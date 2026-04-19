@@ -1513,6 +1513,7 @@ def adaptive_train_loop(
     best_report: TimeframeTrainReport | None = None
     attempt_history: list[dict] = []
     _adaptive_progress_path = args.model_dir / "adaptive_progress.json"
+    _adaptive_started_at = datetime.now(UTC).isoformat()
 
     def _write_adaptive_progress(status: str, *, error_msg: str | None = None) -> None:
         best_h = (best_report.holdout_accuracy or 0.0) if best_report else 0.0
@@ -1526,6 +1527,7 @@ def adaptive_train_loop(
             "best_holdout": round(best_h, 4) if best_h else None,
             "attempts_done": len(attempt_history),
             "attempts": attempt_history,
+            "started_at_utc": _adaptive_started_at,
             "updated_at_utc": datetime.now(UTC).isoformat(),
         }
         if error_msg is not None:

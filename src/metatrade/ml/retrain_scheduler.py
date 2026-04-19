@@ -40,6 +40,15 @@ def _is_weekend(dt: datetime) -> bool:
     return dt.weekday() >= 5  # 5=Sat, 6=Sun
 
 
+def _extract_arg(args: list[str], flag: str) -> str | None:
+    """Return the value after ``flag`` in an argparse-style list, or None."""
+    try:
+        idx = args.index(flag)
+        return args[idx + 1]
+    except (ValueError, IndexError):
+        return None
+
+
 def _daily_slots(day: date, start_hour: int, interval_hours: int) -> list[datetime]:
     """Return all UTC training slots for a given calendar day."""
     slots = []
@@ -176,7 +185,24 @@ class RetrainScheduler:
         """
         if self.is_training:
             return False
-        return self._launch_raw(symbol="manual", timeframe="manual", advance_slot=False)
+        symbol = _extract_arg(self._train_args, "--symbol") or "manual"
+        timeframe = _extract_arg(self._train_args, "--timeframe") or "manual"
+        return self._launch_raw(symbol=symbol, timeframe=timeframe, advance_slot=False)
+
+    def stop_training(self) -> bool:
+        """Terminate the running training subprocess.
+
+        Returns True if a process was running and was killed, False otherwise.
+        """
+        if self._process is None or self._process.poll() is not None:
+            return False
+        self._process.terminate()
+        try:
+            self._process.wait(timeout=10)
+        except Exception:
+            self._process.kill()
+        log.warning("retrain_scheduler_stopped_by_user")
+        return True
 
     def _launch(self, bar: Bar) -> bool:
         symbol = bar.symbol

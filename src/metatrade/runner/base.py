@@ -81,12 +81,35 @@ def _format_adaptive_progress(data: dict, fold_data: dict | None = None) -> str:
     best_h = data.get("best_holdout")
     updated = data.get("updated_at_utc", "")[:16].replace("T", " ")
 
+    # Elapsed since training started
+    elapsed_str = ""
+    started_raw = data.get("started_at_utc")
+    if started_raw:
+        try:
+            from datetime import datetime as _dt, timezone as _tz
+            started = _dt.fromisoformat(started_raw)
+            elapsed_td = _dt.now(_tz.utc) - started
+            total_sec = int(elapsed_td.total_seconds())
+            days, rem = divmod(total_sec, 86400)
+            hours, rem = divmod(rem, 3600)
+            mins, secs = divmod(rem, 60)
+            parts = []
+            if days:
+                parts.append(f"{days}g")
+            if hours or days:
+                parts.append(f"{hours}h")
+            parts.append(f"{mins}m {secs}s")
+            elapsed_str = " ".join(parts)
+        except Exception:
+            elapsed_str = ""
+
     lines = [
         f"{status_icon} <b>{symbol} {tf}</b>  [{data.get('status', '?').upper()}]",
         f"  Target:   {target:.2%}" if target else "",
         f"  Modello attuale: {current:.2%}" if current else "  Nessun modello precedente",
         f"  Tentativi: {done}/{max_att}",
         f"  Miglior holdout: {best_h:.2%}" if best_h else "  Miglior holdout: —",
+        f"  In corso da: {elapsed_str}" if elapsed_str else "",
         f"  Aggiornato: {updated} UTC",
     ]
 
@@ -430,9 +453,10 @@ class BaseRunner:
         ch.register("/model",     self._cmd_model)
         ch.register("/accuracy",  self._cmd_accuracy)
         ch.register("/daily",     self._cmd_daily)
-        ch.register("/retrain",   self._cmd_retrain)
-        ch.register("/training",  self._cmd_training)
-        ch.register("/pause",     self._cmd_pause)
+        ch.register("/retrain",      self._cmd_retrain)
+        ch.register("/training",     self._cmd_training)
+        ch.register("/stoptraining", self._cmd_stop_training)
+        ch.register("/pause",        self._cmd_pause)
         ch.register("/resume",    self._cmd_resume)
         ch.register("/stop",      self._cmd_stop)
 
@@ -614,6 +638,17 @@ class BaseRunner:
             return "🔁 <b>Training in corso</b>\n\n" + _format_adaptive_progress(data, fold_data)
         except Exception as exc:
             return f"🔁 Training in corso (errore lettura progress: {exc})."
+
+    def _cmd_stop_training(self, _args: str) -> str:
+        if self._retrain_scheduler is None:
+            return "⚠️ Retraining non abilitato (ML_RETRAIN_ENABLED=false)."
+        if not self._retrain_scheduler.is_training:
+            return "ℹ️ Nessun training in corso."
+        stopped = self._retrain_scheduler.stop_training()
+        if stopped:
+            log.warning("training_stopped_via_telegram")
+            return "🛑 <b>Training interrotto.</b>\nIl processo è stato terminato. Usa /retrain per riavviarlo."
+        return "❌ Impossibile fermare il training (processo non trovato o già terminato)."
 
     def _cmd_pause(self, _args: str) -> str:
         self.pause()
