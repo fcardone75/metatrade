@@ -43,18 +43,33 @@ def _connect(cfg: MongoTrainConfig) -> Any:
 
 def _sync_loop(
     job_id: str,
+    db: Any,
     progress_store: MongoProgressStore,
     adaptive_path: Path,
     fold_path: Path,
     stop_event: threading.Event,
+    cancel_event: threading.Event,
 ) -> None:
-    """Background thread: sync local JSON files to MongoDB every N seconds."""
+    """Background thread: sync progress to MongoDB and detect remote cancellation."""
+    from metatrade.ml.distributed.job_queue import STATUS_CANCELLED
+
     while not stop_event.is_set():
         stop_event.wait(timeout=_PROGRESS_SYNC_INTERVAL)
         try:
             progress_store.sync_from_file(job_id, adaptive_path, fold_path)
         except Exception as exc:
             log.warning("worker_sync_error", job_id=job_id, error=str(exc))
+
+        # Check if master has cancelled this job
+        if not cancel_event.is_set():
+            try:
+                col = db["training_jobs"]
+                doc = col.find_one({"_id": job_id, "status": STATUS_CANCELLED}, {"_id": 1})
+                if doc is not None:
+                    log.info("worker_job_cancelled_detected", job_id=job_id)
+                    cancel_event.set()
+            except Exception:
+                pass
 
 
 def _find_best_model(work_dir: Path, symbol: str) -> Path | None:
@@ -91,41 +106,73 @@ def _run_job(
     progress_store.init(job)
 
     # ── Build train.py command ────────────────────────────────────────────────
-    # Override --source with csv and point to the downloaded file
+    # Strip --source <val> and --file <val> from the master's train_args, then
+    # inject --source csv --file <downloaded_csv>. train.py uses --file, not --csv-file.
     base_args: list[str] = list(job.get("train_args", []))
-    # Replace source/file args if present; otherwise inject them
-    filtered = [a for a in base_args if a not in ("--source", "mt5", "--csv-file")]
+    filtered: list[str] = []
+    skip_next = False
+    for arg in base_args:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg in ("--source", "--file"):
+            skip_next = True  # drop this flag and its value
+            continue
+        filtered.append(arg)
+
     cmd = [
         sys.executable,
         str(_TRAIN_SCRIPT),
         "--source", "csv",
-        "--csv-file", str(csv_path),
+        "--file", str(csv_path),
         *filtered,
     ]
 
     adaptive_path = work_dir / "adaptive_progress.json"
     fold_path = work_dir / "training_progress.json"
 
-    # ── Launch sync thread ────────────────────────────────────────────────────
+    # ── Launch sync + cancel-watch thread ────────────────────────────────────
     stop_event = threading.Event()
+    cancel_event = threading.Event()
     sync_thread = threading.Thread(
         target=_sync_loop,
-        args=(job_id, progress_store, adaptive_path, fold_path, stop_event),
+        args=(job_id, db, progress_store, adaptive_path, fold_path, stop_event, cancel_event),
         daemon=True,
     )
     sync_thread.start()
 
-    # ── Run training subprocess ───────────────────────────────────────────────
+    # ── Run training subprocess (non-blocking Popen so we can cancel it) ──────
     log_buf = io.open(work_dir / "train.log", "w", encoding="utf-8")
+    exit_code: int | None = None
+    cancelled = False
     try:
-        log.info("worker_training_start", job_id=job_id, symbol=symbol, timeframe=timeframe)
-        proc = subprocess.run(  # noqa: S603
+        log.info(
+            "worker_training_start",
+            job_id=job_id,
+            symbol=symbol,
+            timeframe=timeframe,
+            cmd=" ".join(cmd[:8]) + " ...",
+        )
+        proc = subprocess.Popen(  # noqa: S603
             cmd,
             stdout=log_buf,
             stderr=log_buf,
             cwd=str(work_dir),
         )
-        exit_code = proc.returncode
+        # Poll until subprocess finishes or cancellation is requested
+        while proc.poll() is None:
+            if cancel_event.is_set():
+                log.info("worker_cancelling_subprocess", job_id=job_id)
+                proc.terminate()
+                try:
+                    proc.wait(timeout=15)
+                except Exception:
+                    proc.kill()
+                cancelled = True
+                break
+            time.sleep(2)
+
+        exit_code = proc.returncode if not cancelled else -1
     except Exception as exc:
         stop_event.set()
         sync_thread.join(timeout=15)
@@ -136,11 +183,25 @@ def _run_job(
 
     stop_event.set()
     sync_thread.join(timeout=15)
+
+    if cancelled:
+        log.info("worker_job_cancelled", job_id=job_id)
+        progress_store.mark_failed(job_id, "cancelled by user")
+        return  # job already has status=cancelled set by master; nothing else to do
+
     # Final sync
     progress_store.sync_from_file(job_id, adaptive_path, fold_path)
 
     if exit_code != 0:
-        log.warning("worker_training_failed", job_id=job_id, exit_code=exit_code)
+        # Read last 50 lines of train.log to surface the error in the worker log
+        train_log_path = work_dir / "train.log"
+        tail = ""
+        try:
+            lines = train_log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+            tail = "\n".join(lines[-50:])
+        except Exception:
+            pass
+        log.warning("worker_training_failed", job_id=job_id, exit_code=exit_code, tail=tail)
         queue.fail(job_id, f"train.py exited with code {exit_code}")
         progress_store.mark_failed(job_id, f"exit_code={exit_code}")
         return

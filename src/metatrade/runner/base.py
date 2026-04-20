@@ -692,11 +692,23 @@ class BaseRunner:
         return header + _format_adaptive_progress(progress, fold_data)
 
     def _cmd_remove_training(self, _args: str) -> str:
-        if self._retrain_scheduler is not None and self._retrain_scheduler.is_training:
-            return (
-                "⚠️ Training ancora in corso. Fermalo prima con /stoptraining, "
-                "poi esegui /removetraining."
-            )
+        db = self._retrain_scheduler.get_mongo_db() if self._retrain_scheduler else None
+
+        # In remote mode: cancel active MongoDB jobs directly (no need to stop first)
+        # In local mode: block if subprocess is still running
+        if db is not None:
+            cancelled_jobs = self._retrain_scheduler.cancel_remote_job()  # type: ignore[union-attr]
+            mongo_msg = ""
+            if cancelled_jobs:
+                mongo_msg = f"🚫 Job MongoDB cancellati: {', '.join(cancelled_jobs)}\n"
+        else:
+            if self._retrain_scheduler is not None and self._retrain_scheduler.is_training:
+                return (
+                    "⚠️ Training ancora in corso. Fermalo prima con /stoptraining, "
+                    "poi esegui /removetraining."
+                )
+            mongo_msg = ""
+
         try:
             from metatrade.ml.config import MLConfig as _MLCfg
             model_dir = Path(_MLCfg().model_registry_dir)
@@ -735,13 +747,17 @@ class BaseRunner:
 
         log.warning("training_files_removed_via_telegram", count=len(deleted), files=deleted)
 
-        if not deleted:
+        if not deleted and not mongo_msg:
             return "ℹ️ Nessun file di training trovato da rimuovere."
-        files_list = "\n".join(f"  • {n}" for n in deleted)
-        return (
-            f"🗑 <b>Training rimosso ({len(deleted)} file):</b>\n{files_list}\n\n"
-            "Usa /retrain per ripartire da zero."
-        )
+
+        parts = []
+        if mongo_msg:
+            parts.append(mongo_msg.strip())
+        if deleted:
+            files_list = "\n".join(f"  • {n}" for n in deleted)
+            parts.append(f"🗑 <b>File rimossi ({len(deleted)}):</b>\n{files_list}")
+        parts.append("\nUsa /retrain per ripartire da zero.")
+        return "\n".join(parts)
 
     def _cmd_stop_training(self, _args: str) -> str:
         if self._retrain_scheduler is None:

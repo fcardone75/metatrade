@@ -113,6 +113,38 @@ class MongoJobQueue:
         )
         log.warning("job_queue_failed", job_id=job_id, error=error)
 
+    def cancel_job(self, job_id: str) -> bool:
+        """Cancel a pending or running job. Returns True if the job was found and cancelled."""
+        result = self._col.update_one(
+            {"_id": job_id, "status": {"$in": [STATUS_PENDING, STATUS_RUNNING]}},
+            {"$set": {"status": STATUS_CANCELLED, "completed_at": _utcnow(), "error": "cancelled by user"}},
+        )
+        if result.modified_count:
+            log.info("job_queue_cancelled", job_id=job_id)
+            return True
+        return False  # type: ignore[return-value]
+
+    def cancel_active(self, symbol: str | None = None, timeframe: str | None = None) -> list[str]:
+        """Cancel all pending/running jobs, optionally filtered by symbol/timeframe.
+
+        Returns list of cancelled job IDs.
+        """
+        filt: dict[str, Any] = {"status": {"$in": [STATUS_PENDING, STATUS_RUNNING]}}
+        if symbol:
+            filt["symbol"] = symbol
+        if timeframe:
+            filt["timeframe"] = timeframe
+
+        docs = list(self._col.find(filt, {"_id": 1}))
+        job_ids = [d["_id"] for d in docs]
+        if job_ids:
+            self._col.update_many(
+                {"_id": {"$in": job_ids}},
+                {"$set": {"status": STATUS_CANCELLED, "completed_at": _utcnow(), "error": "cancelled by user"}},
+            )
+            log.info("job_queue_cancelled_all", count=len(job_ids), jobs=job_ids)
+        return job_ids  # type: ignore[return-value]
+
     def get_active_job(self, symbol: str | None = None, timeframe: str | None = None) -> dict[str, Any] | None:
         """Return the most recent pending or running job, optionally filtered by symbol/timeframe."""
         filt: dict[str, Any] = {"status": {"$in": [STATUS_PENDING, STATUS_RUNNING]}}

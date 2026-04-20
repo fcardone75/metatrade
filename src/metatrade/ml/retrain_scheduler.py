@@ -370,6 +370,22 @@ class RetrainScheduler:
     def get_mongo_db(self) -> Any:
         return self._mongo_db
 
+    def cancel_remote_job(self) -> list[str]:
+        """Cancel all active remote jobs on MongoDB and reset local state.
+
+        Returns list of cancelled job IDs (empty if mongo not enabled or no active jobs).
+        """
+        if self._mongo_db is None:
+            return []
+        from metatrade.ml.distributed.job_queue import MongoJobQueue
+        queue = MongoJobQueue(self._mongo_db)
+        symbol = _extract_arg(self._train_args, "--symbol")
+        timeframe = _extract_arg(self._train_args, "--timeframe")
+        cancelled = queue.cancel_active(symbol=symbol, timeframe=timeframe)
+        if cancelled:
+            self._remote_job_id = None
+        return cancelled
+
     # ── Local subprocess launch ────────────────────────────────────────────────
 
     def _launch_raw(self, symbol: str, timeframe: str, advance_slot: bool = True) -> bool:
