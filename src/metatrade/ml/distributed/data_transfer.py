@@ -17,14 +17,20 @@ _DATA_BUCKET = "training_data"
 _MODEL_BUCKET = "model_artifacts"
 
 
+_CSV_DT_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+
 def _bars_to_csv_gz(bars: list[Bar]) -> bytes:
-    """Serialize bars to gzip-compressed CSV bytes."""
-    lines = ["symbol,timeframe,timestamp_utc,open,high,low,close,volume"]
+    """Serialize bars to gzip-compressed CSV bytes.
+
+    Writes the format expected by CsvCollector (default CsvColumnMap):
+        datetime,open,high,low,close,volume
+        2024-03-01 10:00:00,1.10000,...
+    """
+    lines = ["datetime,open,high,low,close,volume"]
     for b in bars:
-        lines.append(
-            f"{b.symbol},{b.timeframe.value},{b.timestamp_utc.isoformat()},"
-            f"{b.open},{b.high},{b.low},{b.close},{b.volume}"
-        )
+        dt_str = b.timestamp_utc.strftime(_CSV_DT_FORMAT)
+        lines.append(f"{dt_str},{b.open},{b.high},{b.low},{b.close},{b.volume}")
     csv_bytes = "\n".join(lines).encode()
     buf = io.BytesIO()
     with gzip.GzipFile(fileobj=buf, mode="wb") as gz:
@@ -39,10 +45,13 @@ def _csv_gz_to_bars(data: bytes) -> list[dict[str, Any]]:
         text = gz.read().decode()
     rows = []
     lines = text.strip().split("\n")
+    if not lines or lines == [""]:
+        return []
     headers = lines[0].split(",")
     for line in lines[1:]:
-        values = line.split(",")
-        rows.append(dict(zip(headers, values)))
+        if line:
+            values = line.split(",")
+            rows.append(dict(zip(headers, values)))
     return rows
 
 

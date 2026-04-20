@@ -45,17 +45,27 @@ class TestBarsSerialization:
         buf = io.BytesIO(gz)
         with gzip.GzipFile(fileobj=buf) as f:
             content = f.read().decode()
-        assert "symbol" in content
-        assert "EURUSD" in content
+        assert "datetime" in content
+        assert "open" in content
 
     def test_round_trip_fields(self):
         bars = [_make_bar(0)]
         gz = _bars_to_csv_gz(bars)
         rows = _csv_gz_to_bars(gz)
         row = rows[0]
-        assert row["symbol"] == "EURUSD"
-        assert row["timeframe"] == "M1"
-        assert "timestamp_utc" in row
+        assert "datetime" in row
+        assert "open" in row
+        assert "close" in row
+
+    def test_datetime_format_matches_csv_collector(self):
+        """datetime column must use %Y-%m-%d %H:%M:%S — the CsvCollector default."""
+        bars = [_make_bar(0)]
+        gz = _bars_to_csv_gz(bars)
+        rows = _csv_gz_to_bars(gz)
+        from datetime import datetime
+        # Should parse without error using the expected format
+        dt = datetime.strptime(rows[0]["datetime"], "%Y-%m-%d %H:%M:%S")
+        assert dt.year == 2024
 
     def test_compression_reduces_size(self):
         bars = [_make_bar(i) for i in range(1000)]
@@ -68,10 +78,14 @@ class TestBarsSerialization:
         rows = _csv_gz_to_bars(gz)
         assert rows == []
 
-    def test_symbol_and_timeframe_preserved(self):
+    def test_all_rows_have_ohlcv(self):
         bars = [_make_bar(i) for i in range(5)]
         gz = _bars_to_csv_gz(bars)
         rows = _csv_gz_to_bars(gz)
         for row in rows:
-            assert row["symbol"] == "EURUSD"
-            assert row["timeframe"] == "M1"
+            assert "datetime" in row
+            assert "open" in row
+            assert "high" in row
+            assert "low" in row
+            assert "close" in row
+            assert "volume" in row
