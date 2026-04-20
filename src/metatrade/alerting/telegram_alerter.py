@@ -427,6 +427,24 @@ class TelegramAlerter:
         )
         self.send(msg, throttle_key=f"retrain_failed_{symbol}")
 
+    def alert_training_autotune_improved(
+        self,
+        symbol: str,
+        timeframe: str,
+        trial: int | str,
+        max_trials: int | str,
+        holdout: float,
+    ) -> None:
+        """Alert when auto-tune finds a new best holdout during a single adaptive attempt."""
+        if not self._cfg.notify_retrain_events:
+            return
+        msg = (
+            f"🔍 <b>Auto-tune migliorato</b> — {symbol} {timeframe}\n"
+            f"  Trial: {trial}/{max_trials}\n"
+            f"  Miglior holdout: {holdout:.1%}"
+        )
+        self.send(msg, throttle_key=f"autotune_improved_{symbol}_{timeframe}")
+
     def alert_training_precision_improved(
         self,
         symbol: str,

@@ -125,6 +125,7 @@ class RetrainScheduler:
         self._remote_job_id: str | None = None
         self._remote_best_precision_buy: float = 0.0
         self._remote_best_precision_sell: float = 0.0
+        self._remote_best_autotune_holdout: float = 0.0
         self._init_mongo()
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -167,8 +168,8 @@ class RetrainScheduler:
         if self.is_training:
             # Check if a remote job just completed
             if self._remote_job_id:
-                self._maybe_download_completed_model()
                 self._check_precision_notifications()
+                self._maybe_download_completed_model()
             return False
 
         if self._should_trigger(bar.timestamp_utc):
@@ -368,7 +369,7 @@ class RetrainScheduler:
             log.error("retrain_scheduler_model_download_failed", error=str(exc))
 
     def _check_precision_notifications(self) -> None:
-        """Read latest progress from MongoDB and alert if BUY or SELL precision improved."""
+        """Read latest progress from MongoDB and alert on any training improvement."""
         if self._mongo_db is None or self._remote_job_id is None or self._alerter is None:
             return
         try:
@@ -376,25 +377,47 @@ class RetrainScheduler:
             doc = col.find_one({"_id": self._remote_job_id})
             if doc is None:
                 return
+            symbol: str = doc.get("symbol", "?")
+            timeframe: str = doc.get("timeframe", "?")
+
+            # ── Auto-tune holdout improvement (fold_data) ──────────────────────
+            fold_data = doc.get("fold_data") or {}
+            if fold_data.get("status") == "auto_tune":
+                autotune_h = fold_data.get("best_holdout")
+                if autotune_h is not None and autotune_h > self._remote_best_autotune_holdout:
+                    self._remote_best_autotune_holdout = autotune_h
+                    trial = fold_data.get("trials_done", "?")
+                    max_trials = fold_data.get("max_trials", "?")
+                    self._alerter.alert_training_autotune_improved(
+                        symbol=symbol,
+                        timeframe=timeframe,
+                        trial=trial,
+                        max_trials=max_trials,
+                        holdout=autotune_h,
+                    )
+
+            # ── Completed attempt precision improvement ────────────────────────
             attempts = doc.get("attempts") or []
             if not attempts:
                 return
             latest = attempts[-1]
-            cur_buy: float = latest.get("precision_buy") or 0.0
-            cur_sell: float = latest.get("precision_sell") or 0.0
+            raw_buy = latest.get("precision_buy")
+            raw_sell = latest.get("precision_sell")
+            if raw_buy is None and raw_sell is None:
+                return
+            cur_buy: float = raw_buy if raw_buy is not None else 0.0
+            cur_sell: float = raw_sell if raw_sell is not None else 0.0
             if cur_buy > self._remote_best_precision_buy or cur_sell > self._remote_best_precision_sell:
                 self._remote_best_precision_buy = max(self._remote_best_precision_buy, cur_buy)
                 self._remote_best_precision_sell = max(self._remote_best_precision_sell, cur_sell)
-                target_buy: float = self._cfg.target_buy_precision
-                target_sell: float = self._cfg.target_sell_precision
                 self._alerter.alert_training_precision_improved(
-                    symbol=doc.get("symbol", "?"),
-                    timeframe=doc.get("timeframe", "?"),
+                    symbol=symbol,
+                    timeframe=timeframe,
                     attempt=latest.get("attempt", len(attempts)),
                     precision_buy=cur_buy if cur_buy else None,
                     precision_sell=cur_sell if cur_sell else None,
-                    target_buy=target_buy,
-                    target_sell=target_sell,
+                    target_buy=self._cfg.target_buy_precision,
+                    target_sell=self._cfg.target_sell_precision,
                     holdout=latest.get("holdout"),
                 )
         except Exception as exc:
