@@ -46,14 +46,30 @@ class MLConfig(BaseConfig):
     # Random seed for reproducibility
     random_seed: int = Field(default=42)
 
-    # Max number of boosting iterations for HistGradientBoostingClassifier
-    # (equivalent to n_estimators in RandomForest)
+    # ML backend: "histgbm" | "lightgbm" | "xgboost"
+    # CLI --backend takes precedence over this env value.
+    # Falls back to histgbm if the requested library is not installed.
+    backend: str = Field(default="histgbm")
+
+    # Max number of boosting iterations / estimators (all backends)
     max_iter: int = Field(default=100, ge=10)
 
-    # Max depth of each tree (None = unlimited)
+    # Max depth of each tree (None = unlimited for histgbm/xgboost; ignored by lightgbm
+    # when num_leaves is set — use num_leaves instead for lightgbm)
     max_depth: int | None = Field(default=5)
 
-    # Class weight for HistGradientBoostingClassifier.
+    # Number of leaves per tree — primary complexity knob for LightGBM.
+    # Ignored by histgbm. For xgboost maps to max_leaves.
+    num_leaves: int = Field(default=31, ge=2)
+
+    # Learning rate / shrinkage for gradient boosting (all backends)
+    learning_rate: float = Field(default=0.05, gt=0.0, le=1.0)
+
+    # Minimum number of samples in a leaf (LightGBM: min_child_samples,
+    # XGBoost: min_child_weight, HistGBM: min_samples_leaf)
+    min_child_samples: int = Field(default=20, ge=1)
+
+    # Class weight for gradient boosting.
     # "balanced" automatically compensates for HOLD-dominated datasets by
     # up-weighting BUY/SELL samples.  None = uniform weights.
     class_weight: str | None = Field(default="balanced")

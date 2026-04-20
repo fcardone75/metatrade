@@ -113,14 +113,15 @@ def _make_fv(**kwargs) -> FeatureVector:
     """Create a FeatureVector with default zero values, overriding given fields."""
     defaults = dict(
         returns_1=0.001, returns_2=0.002, returns_3=0.003,
-        returns_5=0.003, returns_10=0.005,
+        returns_5=0.003, returns_10=0.005, returns_20=0.008, returns_30=0.010,
         ema9_dist=0.0002, ema21_dist=-0.0001, ema9_21_cross=0.0003,
-        rsi14=0.55, rsi14_change=0.01, atr14_rel=0.002,
-        rolling_std5=0.001, rolling_std20=0.0008,
+        rsi5=0.60, rsi14=0.55, rsi21=0.52, rsi14_change=0.01,
+        macd_signal_norm=0.0001, macd_hist_norm=0.00005,
+        stoch_k=0.5, stoch_d=0.5,
+        atr14_rel=0.002, rolling_std5=0.001, rolling_std20=0.0008,
         body_ratio=0.5, upper_wick=0.3, lower_wick=0.2,
         vol_rel=1.0, hour_sin=0.0, hour_cos=1.0,
         weekday_sin=0.0, weekday_cos=1.0,
-        # New features (6 additions → total 27)
         adx_slope=0.01, atr_zscore=0.0, donchian_pos=0.5,
         bb_pct_b=0.5, rsi_divergence=0.0, hurst_short=0.5,
     )
@@ -131,10 +132,10 @@ def _make_fv(**kwargs) -> FeatureVector:
 class TestFeatureVector:
     def test_to_list_length(self) -> None:
         fv = _make_fv()
-        assert len(fv.to_list()) == 27  # 21 original + 6 new
+        assert len(fv.to_list()) == 35  # 27 original + 8 new
 
     def test_feature_names_length(self) -> None:
-        assert len(FeatureVector.feature_names()) == 27  # 21 original + 6 new
+        assert len(FeatureVector.feature_names()) == 35  # 27 original + 8 new
 
     def test_feature_names_are_strings(self) -> None:
         for name in FeatureVector.feature_names():
@@ -364,7 +365,7 @@ class TestMLClassifier:
         clf = make_trained_classifier()
         assert clf.metrics is not None
         fi = clf.metrics.feature_importances
-        assert len(fi) == 27  # one per feature (21 original + 6 new)
+        assert len(fi) == 35  # one per feature (27 original + 8 new)
 
     def test_metrics_has_class_distribution(self) -> None:
         clf = make_trained_classifier()

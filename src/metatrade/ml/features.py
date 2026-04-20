@@ -10,9 +10,12 @@ Design principles:
 - NaN-safe: returns None if the window is too short
 
 Feature groups:
-    Returns / momentum : returns_1, returns_2, returns_3, returns_5, returns_10
+    Returns / momentum : returns_1, returns_2, returns_3, returns_5, returns_10,
+                         returns_20, returns_30
     EMA alignment      : ema9_dist, ema21_dist, ema9_21_cross
-    RSI                : rsi14 (scaled), rsi14_change (momentum of RSI)
+    RSI                : rsi5, rsi14 (scaled), rsi21, rsi14_change (momentum of RSI)
+    MACD               : macd_signal_norm, macd_hist_norm
+    Stochastic         : stoch_k, stoch_d
     Volatility         : atr14_rel, rolling_std5, rolling_std20, atr_zscore
     Candle anatomy     : body_ratio, upper_wick, lower_wick
     Volume             : vol_rel
@@ -37,14 +40,18 @@ from metatrade.technical_analysis.indicators.bollinger import bollinger_bands
 from metatrade.technical_analysis.indicators.donchian import donchian_channel
 from metatrade.technical_analysis.indicators.ema import ema
 from metatrade.technical_analysis.indicators.hurst import hurst_exponent
+from metatrade.technical_analysis.indicators.macd import macd
 from metatrade.technical_analysis.indicators.rsi import rsi
+from metatrade.technical_analysis.indicators.stochastic import stochastic_rsi
 
 # Minimum bars required to compute all features.
-# Raised from 35 → 55 to accommodate:
-#   - atr_zscore: needs 30-bar ATR mean/std  → ~44 bars for ATR(14)+30
-#   - adx_slope:  needs ADX + 5 look-back    → 14 + 5 + some warm-up
-#   - hurst_short: needs 40 bars for R/S
-MIN_FEATURE_BARS = 55
+# Raised from 55 → 70 to accommodate:
+#   - returns_30:    needs 31 bars
+#   - MACD(12,26,9): needs 34 bars
+#   - RSI(21):       needs 22 bars
+#   - atr_zscore:    needs ATR(14) + 30-bar window → ~44 bars
+#   - hurst_short:   needs 40 bars for R/S
+MIN_FEATURE_BARS = 70
 
 
 @dataclass(frozen=True)
@@ -53,17 +60,25 @@ class FeatureVector:
 
     All features are dimensionless floats (returns, ratios, normalised values).
 
-    Fields (21 original + 6 new = 27 total):
+    Fields (27 original + 8 new = 35 total):
         returns_1:       1-bar price return (close[t] / close[t-1] - 1)
         returns_2:       2-bar price return
         returns_3:       3-bar price return
         returns_5:       5-bar cumulative return
         returns_10:      10-bar cumulative return
+        returns_20:      20-bar cumulative return — intermediate trend
+        returns_30:      30-bar cumulative return — longer trend
         ema9_dist:       (close - EMA9) / EMA9  — momentum distance
         ema21_dist:      (close - EMA21) / EMA21
         ema9_21_cross:   (EMA9 - EMA21) / close — crossover magnitude
+        rsi5:            RSI(5) scaled to [0, 1] — fast momentum
         rsi14:           RSI(14) scaled to [0, 1]
+        rsi21:           RSI(21) scaled to [0, 1] — slow trend RSI
         rsi14_change:    rsi14[t] - rsi14[t-1]  — RSI momentum
+        macd_signal_norm: MACD signal line / close — normalised
+        macd_hist_norm:  MACD histogram / close — momentum acceleration
+        stoch_k:         Stochastic RSI %K [0, 1]
+        stoch_d:         Stochastic RSI %D [0, 1]
         atr14_rel:       ATR(14) / close — relative volatility
         rolling_std5:    Std-dev of last-5 1-bar returns / close
         rolling_std20:   Std-dev of last-20 1-bar returns / close
@@ -88,11 +103,19 @@ class FeatureVector:
     returns_3: float
     returns_5: float
     returns_10: float
+    returns_20: float
+    returns_30: float
     ema9_dist: float
     ema21_dist: float
     ema9_21_cross: float
+    rsi5: float
     rsi14: float
+    rsi21: float
     rsi14_change: float
+    macd_signal_norm: float
+    macd_hist_norm: float
+    stoch_k: float
+    stoch_d: float
     atr14_rel: float
     rolling_std5: float
     rolling_std20: float
@@ -112,18 +135,26 @@ class FeatureVector:
     hurst_short: float
 
     def to_list(self) -> list[float]:
-        """Ordered list of all feature values (27 elements)."""
+        """Ordered list of all feature values (35 elements)."""
         return [
             self.returns_1,
             self.returns_2,
             self.returns_3,
             self.returns_5,
             self.returns_10,
+            self.returns_20,
+            self.returns_30,
             self.ema9_dist,
             self.ema21_dist,
             self.ema9_21_cross,
+            self.rsi5,
             self.rsi14,
+            self.rsi21,
             self.rsi14_change,
+            self.macd_signal_norm,
+            self.macd_hist_norm,
+            self.stoch_k,
+            self.stoch_d,
             self.atr14_rel,
             self.rolling_std5,
             self.rolling_std20,
@@ -145,18 +176,26 @@ class FeatureVector:
 
     @classmethod
     def feature_names(cls) -> list[str]:
-        """Stable ordered feature names matching to_list() (27 names)."""
+        """Stable ordered feature names matching to_list() (35 names)."""
         return [
             "returns_1",
             "returns_2",
             "returns_3",
             "returns_5",
             "returns_10",
+            "returns_20",
+            "returns_30",
             "ema9_dist",
             "ema21_dist",
             "ema9_21_cross",
+            "rsi5",
             "rsi14",
+            "rsi21",
             "rsi14_change",
+            "macd_signal_norm",
+            "macd_hist_norm",
+            "stoch_k",
+            "stoch_d",
             "atr14_rel",
             "rolling_std5",
             "rolling_std20",
@@ -206,7 +245,7 @@ def extract_features(
                         hour and weekday features are set to 0.0.
 
     Returns:
-        FeatureVector (27 features) if enough data is available, None otherwise.
+        FeatureVector (35 features) if enough data is available, None otherwise.
     """
     if len(bars) < MIN_FEATURE_BARS:
         return None
@@ -227,6 +266,8 @@ def extract_features(
     returns_3  = (c / (close_f[-4]  + eps)) - 1.0
     returns_5  = (c / (close_f[-6]  + eps)) - 1.0
     returns_10 = (c / (close_f[-11] + eps)) - 1.0
+    returns_20 = (c / (close_f[-21] + eps)) - 1.0
+    returns_30 = (c / (close_f[-31] + eps)) - 1.0
 
     # Series of 1-bar returns for rolling std computation
     bar_returns = [
@@ -244,11 +285,33 @@ def extract_features(
     ema21_dist    = (c - e21)  / (e21 + eps)
     ema9_21_cross = (e9 - e21) / (c   + eps)
 
-    # ── RSI ───────────────────────────────────────────────────────────────────
+    # ── RSI (multi-period) ────────────────────────────────────────────────────
+    rsi5_vals  = rsi(closes, 5)
     rsi14_vals = rsi(closes, 14)
+    rsi21_vals = rsi(closes, 21)
+    rsi5         = float(rsi5_vals[-1])  / 100.0          # [0, 1] fast
     rsi14        = float(rsi14_vals[-1]) / 100.0          # [0, 1]
+    rsi21        = float(rsi21_vals[-1]) / 100.0          # [0, 1] slow
     rsi14_prev   = float(rsi14_vals[-2]) / 100.0
     rsi14_change = rsi14 - rsi14_prev                     # RSI momentum
+
+    # ── MACD ─────────────────────────────────────────────────────────────────
+    try:
+        _, macd_sig_vals, macd_hist_vals = macd(closes, fast=12, slow=26, signal=9)
+        macd_signal_norm = float(macd_sig_vals[-1]) / (c + eps)
+        macd_hist_norm   = float(macd_hist_vals[-1]) / (c + eps)
+    except Exception:
+        macd_signal_norm = 0.0
+        macd_hist_norm   = 0.0
+
+    # ── Stochastic RSI ────────────────────────────────────────────────────────
+    try:
+        stoch_k_vals, stoch_d_vals = stochastic_rsi(closes)
+        stoch_k = float(stoch_k_vals[-1])   # already [0, 1]
+        stoch_d = float(stoch_d_vals[-1])
+    except Exception:
+        stoch_k = 0.5
+        stoch_d = 0.5
 
     # ── ATR-based features ────────────────────────────────────────────────────
     atr14_vals = atr(highs, lows, closes, 14)
@@ -355,11 +418,19 @@ def extract_features(
         returns_3=returns_3,
         returns_5=returns_5,
         returns_10=returns_10,
+        returns_20=returns_20,
+        returns_30=returns_30,
         ema9_dist=ema9_dist,
         ema21_dist=ema21_dist,
         ema9_21_cross=ema9_21_cross,
+        rsi5=rsi5,
         rsi14=rsi14,
+        rsi21=rsi21,
         rsi14_change=rsi14_change,
+        macd_signal_norm=macd_signal_norm,
+        macd_hist_norm=macd_hist_norm,
+        stoch_k=stoch_k,
+        stoch_d=stoch_d,
         atr14_rel=atr14_rel,
         rolling_std5=rolling_std5,
         rolling_std20=rolling_std20,
@@ -480,28 +551,36 @@ def _extract_htf_context(bars: list[Bar]) -> dict[str, float] | None:
 
 @dataclass(frozen=True)
 class MultiResFeatureVector:
-    """43-feature vector combining M1 micro-structure with M5 and M15 context.
+    """51-feature vector combining M1 micro-structure with M5 and M15 context.
 
     Layout:
-        [0-26]   27 M1 base features — identical ordering to FeatureVector.
-        [27-34]   8 M5 context features (prefix ``m5_``).
-        [35-42]   8 M15 context features (prefix ``m15_``).
+        [0-34]   35 M1 base features — identical ordering to FeatureVector.
+        [35-42]   8 M5 context features (prefix ``m5_``).
+        [43-50]   8 M15 context features (prefix ``m15_``).
 
     When a higher-TF window is too short neutral values are used for that
     TF's 8 features so the M1 sample is not discarded during warm-up.
     """
 
-    # ── M1 base (27) ────────────────────────────────────────────────────────
+    # ── M1 base (35) ────────────────────────────────────────────────────────
     returns_1: float
     returns_2: float
     returns_3: float
     returns_5: float
     returns_10: float
+    returns_20: float
+    returns_30: float
     ema9_dist: float
     ema21_dist: float
     ema9_21_cross: float
+    rsi5: float
     rsi14: float
+    rsi21: float
     rsi14_change: float
+    macd_signal_norm: float
+    macd_hist_norm: float
+    stoch_k: float
+    stoch_d: float
     atr14_rel: float
     rolling_std5: float
     rolling_std20: float
@@ -539,12 +618,14 @@ class MultiResFeatureVector:
     m15_hurst_short: float
 
     def to_list(self) -> list[float]:
-        """Ordered list of all 43 feature values."""
+        """Ordered list of all 51 feature values."""
         return [
             self.returns_1, self.returns_2, self.returns_3,
-            self.returns_5, self.returns_10,
+            self.returns_5, self.returns_10, self.returns_20, self.returns_30,
             self.ema9_dist, self.ema21_dist, self.ema9_21_cross,
-            self.rsi14, self.rsi14_change,
+            self.rsi5, self.rsi14, self.rsi21, self.rsi14_change,
+            self.macd_signal_norm, self.macd_hist_norm,
+            self.stoch_k, self.stoch_d,
             self.atr14_rel, self.rolling_std5, self.rolling_std20,
             self.body_ratio, self.upper_wick, self.lower_wick,
             self.vol_rel,
@@ -561,11 +642,14 @@ class MultiResFeatureVector:
 
     @classmethod
     def feature_names(cls) -> list[str]:
-        """Stable ordered feature names matching to_list() (43 names)."""
+        """Stable ordered feature names matching to_list() (51 names)."""
         return [
             "returns_1", "returns_2", "returns_3", "returns_5", "returns_10",
+            "returns_20", "returns_30",
             "ema9_dist", "ema21_dist", "ema9_21_cross",
-            "rsi14", "rsi14_change",
+            "rsi5", "rsi14", "rsi21", "rsi14_change",
+            "macd_signal_norm", "macd_hist_norm",
+            "stoch_k", "stoch_d",
             "atr14_rel", "rolling_std5", "rolling_std20",
             "body_ratio", "upper_wick", "lower_wick",
             "vol_rel",
@@ -587,9 +671,9 @@ def extract_features_multires(
     m15_bars: list[Bar] | None = None,
     timestamp_utc: datetime | None = None,
 ) -> MultiResFeatureVector | None:
-    """Extract a 43-feature multi-resolution vector from M1 + M5/M15 context.
+    """Extract a 51-feature multi-resolution vector from M1 + M5/M15 context.
 
-    Combines the standard 27 M1 features with 8 M5 structural features and
+    Combines the standard 35 M1 features with 8 M5 structural features and
     8 M15 structural features.  When a higher-TF window is too short
     (< MIN_HIGHER_TF_BARS) neutral values are used for that TF's features
     so the M1 sample is not discarded during the dataset warm-up period.
@@ -603,7 +687,7 @@ def extract_features_multires(
         timestamp_utc:  Used for cyclical time-of-day features on the M1 bar.
 
     Returns:
-        MultiResFeatureVector (43 features) or None if M1 base is insufficient.
+        MultiResFeatureVector (51 features) or None if M1 base is insufficient.
     """
     base = extract_features(m1_bars, timestamp_utc)
     if base is None:
@@ -618,11 +702,19 @@ def extract_features_multires(
         returns_3=base.returns_3,
         returns_5=base.returns_5,
         returns_10=base.returns_10,
+        returns_20=base.returns_20,
+        returns_30=base.returns_30,
         ema9_dist=base.ema9_dist,
         ema21_dist=base.ema21_dist,
         ema9_21_cross=base.ema9_21_cross,
+        rsi5=base.rsi5,
         rsi14=base.rsi14,
+        rsi21=base.rsi21,
         rsi14_change=base.rsi14_change,
+        macd_signal_norm=base.macd_signal_norm,
+        macd_hist_norm=base.macd_hist_norm,
+        stoch_k=base.stoch_k,
+        stoch_d=base.stoch_d,
         atr14_rel=base.atr14_rel,
         rolling_std5=base.rolling_std5,
         rolling_std20=base.rolling_std20,

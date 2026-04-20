@@ -84,22 +84,22 @@ def _test_cfg(**kwargs) -> MLConfig:
 
 class TestMultiResFeatureVector:
     def test_feature_names_length(self):
-        assert len(MultiResFeatureVector.feature_names()) == 43
+        assert len(MultiResFeatureVector.feature_names()) == 51
 
     def test_feature_names_start_with_m1_names(self):
         from metatrade.ml.features import FeatureVector
         names = MultiResFeatureVector.feature_names()
         base_names = FeatureVector.feature_names()
-        assert names[:27] == base_names
+        assert names[:35] == base_names
 
     def test_feature_names_m5_prefix(self):
         names = MultiResFeatureVector.feature_names()
-        m5_names = names[27:35]
+        m5_names = names[35:43]
         assert all(n.startswith("m5_") for n in m5_names)
 
     def test_feature_names_m15_prefix(self):
         names = MultiResFeatureVector.feature_names()
-        m15_names = names[35:43]
+        m15_names = names[43:51]
         assert all(n.startswith("m15_") for n in m15_names)
 
     def test_to_list_length(self):
@@ -108,7 +108,7 @@ class TestMultiResFeatureVector:
         bars_m15 = make_bars(MIN_HIGHER_TF_BARS + 5, tf=Timeframe.M15, tf_minutes=15)
         fv = extract_features_multires(bars_m1, bars_m5, bars_m15)
         assert fv is not None
-        assert len(fv.to_list()) == 43
+        assert len(fv.to_list()) == 51
 
     def test_to_list_all_finite(self):
         import math

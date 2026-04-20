@@ -147,9 +147,19 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--test-window", type=int, default=500, help="Test window in bars")
     p.add_argument("--step", type=int, default=250, help="Step size in bars between folds")
     p.add_argument("--forward-bars", type=int, default=5, help="Bars ahead for label generation")
-    p.add_argument("--max-iter", type=int, default=200, help="HistGradientBoosting max iterations")
-    p.add_argument("--max-depth", type=int, default=5, help="RandomForest max depth")
-    _env_min_acc = MLConfig().min_accuracy
+    p.add_argument("--max-iter", type=int, default=200, help="Max boosting iterations (all backends)")
+    p.add_argument("--max-depth", type=int, default=5, help="Max tree depth")
+    _env_cfg = MLConfig()
+    p.add_argument(
+        "--backend",
+        choices=["histgbm", "lightgbm", "xgboost"],
+        default=_env_cfg.backend,
+        help="ML backend (default: ML_BACKEND env or 'histgbm'). CLI takes precedence over env.",
+    )
+    p.add_argument("--num-leaves", type=int, default=_env_cfg.num_leaves, help="Number of leaves per tree (LightGBM/XGBoost)")
+    p.add_argument("--learning-rate", type=float, default=_env_cfg.learning_rate, help="Learning rate / shrinkage (all backends)")
+    p.add_argument("--min-child-samples", type=int, default=_env_cfg.min_child_samples, help="Min samples per leaf (regularisation)")
+    _env_min_acc = _env_cfg.min_accuracy
     p.add_argument("--min-accuracy", type=float, default=_env_min_acc, help="Min accuracy to accept model")
     p.add_argument(
         "--atr-threshold-mult",
@@ -823,6 +833,7 @@ def train_single_timeframe(
         version=version,
         tags={
             "source": args.source,
+            "backend": ml_cfg.backend,
             "n_folds": len(result.folds),
             "mean_test_acc": round(result.mean_test_accuracy, 4),
             "best_test_acc": round(result.best_test_accuracy, 4),
@@ -1151,6 +1162,10 @@ def auto_tune_single_timeframe(
             atr_threshold_mult=atr_mult,
             max_iter=base_ml_cfg.max_iter,
             max_depth=base_ml_cfg.max_depth,
+            backend=base_ml_cfg.backend,
+            num_leaves=base_ml_cfg.num_leaves,
+            learning_rate=base_ml_cfg.learning_rate,
+            min_child_samples=base_ml_cfg.min_child_samples,
             min_accuracy=base_ml_cfg.min_accuracy,
             holdout_fraction=base_ml_cfg.holdout_fraction,
             model_registry_dir=base_ml_cfg.model_registry_dir,
@@ -1297,6 +1312,7 @@ def auto_tune_single_timeframe(
         version=version,
         tags={
             "source": args.source,
+            "backend": best_cfg.backend,
             "auto_tune": True,
             "forward_bars": best_cfg.forward_bars,
             "atr_threshold_mult": best_cfg.atr_threshold_mult,
@@ -1572,6 +1588,10 @@ def adaptive_train_loop(
             atr_threshold_mult=aargs.atr_threshold_mult,
             max_iter=max_iter,
             max_depth=max_depth,
+            backend=aargs.backend,
+            num_leaves=aargs.num_leaves,
+            learning_rate=aargs.learning_rate,
+            min_child_samples=aargs.min_child_samples,
             min_accuracy=aargs.min_accuracy,
             holdout_fraction=aargs.holdout_fraction,
             model_registry_dir=str(aargs.model_dir),
