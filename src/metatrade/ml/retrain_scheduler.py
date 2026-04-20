@@ -273,6 +273,12 @@ class RetrainScheduler:
         if not bars:
             log.warning("retrain_scheduler_remote_no_bars", symbol=symbol)
             return False
+        if len(bars) < 500:
+            log.warning(
+                "retrain_scheduler_remote_few_bars",
+                count=len(bars),
+                hint="Run for longer before retraining, or increase --warmup-bars",
+            )
 
         try:
             job_id = queue.push_job(
@@ -282,8 +288,10 @@ class RetrainScheduler:
                 train_args=self._train_args,
                 triggered_by="scheduled" if advance_slot else "manual",
             )
+            # Upload bars and mark data_ready=True only after upload completes.
+            # Worker's poll_pending() checks data_ready, so it cannot start before this.
             gridfs_id = transfer.upload_bars(job_id, symbol, timeframe, bars)
-            queue.set_data_gridfs_id(job_id, gridfs_id)
+            queue.mark_data_ready(job_id, gridfs_id)
             self._remote_job_id = job_id
         except Exception as exc:
             log.error("retrain_scheduler_remote_push_failed", error=str(exc))

@@ -46,6 +46,7 @@ class MongoJobQueue:
         doc = {
             "_id": job_id,
             "status": STATUS_PENDING,
+            "data_ready": False,       # master sets True after bars upload completes
             "symbol": symbol,
             "timeframe": timeframe,
             "backend": backend,
@@ -64,14 +65,24 @@ class MongoJobQueue:
         log.info("job_queue_pushed", job_id=job_id, symbol=symbol, timeframe=timeframe)
         return job_id
 
-    def set_data_gridfs_id(self, job_id: str, gridfs_id: Any) -> None:
-        self._col.update_one({"_id": job_id}, {"$set": {"data_gridfs_id": gridfs_id}})
+    def mark_data_ready(self, job_id: str, gridfs_id: Any) -> None:
+        """Call after bars upload completes. Worker will not pick up job until this is called."""
+        self._col.update_one(
+            {"_id": job_id},
+            {"$set": {"data_gridfs_id": gridfs_id, "data_ready": True}},
+        )
+        log.info("job_queue_data_ready", job_id=job_id)
 
     def poll_pending(self) -> dict[str, Any] | None:
-        """Atomically claim one pending job → running. Returns the job doc or None."""
+        """Atomically claim one pending job → running. Returns the job doc or None.
+
+        Only picks up jobs where the master has finished uploading bar data
+        (data_ready=True). This prevents the worker from starting before the
+        full dataset is available in GridFS.
+        """
         now = _utcnow()
         job = self._col.find_one_and_update(
-            {"status": STATUS_PENDING, "data_gridfs_id": {"$ne": None}},
+            {"status": STATUS_PENDING, "data_ready": True},
             {"$set": {"status": STATUS_RUNNING, "started_at": now}},
             sort=[("created_at", 1)],
             return_document=True,

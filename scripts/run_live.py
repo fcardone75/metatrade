@@ -464,6 +464,12 @@ def main() -> None:
         build_ml_stack(args, registry, telemetry)
     )
 
+    # Seed the retrain scheduler bar buffer with warmup bars so that a manual
+    # /retrain immediately after startup has enough data to upload to GridFS.
+    if retrain_scheduler is not None and bars:
+        retrain_scheduler._bar_buffer.extend(bars)
+        log.info("retrain_scheduler_bar_buffer_seeded", count=len(bars))
+
     runner_cfg = RunnerConfig(
         symbol=args.symbol,
         max_risk_pct=args.max_risk_pct,

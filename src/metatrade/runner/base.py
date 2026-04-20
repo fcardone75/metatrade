@@ -79,7 +79,7 @@ def _format_adaptive_progress(data: dict, fold_data: dict | None = None) -> str:
     done = data.get("attempts_done", 0)
     max_att = data.get("max_attempts", "?")
     best_h = data.get("best_holdout")
-    updated = data.get("updated_at_utc", "")[:16].replace("T", " ")
+    updated = (data.get("updated_at_utc") or "")[:16].replace("T", " ")
 
     # Elapsed since training started
     elapsed_str = ""

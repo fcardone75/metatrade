@@ -111,13 +111,33 @@ class TestMongoJobQueue:
         assert count == 2
         assert col.update_many.called
 
-    def test_set_data_gridfs_id(self):
+    def test_mark_data_ready(self):
         db = MagicMock()
         col = MagicMock()
         db.__getitem__ = MagicMock(return_value=col)
         queue = MongoJobQueue(db)
-        queue.set_data_gridfs_id("job_123", "some_gridfs_oid")
+        queue.mark_data_ready("job_123", "some_gridfs_oid")
         col.update_one.assert_called_once()
         filt, update = col.update_one.call_args[0]
         assert filt == {"_id": "job_123"}
         assert update["$set"]["data_gridfs_id"] == "some_gridfs_oid"
+        assert update["$set"]["data_ready"] is True
+
+    def test_poll_pending_filters_data_ready(self):
+        db = MagicMock()
+        col = MagicMock()
+        col.find_one_and_update.return_value = None
+        db.__getitem__ = MagicMock(return_value=col)
+        queue = MongoJobQueue(db)
+        queue.poll_pending()
+        filt = col.find_one_and_update.call_args[0][0]
+        assert filt["data_ready"] is True
+
+    def test_push_job_sets_data_ready_false(self):
+        db = MagicMock()
+        col = MagicMock()
+        db.__getitem__ = MagicMock(return_value=col)
+        queue = MongoJobQueue(db)
+        queue.push_job("EURUSD", "M1", "histgbm", [])
+        doc = col.insert_one.call_args[0][0]
+        assert doc["data_ready"] is False
