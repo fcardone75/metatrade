@@ -1580,6 +1580,7 @@ def adaptive_train_loop(
         if cache_file.exists():
             cache_file.unlink()
 
+        attempt_seed = (base_ml_cfg.random_seed + attempt_idx) % (2**31)
         aml_cfg = MLConfig(
             train_window_bars=aargs.train_window,
             test_window_bars=aargs.test_window,
@@ -1597,6 +1598,7 @@ def adaptive_train_loop(
             model_registry_dir=str(aargs.model_dir),
             session_filter_utc_start=aargs.session_start_utc,
             session_filter_utc_end=aargs.session_end_utc,
+            random_seed=attempt_seed,
         )
 
         # Reload bars (may be more than previous attempt)
