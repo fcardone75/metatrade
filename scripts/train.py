@@ -1317,6 +1317,8 @@ def auto_tune_single_timeframe(
             min_accuracy=best_cfg.min_accuracy,
             msg=msg,
         )
+        _prec_buy = best_result.holdout_precision_by_class.get(1)
+        _prec_sell = best_result.holdout_precision_by_class.get(-1)
         return TimeframeTrainReport(
             timeframe=timeframe,
             success=False,
@@ -1331,6 +1333,11 @@ def auto_tune_single_timeframe(
             folds=[fold_to_dict(f) for f in best_result.folds],
             artifact_path=None,
             holdout_accuracy=float(best_holdout),
+            signal_precision=best_result.holdout_signal_precision,
+            precision_buy=round(_prec_buy, 4) if _prec_buy is not None else None,
+            precision_sell=round(_prec_sell, 4) if _prec_sell is not None else None,
+            recall_buy=round(r, 4) if (r := best_result.holdout_recall_by_class.get(1)) is not None else None,
+            recall_sell=round(r, 4) if (r := best_result.holdout_recall_by_class.get(-1)) is not None else None,
         )
 
     args.model_dir.mkdir(parents=True, exist_ok=True)
