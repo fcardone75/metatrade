@@ -28,12 +28,20 @@ dev = [
     "mypy>=1.7",
     "ruff>=0.4",
 ]
+ml = [
+    "scikit-learn>=1.3",
+    "lightgbm>=4.0",
+]
 live = [
     "MetaTrader5>=5.0",
-    "scikit-learn>=1.3",
+    "metatrade[ml]",
 ]
 distributed = [
     "pymongo[srv]>=4.6",
+    "metatrade[ml]",
+]
+worker = [
+    "metatrade[distributed]",
 ]
 
 [tool.hatch.build.targets.wheel]

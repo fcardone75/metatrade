@@ -1,4 +1,4 @@
-.PHONY: help install test test-fast lint lint-fix typecheck clean \
+.PHONY: help install install-worker install-live start-worker test test-fast lint lint-fix typecheck clean \
         train train-csv train-mt5 train-mt5-mtf \
         backtest backtest-no-ml backtest-mt5 \
         walk-forward walk-forward-no-ml walk-forward-mt5 \
@@ -48,6 +48,15 @@ help:   ## Show this help
 
 install:   ## Install package + dev dependencies
 	pip install -e ".[dev]"
+
+install-worker:   ## Install all dependencies needed on the ML worker (Linux)
+	pip install -e ".[worker,dev]"
+
+install-live:   ## Install all dependencies needed on the live master (Windows)
+	pip install -e ".[live,distributed,dev]"
+
+start-worker:   ## Start the ML training worker daemon
+	python scripts/train_worker.py
 
 test:   ## Run full test suite with coverage
 	pytest
