@@ -470,6 +470,21 @@ def main() -> None:
         retrain_scheduler._bar_buffer.extend(bars)
         log.info("retrain_scheduler_bar_buffer_seeded", count=len(bars))
 
+    # In remote mongo mode, fetch a larger dedicated batch for training.
+    # warmup_bars (200) is enough for the runner modules but not for walk-forward
+    # training which needs at least train_window + test_window bars per fold.
+    if retrain_scheduler is not None and retrain_scheduler.get_mongo_db() is not None:
+        _ml_cfg = MLConfig(model_registry_dir=str(args.model_dir))
+        n = (_ml_cfg.train_window_bars + _ml_cfg.test_window_bars) * 3
+        if len(retrain_scheduler._bar_buffer) < n:
+            date_to = datetime.now(timezone.utc)
+            date_from = date_to - timedelta(seconds=tf_secs * (n + 10))
+            log.info("fetching_training_bars", symbol=args.symbol, timeframe=args.timeframe, bars=n)
+            training_bars = collector.collect(args.symbol, tf, date_from, date_to)
+            retrain_scheduler._bar_buffer.clear()
+            retrain_scheduler._bar_buffer.extend(training_bars)
+            log.info("retrain_scheduler_training_buffer_ready", count=len(training_bars))
+
     runner_cfg = RunnerConfig(
         symbol=args.symbol,
         max_risk_pct=args.max_risk_pct,
