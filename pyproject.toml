@@ -32,6 +32,9 @@ live = [
     "MetaTrader5>=5.0",
     "scikit-learn>=1.3",
 ]
+distributed = [
+    "pymongo[srv]>=4.6",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/metatrade"]

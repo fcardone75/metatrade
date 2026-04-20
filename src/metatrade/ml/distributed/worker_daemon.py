@@ -1,0 +1,207 @@
+"""Worker daemon — polls MongoDB for pending training jobs and executes them."""
+
+from __future__ import annotations
+
+import io
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+from metatrade.core.log import get_logger
+from metatrade.ml.distributed.config import MongoTrainConfig
+from metatrade.ml.distributed.data_transfer import DataTransfer
+from metatrade.ml.distributed.job_queue import MongoJobQueue
+from metatrade.ml.distributed.progress_store import MongoProgressStore
+
+if TYPE_CHECKING:
+    pass
+
+log = get_logger(__name__)
+
+_TRAIN_SCRIPT = Path(__file__).parent.parent.parent.parent.parent / "scripts" / "train.py"
+_PROGRESS_SYNC_INTERVAL = 10  # seconds between file→MongoDB syncs
+
+
+def _connect(cfg: MongoTrainConfig) -> Any:
+    """Return a pymongo Database instance."""
+    try:
+        import pymongo  # type: ignore[import-untyped]
+    except ImportError as exc:
+        raise RuntimeError(
+            "pymongo is required for distributed training. "
+            "Install it with: pip install 'pymongo[srv]>=4.6'"
+        ) from exc
+    client: Any = pymongo.MongoClient(cfg.mongo_uri, serverSelectionTimeoutMS=10_000)
+    client.admin.command("ping")
+    return client[cfg.mongo_db]
+
+
+def _sync_loop(
+    job_id: str,
+    progress_store: MongoProgressStore,
+    adaptive_path: Path,
+    fold_path: Path,
+    stop_event: threading.Event,
+) -> None:
+    """Background thread: sync local JSON files to MongoDB every N seconds."""
+    while not stop_event.is_set():
+        stop_event.wait(timeout=_PROGRESS_SYNC_INTERVAL)
+        try:
+            progress_store.sync_from_file(job_id, adaptive_path, fold_path)
+        except Exception as exc:
+            log.warning("worker_sync_error", job_id=job_id, error=str(exc))
+
+
+def _find_best_model(work_dir: Path, symbol: str) -> Path | None:
+    """Return the newest .pkl file in work_dir for the given symbol, or None."""
+    candidates = sorted(work_dir.glob(f"models/{symbol}_*.pkl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not candidates:
+        candidates = sorted(work_dir.glob("**/*.pkl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return candidates[0] if candidates else None
+
+
+def _run_job(
+    job: dict[str, Any],
+    db: Any,
+    work_dir: Path,
+) -> None:
+    job_id: str = job["_id"]
+    symbol: str = job["symbol"]
+    timeframe: str = job["timeframe"]
+
+    queue = MongoJobQueue(db)
+    progress_store = MongoProgressStore(db)
+    transfer = DataTransfer(db)
+
+    # ── Download bar data ─────────────────────────────────────────────────────
+    csv_path = work_dir / f"{symbol}_{timeframe}_{job_id}.csv"
+    try:
+        row_count = transfer.bars_to_csv_file(job["data_gridfs_id"], str(csv_path))
+        log.info("worker_bars_downloaded", job_id=job_id, rows=row_count)
+    except Exception as exc:
+        queue.fail(job_id, f"bar download failed: {exc}")
+        return
+
+    # ── Init progress doc ─────────────────────────────────────────────────────
+    progress_store.init(job)
+
+    # ── Build train.py command ────────────────────────────────────────────────
+    # Override --source with csv and point to the downloaded file
+    base_args: list[str] = list(job.get("train_args", []))
+    # Replace source/file args if present; otherwise inject them
+    filtered = [a for a in base_args if a not in ("--source", "mt5", "--csv-file")]
+    cmd = [
+        sys.executable,
+        str(_TRAIN_SCRIPT),
+        "--source", "csv",
+        "--csv-file", str(csv_path),
+        *filtered,
+    ]
+
+    adaptive_path = work_dir / "adaptive_progress.json"
+    fold_path = work_dir / "training_progress.json"
+
+    # ── Launch sync thread ────────────────────────────────────────────────────
+    stop_event = threading.Event()
+    sync_thread = threading.Thread(
+        target=_sync_loop,
+        args=(job_id, progress_store, adaptive_path, fold_path, stop_event),
+        daemon=True,
+    )
+    sync_thread.start()
+
+    # ── Run training subprocess ───────────────────────────────────────────────
+    log_buf = io.open(work_dir / "train.log", "w", encoding="utf-8")
+    try:
+        log.info("worker_training_start", job_id=job_id, symbol=symbol, timeframe=timeframe)
+        proc = subprocess.run(  # noqa: S603
+            cmd,
+            stdout=log_buf,
+            stderr=log_buf,
+            cwd=str(work_dir),
+        )
+        exit_code = proc.returncode
+    except Exception as exc:
+        stop_event.set()
+        sync_thread.join(timeout=15)
+        queue.fail(job_id, f"subprocess error: {exc}")
+        return
+    finally:
+        log_buf.close()
+
+    stop_event.set()
+    sync_thread.join(timeout=15)
+    # Final sync
+    progress_store.sync_from_file(job_id, adaptive_path, fold_path)
+
+    if exit_code != 0:
+        log.warning("worker_training_failed", job_id=job_id, exit_code=exit_code)
+        queue.fail(job_id, f"train.py exited with code {exit_code}")
+        progress_store.mark_failed(job_id, f"exit_code={exit_code}")
+        return
+
+    # ── Upload model ──────────────────────────────────────────────────────────
+    model_path = _find_best_model(work_dir, symbol)
+    if model_path is None:
+        queue.fail(job_id, "no model .pkl found after training")
+        progress_store.mark_failed(job_id, "no_model")
+        return
+
+    version = f"v{datetime.now(UTC).strftime('%Y%m%d_%H%M')}_{timeframe}"
+    try:
+        model_bytes = model_path.read_bytes()
+        model_gridfs_id = transfer.upload_model(job_id, symbol, version, model_bytes)
+    except Exception as exc:
+        queue.fail(job_id, f"model upload failed: {exc}")
+        return
+
+    # Try to extract holdout accuracy from progress
+    holdout: float = 0.0
+    try:
+        import json
+        if adaptive_path.exists():
+            ap = json.loads(adaptive_path.read_text())
+            holdout = float(ap.get("best_holdout") or 0.0)
+    except Exception:
+        pass
+
+    queue.complete(job_id, model_gridfs_id, version, holdout)
+    progress_store.mark_completed(job_id)
+    log.info("worker_job_done", job_id=job_id, version=version, holdout=holdout)
+
+
+class WorkerDaemon:
+    """Polls MongoDB for pending training jobs and executes them sequentially."""
+
+    def __init__(self, cfg: MongoTrainConfig | None = None) -> None:
+        self._cfg = cfg or MongoTrainConfig()
+
+    def run(self) -> None:
+        """Blocking poll loop. Runs until interrupted."""
+        log.info("worker_daemon_start", poll_sec=self._cfg.ml_worker_poll_sec)
+        db = _connect(self._cfg)
+        queue = MongoJobQueue(db)
+
+        while True:
+            try:
+                queue.reset_stale_jobs()
+                job = queue.poll_pending()
+                if job is None:
+                    time.sleep(self._cfg.ml_worker_poll_sec)
+                    continue
+
+                with tempfile.TemporaryDirectory(prefix="metatrade_worker_") as tmp:
+                    work_dir = Path(tmp)
+                    _run_job(job, db, work_dir)
+
+            except KeyboardInterrupt:
+                log.info("worker_daemon_stopped")
+                break
+            except Exception as exc:
+                log.error("worker_daemon_error", error=str(exc))
+                time.sleep(self._cfg.ml_worker_poll_sec)

@@ -22,17 +22,23 @@ from __future__ import annotations
 import subprocess
 import sys
 import time
+from collections import deque
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from metatrade.alerting.telegram_alerter import TelegramAlerter
 from metatrade.core.contracts.market import Bar
 from metatrade.core.log import get_logger
 from metatrade.ml.config import MLConfig
 
+if TYPE_CHECKING:
+    from metatrade.ml.registry import ModelRegistry
+
 log = get_logger(__name__)
 
 _TRAIN_SCRIPT = Path(__file__).parent.parent.parent.parent / "scripts" / "train.py"
+_BAR_BUFFER_SIZE = 50_000  # ~34 days of M1 bars
 
 
 def _is_weekend(dt: datetime) -> bool:
@@ -94,11 +100,13 @@ class RetrainScheduler:
         train_args: list[str] | None = None,
         alerter: TelegramAlerter | None = None,
         train_script: Path | None = None,
+        model_registry: ModelRegistry | None = None,
     ) -> None:
         self._cfg = config or MLConfig()
         self._train_args = train_args or []
         self._alerter = alerter
         self._script = train_script or _TRAIN_SCRIPT
+        self._model_registry = model_registry
 
         self._bars_since_last: int = 0
         self._process: subprocess.Popen | None = None  # type: ignore[type-arg]
@@ -108,11 +116,22 @@ class RetrainScheduler:
         # already fired before this process started today.
         self._last_triggered_slot: datetime = datetime.now(UTC)
 
+        # ── Bar buffer (for remote training — uploaded to GridFS) ──────────────
+        self._bar_buffer: deque[Bar] = deque(maxlen=_BAR_BUFFER_SIZE)
+
+        # ── Distributed training state ─────────────────────────────────────────
+        self._mongo_cfg: Any = None
+        self._mongo_db: Any = None
+        self._remote_job_id: str | None = None
+        self._init_mongo()
+
     # ── Public API ────────────────────────────────────────────────────────────
 
     @property
     def is_training(self) -> bool:
-        """True if a training subprocess is currently running."""
+        """True if a training process is currently running (local or remote)."""
+        if self._remote_job_id is not None:
+            return self._is_remote_job_active()
         return self._process is not None and self._process.poll() is None
 
     @property
@@ -133,15 +152,20 @@ class RetrainScheduler:
         Returns:
             True if a new training process was launched this bar.
         """
+        self._bar_buffer.append(bar)
+
         if not self._cfg.retrain_enabled:
             return False
 
         self._bars_since_last += 1
 
-        if self._process is not None and not self.is_training:
+        if self._process is not None and not (self._process.poll() is None):
             self._harvest_process(bar)
 
         if self.is_training:
+            # Check if a remote job just completed
+            if self._remote_job_id:
+                self._maybe_download_completed_model()
             return False
 
         if self._should_trigger(bar.timestamp_utc):
@@ -209,7 +233,130 @@ class RetrainScheduler:
         tf = str(bar.timeframe.value) if hasattr(bar.timeframe, "value") else str(bar.timeframe)
         return self._launch_raw(symbol=symbol, timeframe=tf, advance_slot=True)
 
+    # ── Distributed training (master side) ───────────────────────────────────
+
+    def _init_mongo(self) -> None:
+        try:
+            from metatrade.ml.distributed.config import MongoTrainConfig
+            cfg = MongoTrainConfig()
+            if cfg.is_enabled and cfg.is_master and cfg.mongo_uri:
+                import pymongo  # type: ignore[import-untyped]
+                client: Any = pymongo.MongoClient(cfg.mongo_uri, serverSelectionTimeoutMS=5_000)
+                client.admin.command("ping")
+                self._mongo_cfg = cfg
+                self._mongo_db = client[cfg.mongo_db]
+                log.info("retrain_scheduler_mongo_connected", db=cfg.mongo_db)
+        except Exception as exc:
+            if self._mongo_cfg is not None:
+                log.warning("retrain_scheduler_mongo_init_failed", error=str(exc))
+
+    def _trigger_remote(self, symbol: str, timeframe: str, advance_slot: bool) -> bool:
+        from metatrade.ml.distributed.data_transfer import DataTransfer
+        from metatrade.ml.distributed.job_queue import MongoJobQueue
+
+        backend = _extract_arg(self._train_args, "--backend") or self._cfg.backend
+        queue = MongoJobQueue(self._mongo_db)
+        transfer = DataTransfer(self._mongo_db)
+
+        bars = list(self._bar_buffer)
+        if not bars:
+            log.warning("retrain_scheduler_remote_no_bars", symbol=symbol)
+            return False
+
+        try:
+            job_id = queue.push_job(
+                symbol=symbol,
+                timeframe=timeframe,
+                backend=backend,
+                train_args=self._train_args,
+                triggered_by="scheduled" if advance_slot else "manual",
+            )
+            gridfs_id = transfer.upload_bars(job_id, symbol, timeframe, bars)
+            queue.set_data_gridfs_id(job_id, gridfs_id)
+            self._remote_job_id = job_id
+        except Exception as exc:
+            log.error("retrain_scheduler_remote_push_failed", error=str(exc))
+            return False
+
+        self._bars_since_last = 0
+        if advance_slot:
+            self._last_triggered_slot = self.next_slot
+
+        if self._alerter is not None:
+            unit_val = (
+                self._cfg.retrain_every_bars
+                if self._cfg.retrain_trigger.lower() == "bars"
+                else self._cfg.retrain_every_hours
+            )
+            self._alerter.alert_retrain_started(
+                symbol=symbol,
+                timeframe=timeframe,
+                trigger=self._cfg.retrain_trigger,
+                bars_or_hours=unit_val,
+            )
+        log.info("retrain_scheduler_remote_job_queued", job_id=self._remote_job_id)
+        return True
+
+    def _is_remote_job_active(self) -> bool:
+        if self._mongo_db is None or self._remote_job_id is None:
+            return False
+        try:
+            from metatrade.ml.distributed.job_queue import STATUS_PENDING, STATUS_RUNNING, MongoJobQueue
+            queue = MongoJobQueue(self._mongo_db)
+            job = queue._col.find_one({"_id": self._remote_job_id, "status": {"$in": [STATUS_PENDING, STATUS_RUNNING]}})
+            return job is not None
+        except Exception:
+            return False
+
+    def _maybe_download_completed_model(self) -> None:
+        if self._mongo_db is None or self._remote_job_id is None:
+            return
+        try:
+            from metatrade.ml.distributed.data_transfer import DataTransfer
+            from metatrade.ml.distributed.job_queue import STATUS_COMPLETED, MongoJobQueue
+            queue = MongoJobQueue(self._mongo_db)
+            job = queue._col.find_one({"_id": self._remote_job_id, "status": STATUS_COMPLETED})
+            if job is None:
+                return
+
+            transfer = DataTransfer(self._mongo_db)
+            model_bytes = transfer.download_model(job["model_gridfs_id"])
+
+            if self._model_registry is not None:
+                from metatrade.ml.classifier import MLClassifier
+                classifier = MLClassifier.deserialize(model_bytes, self._cfg)
+                snapshot = self._model_registry.register(
+                    classifier,
+                    symbol=job["symbol"],
+                    version=job.get("model_version"),
+                    tags={"backend": job.get("backend"), "holdout": job.get("holdout_accuracy"), "source": "remote"},
+                )
+                self._model_registry.promote(snapshot.version)
+                log.info("retrain_scheduler_remote_model_loaded", version=snapshot.version)
+
+            if self._alerter is not None:
+                self._alerter.alert_retrain_complete(
+                    symbol=job["symbol"],
+                    timeframe=job["timeframe"],
+                    accuracy=job.get("holdout_accuracy") or 0.0,
+                    version=job.get("model_version") or "",
+                )
+            self._remote_job_id = None
+        except Exception as exc:
+            log.error("retrain_scheduler_model_download_failed", error=str(exc))
+
+    def get_remote_job_id(self) -> str | None:
+        return self._remote_job_id
+
+    def get_mongo_db(self) -> Any:
+        return self._mongo_db
+
+    # ── Local subprocess launch ────────────────────────────────────────────────
+
     def _launch_raw(self, symbol: str, timeframe: str, advance_slot: bool = True) -> bool:
+        if self._mongo_cfg is not None:
+            return self._trigger_remote(symbol, timeframe, advance_slot)
+
         if not self._script.exists():
             log.warning("retrain_scheduler_script_not_found", path=str(self._script))
             return False

@@ -619,7 +619,13 @@ class BaseRunner:
         if self._retrain_scheduler is None:
             return "⚠️ Retraining non abilitato (ML_RETRAIN_ENABLED=false)."
 
-        # Find adaptive_progress.json in the model registry dir
+        # ── Remote training (MongoDB) path ────────────────────────────────────
+        job_id = self._retrain_scheduler.get_remote_job_id()
+        db = self._retrain_scheduler.get_mongo_db()
+        if db is not None:
+            return self._cmd_training_remote(job_id, db)
+
+        # ── Local training path ────────────────────────────────────────────────
         try:
             from metatrade.ml.config import MLConfig as _MLCfg
             model_dir = Path(_MLCfg().model_registry_dir)
@@ -663,6 +669,27 @@ class BaseRunner:
             return "🔁 <b>Training in corso</b>\n\n" + _format_adaptive_progress(data, fold_data)
         except Exception as exc:
             return f"🔁 Training in corso (errore lettura progress: {exc})."
+
+    def _cmd_training_remote(self, job_id: str | None, db: object) -> str:
+        from metatrade.ml.distributed.job_queue import MongoJobQueue
+        from metatrade.ml.distributed.progress_store import MongoProgressStore
+
+        queue = MongoJobQueue(db)  # type: ignore[arg-type]
+        progress_store = MongoProgressStore(db)  # type: ignore[arg-type]
+
+        if job_id is None:
+            active_job = queue.get_active_job()
+            if active_job is None:
+                return "⏸ Nessun training remoto in corso."
+            job_id = active_job["_id"]
+
+        progress = progress_store.read(job_id)
+        if progress is None:
+            return f"🔁 Training remoto in coda (job: {job_id}).\nIn attesa che il worker inizi..."
+
+        fold_data = progress.get("fold_data")
+        header = f"🔁 <b>Training remoto in corso</b>\nJob: <code>{job_id}</code>\n\n"
+        return header + _format_adaptive_progress(progress, fold_data)
 
     def _cmd_remove_training(self, _args: str) -> str:
         if self._retrain_scheduler is not None and self._retrain_scheduler.is_training:
