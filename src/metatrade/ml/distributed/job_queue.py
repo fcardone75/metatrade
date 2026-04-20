@@ -160,6 +160,14 @@ class MongoJobQueue:
             sort=[("completed_at", -1)],
         )
 
+    def reset_running_jobs(self) -> int:
+        """Immediately reset ALL running jobs to pending (called on worker startup)."""
+        result = self._col.update_many(
+            {"status": STATUS_RUNNING},
+            {"$set": {"status": STATUS_PENDING, "started_at": None}},
+        )
+        return result.modified_count  # type: ignore[return-value]
+
     def reset_stale_jobs(self) -> int:
         """Reset running jobs that haven't been updated in STALE_TIMEOUT_MINUTES."""
         cutoff = datetime.datetime.now(datetime.UTC) - datetime.timedelta(minutes=STALE_TIMEOUT_MINUTES)

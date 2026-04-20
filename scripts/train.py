@@ -281,6 +281,13 @@ def parse_args() -> argparse.Namespace:
         metavar="ACC",
         help="Absolute minimum holdout required even when improving over current model (default: 0.53).",
     )
+    p.add_argument(
+        "--adaptive-skip-attempts",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Skip the first N adaptive attempts (used to resume an interrupted run).",
+    )
     return p.parse_args()
 
 
@@ -1554,6 +1561,29 @@ def adaptive_train_loop(
         args.adaptive_absolute_min,
     )
     schedule = _ADAPTIVE_SCHEDULE[: args.adaptive_max_attempts]
+    skip_attempts = max(0, getattr(args, "adaptive_skip_attempts", 0))
+
+    # ── Resume: reload attempt history from previous run ─────────────────────
+    _adaptive_progress_path = args.model_dir / "adaptive_progress.json"
+    attempt_history: list[dict] = []
+    _adaptive_started_at = datetime.now(UTC).isoformat()
+
+    if skip_attempts > 0 and _adaptive_progress_path.exists():
+        try:
+            prev_data = json.loads(_adaptive_progress_path.read_text())
+            attempt_history = list(prev_data.get("attempts") or [])
+            _adaptive_started_at = prev_data.get("started_at_utc") or _adaptive_started_at
+            log.info(
+                "adaptive_training_resume",
+                symbol=args.symbol,
+                timeframe=timeframe,
+                skip_attempts=skip_attempts,
+                previous_attempts=len(attempt_history),
+            )
+        except Exception as exc:
+            log.warning("adaptive_resume_read_failed", error=str(exc))
+            skip_attempts = 0
+            attempt_history = []
 
     log.info(
         "adaptive_training_start",
@@ -1562,12 +1592,10 @@ def adaptive_train_loop(
         target=round(target, 4),
         current_model_accuracy=round(current_acc, 4) if current_acc is not None else None,
         max_attempts=len(schedule),
+        skip_attempts=skip_attempts,
     )
 
     best_report: TimeframeTrainReport | None = None
-    attempt_history: list[dict] = []
-    _adaptive_progress_path = args.model_dir / "adaptive_progress.json"
-    _adaptive_started_at = datetime.now(UTC).isoformat()
 
     def _write_adaptive_progress(status: str, *, error_msg: str | None = None) -> None:
         best_h = (best_report.holdout_accuracy or 0.0) if best_report else 0.0
@@ -1593,6 +1621,9 @@ def adaptive_train_loop(
     _write_adaptive_progress("running")
 
     for attempt_idx, (max_depth, max_iter, bar_scale) in enumerate(schedule):
+        if attempt_idx < skip_attempts:
+            continue
+
         attempt_bars = min(int(base_bars * bar_scale), 100_000)
 
         log.info(

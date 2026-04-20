@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import io
+import json
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from datetime import UTC, datetime
@@ -25,6 +25,14 @@ log = get_logger(__name__)
 
 _TRAIN_SCRIPT = Path(__file__).parent.parent.parent.parent.parent / "scripts" / "train.py"
 _PROGRESS_SYNC_INTERVAL = 3  # seconds between file→MongoDB syncs
+_JOBS_BASE_DIR = Path.home() / ".metatrade" / "worker_jobs"
+
+
+def _job_work_dir(job_id: str) -> Path:
+    """Return a persistent directory for a job, creating it if needed."""
+    d = _JOBS_BASE_DIR / job_id
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 def _connect(cfg: MongoTrainConfig) -> Any:
@@ -93,16 +101,31 @@ def _run_job(
     progress_store = MongoProgressStore(db)
     transfer = DataTransfer(db)
 
-    # ── Download bar data ─────────────────────────────────────────────────────
+    # ── Download bar data (skip if already present from a previous run) ──────
     csv_path = work_dir / f"{symbol}_{timeframe}_{job_id}.csv"
-    try:
-        row_count = transfer.bars_to_csv_file(job["data_gridfs_id"], str(csv_path))
-        log.info("worker_bars_downloaded", job_id=job_id, rows=row_count)
-    except Exception as exc:
-        queue.fail(job_id, f"bar download failed: {exc}")
-        return
+    if csv_path.exists():
+        log.info("worker_bars_reusing_cached", job_id=job_id, path=str(csv_path))
+    else:
+        try:
+            row_count = transfer.bars_to_csv_file(job["data_gridfs_id"], str(csv_path))
+            log.info("worker_bars_downloaded", job_id=job_id, rows=row_count)
+        except Exception as exc:
+            queue.fail(job_id, f"bar download failed: {exc}")
+            return
 
-    # ── Init progress doc ─────────────────────────────────────────────────────
+    # ── Detect resume: how many adaptive attempts already completed? ──────────
+    adaptive_path = work_dir / "models" / "adaptive_progress.json"
+    skip_attempts = 0
+    if adaptive_path.exists():
+        try:
+            prev = json.loads(adaptive_path.read_text())
+            skip_attempts = int(prev.get("attempts_done") or 0)
+            if skip_attempts:
+                log.info("worker_resuming_job", job_id=job_id, skip_attempts=skip_attempts)
+        except Exception:
+            skip_attempts = 0
+
+    # ── Init / re-init progress doc ───────────────────────────────────────────
     progress_store.init(job)
 
     # ── Build train.py command ────────────────────────────────────────────────
@@ -125,6 +148,9 @@ def _run_job(
 
     model_dir = work_dir / "models"
     model_dir.mkdir(exist_ok=True)
+    fold_path = model_dir / "training_progress.json"
+
+    resume_args = ["--adaptive-skip-attempts", str(skip_attempts)] if skip_attempts > 0 else []
     cmd = [
         sys.executable,
         str(_TRAIN_SCRIPT),
@@ -134,10 +160,8 @@ def _run_job(
         "--timeframe", timeframe,
         "--model-dir", str(model_dir),
         *filtered,
+        *resume_args,
     ]
-
-    adaptive_path = model_dir / "adaptive_progress.json"
-    fold_path = model_dir / "training_progress.json"
 
     # ── Launch sync + cancel-watch thread ────────────────────────────────────
     stop_event = threading.Event()
@@ -256,6 +280,12 @@ class WorkerDaemon:
         db = _connect(self._cfg)
         queue = MongoJobQueue(db)
 
+        # On startup, immediately reset any jobs stuck in RUNNING state so they
+        # are re-picked-up as resumable PENDING jobs (don't wait for stale timeout).
+        reset_count = queue.reset_running_jobs()
+        if reset_count:
+            log.info("worker_reset_interrupted_jobs", count=reset_count)
+
         while True:
             try:
                 queue.reset_stale_jobs()
@@ -264,9 +294,17 @@ class WorkerDaemon:
                     time.sleep(self._cfg.ml_worker_poll_sec)
                     continue
 
-                with tempfile.TemporaryDirectory(prefix="metatrade_worker_") as tmp:
-                    work_dir = Path(tmp)
-                    _run_job(job, db, work_dir)
+                work_dir = _job_work_dir(job["_id"])
+                _run_job(job, db, work_dir)
+
+                # Clean up work dir only on successful completion
+                job_id = job["_id"]
+                try:
+                    import shutil
+                    shutil.rmtree(work_dir, ignore_errors=True)
+                    log.info("worker_workdir_cleaned", job_id=job_id)
+                except Exception:
+                    pass
 
             except KeyboardInterrupt:
                 log.info("worker_daemon_stopped")
