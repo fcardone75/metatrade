@@ -121,6 +121,7 @@ class MLClassifier:
         self._model: Any = None  # sklearn estimator or None
         self._metrics: ClassifierMetrics | None = None
         self._is_trained = False
+        self._feature_names: list[str] = []
 
     @property
     def backend(self) -> str:
@@ -163,7 +164,14 @@ class MLClassifier:
                 f"Need at least {self._config.min_train_samples} samples, got {n}"
             )
 
-        X = np.array([fv.to_list() for fv in feature_vectors], dtype=np.float64)
+        import pandas as pd
+
+        fv_cls = type(feature_vectors[0]) if feature_vectors else FeatureVector
+        self._feature_names = fv_cls.feature_names()
+        X = pd.DataFrame(
+            [fv.to_list() for fv in feature_vectors],
+            columns=self._feature_names,
+        )
         y = labels
 
         model = _build_estimator(self._config, self._backend)
@@ -222,7 +230,9 @@ class MLClassifier:
                 "MLClassifier has not been trained. Call fit() first."
             )
 
-        X = np.array([feature_vector.to_list()], dtype=np.float64)
+        import pandas as pd
+
+        X = pd.DataFrame([feature_vector.to_list()], columns=self._feature_names or None)
         probas = self._model.predict_proba(X)[0]
         classes = self._model.classes_
 
