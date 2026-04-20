@@ -427,6 +427,35 @@ class TelegramAlerter:
         )
         self.send(msg, throttle_key=f"retrain_failed_{symbol}")
 
+    def alert_training_precision_improved(
+        self,
+        symbol: str,
+        timeframe: str,
+        attempt: int,
+        precision_buy: float | None,
+        precision_sell: float | None,
+        target_buy: float,
+        target_sell: float,
+        holdout: float | None,
+    ) -> None:
+        """Alert when training attempt improves BUY or SELL precision over the previous best."""
+        if not self._cfg.notify_retrain_events:
+            return
+        buy_str = f"{precision_buy:.1%}" if precision_buy is not None else "n/a"
+        sell_str = f"{precision_sell:.1%}" if precision_sell is not None else "n/a"
+        target_buy_str = f"{target_buy:.1%}"
+        target_sell_str = f"{target_sell:.1%}"
+        holdout_str = f"{holdout:.1%}" if holdout is not None else "n/a"
+        buy_icon = "✅" if precision_buy is not None and precision_buy >= target_buy else "🔄"
+        sell_icon = "✅" if precision_sell is not None and precision_sell >= target_sell else "🔄"
+        msg = (
+            f"📈 <b>Training migliorato</b> — {symbol} {timeframe} (tentativo {attempt})\n"
+            f"  {buy_icon} BUY precision:  {buy_str} (target {target_buy_str})\n"
+            f"  {sell_icon} SELL precision: {sell_str} (target {target_sell_str})\n"
+            f"  Holdout: {holdout_str}"
+        )
+        self.send(msg, throttle_key=f"training_precision_{symbol}_{timeframe}")
+
     def alert_position_pnl(
         self,
         symbol: str,

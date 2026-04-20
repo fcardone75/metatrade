@@ -95,6 +95,11 @@ class TimeframeTrainReport:
     folds: list[dict[str, Any]]
     artifact_path: str | None
     holdout_accuracy: float | None = None
+    signal_precision: float | None = None
+    precision_buy: float | None = None
+    precision_sell: float | None = None
+    recall_buy: float | None = None
+    recall_sell: float | None = None
 
 
 def parse_args() -> argparse.Namespace:
@@ -224,11 +229,18 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     p.add_argument(
-        "--auto-tune-target",
+        "--target-buy-precision",
         type=float,
-        default=0.52,
-        metavar="ACCURACY",
-        help="Stop auto-tune early when holdout accuracy reaches this threshold (default: 0.52).",
+        default=_env_cfg.target_buy_precision,
+        metavar="PRECISION",
+        help="Stop adaptive loop when BUY precision >= this value (default from ML_TARGET_BUY_PRECISION).",
+    )
+    p.add_argument(
+        "--target-sell-precision",
+        type=float,
+        default=_env_cfg.target_sell_precision,
+        metavar="PRECISION",
+        help="Stop adaptive loop when SELL precision >= this value (default from ML_TARGET_SELL_PRECISION).",
     )
     p.add_argument(
         "--auto-tune-max-trials",
@@ -947,6 +959,11 @@ def train_single_timeframe(
         folds=fold_details,
         artifact_path=str(artifact_path),
         holdout_accuracy=float(result.holdout_accuracy) if result.holdout_accuracy is not None else None,
+        signal_precision=result.holdout_signal_precision,
+        precision_buy=result.holdout_precision_by_class.get(1),
+        precision_sell=result.holdout_precision_by_class.get(-1),
+        recall_buy=result.holdout_recall_by_class.get(1),
+        recall_sell=result.holdout_recall_by_class.get(-1),
     )
 
 
@@ -1058,7 +1075,6 @@ def auto_tune_single_timeframe(
     t0 = time.perf_counter()
     n_bars = len(bars)
     prog_path = training_progress_path(args.model_dir)
-    target = args.auto_tune_target
     max_trials = min(args.auto_tune_max_trials, len(_AUTO_TUNE_GRID))
 
     cache = TriedParamsCache(args.model_dir, args.symbol)
@@ -1069,7 +1085,7 @@ def auto_tune_single_timeframe(
         timeframe=timeframe,
         n_bars=n_bars,
         holdout_fraction=base_ml_cfg.holdout_fraction,
-        target=target,
+        min_accuracy=base_ml_cfg.min_accuracy,
         max_trials=max_trials,
         cache_summary=cache.summary() or None,
     )
@@ -1193,7 +1209,16 @@ def auto_tune_single_timeframe(
             continue
 
         holdout_acc = result.holdout_accuracy
-        is_best = holdout_acc is not None and holdout_acc > best_holdout
+        signal_prec = result.holdout_signal_precision
+        prec_buy = result.holdout_precision_by_class.get(1)
+        prec_sell = result.holdout_precision_by_class.get(-1)
+        prec_hold = result.holdout_precision_by_class.get(0)
+        recall_buy = result.holdout_recall_by_class.get(1)
+        recall_sell = result.holdout_recall_by_class.get(-1)
+
+        # Primary metric: signal precision (avg precision on BUY+SELL)
+        primary = signal_prec if signal_prec is not None else (holdout_acc or 0.0)
+        is_best = primary > best_holdout
         log.info(
             "auto_tune_trial_result",
             trial=trial_idx + 1,
@@ -1202,14 +1227,20 @@ def auto_tune_single_timeframe(
             n_folds=result.n_folds,
             mean_test_accuracy=round(float(result.mean_test_accuracy), 4),
             holdout_accuracy=round(float(holdout_acc), 4) if holdout_acc is not None else None,
+            signal_precision=round(signal_prec, 4) if signal_prec is not None else None,
+            precision_buy=round(prec_buy, 4) if prec_buy is not None else None,
+            precision_sell=round(prec_sell, 4) if prec_sell is not None else None,
+            precision_hold=round(prec_hold, 4) if prec_hold is not None else None,
+            recall_buy=round(recall_buy, 4) if recall_buy is not None else None,
+            recall_sell=round(recall_sell, 4) if recall_sell is not None else None,
             trial_sec=round(time.perf_counter() - trial_t0, 1),
             is_best=is_best,
         )
 
-        cache.record(fwd, atr_mult, holdout_acc if holdout_acc is not None else 0.0, None)
+        cache.record(fwd, atr_mult, primary, None)
 
-        if holdout_acc is not None and holdout_acc > best_holdout:
-            best_holdout = holdout_acc
+        if is_best:
+            best_holdout = primary
             best_result = result
             best_model = model
             best_cfg = trial_cfg
@@ -1231,10 +1262,10 @@ def auto_tune_single_timeframe(
             },
         )
 
-        if holdout_acc is not None and holdout_acc >= target:
+        if holdout_acc is not None and holdout_acc >= base_ml_cfg.min_accuracy:
             log.info(
                 "auto_tune_target_reached",
-                target=target,
+                target=base_ml_cfg.min_accuracy,
                 trial=trial_idx + 1,
                 holdout_accuracy=round(holdout_acc, 4),
             )
@@ -1530,6 +1561,8 @@ def adaptive_train_loop(
     attempt_history: list[dict] = []
     _adaptive_progress_path = args.model_dir / "adaptive_progress.json"
     _adaptive_started_at = datetime.now(UTC).isoformat()
+    _best_precision_buy: float = 0.0
+    _best_precision_sell: float = 0.0
 
     def _write_adaptive_progress(status: str, *, error_msg: str | None = None) -> None:
         best_h = (best_report.holdout_accuracy or 0.0) if best_report else 0.0
@@ -1572,7 +1605,6 @@ def adaptive_train_loop(
         aargs.max_iter = max_iter
         aargs.bars = attempt_bars
         aargs.auto_tune = True
-        aargs.auto_tune_target = target
         aargs.holdout_fraction = max(args.holdout_fraction, 0.2)
 
         # Reset tried-params cache — different max_depth/iter -> combos behave differently
@@ -1639,23 +1671,49 @@ def adaptive_train_loop(
             higher_tf_bars=higher_tf_bars,
         )
 
-        # Track best result across all attempts
-        if best_report is None or (
-            report.holdout_accuracy is not None
-            and (
-                best_report.holdout_accuracy is None
-                or report.holdout_accuracy > best_report.holdout_accuracy
-            )
-        ):
+        signal_prec = report.signal_precision
+        holdout = report.holdout_accuracy or 0.0
+
+        # Track best result across all attempts (rank by signal_precision, fallback to holdout)
+        def _score(r: TimeframeTrainReport) -> float:
+            return r.signal_precision or r.holdout_accuracy or 0.0
+
+        if best_report is None or _score(report) > _score(best_report):
             best_report = report
 
-        holdout = report.holdout_accuracy or 0.0
+        # Fire Telegram alert if BUY or SELL precision improved over any previous attempt
+        cur_buy = report.precision_buy or 0.0
+        cur_sell = report.precision_sell or 0.0
+        if cur_buy > _best_precision_buy or cur_sell > _best_precision_sell:
+            _best_precision_buy = max(_best_precision_buy, cur_buy)
+            _best_precision_sell = max(_best_precision_sell, cur_sell)
+            try:
+                from metatrade.alerting.telegram_alerter import TelegramAlerter
+                _alerter = TelegramAlerter()
+                _alerter.alert_training_precision_improved(
+                    symbol=args.symbol,
+                    timeframe=timeframe,
+                    attempt=attempt_idx + 1,
+                    precision_buy=report.precision_buy,
+                    precision_sell=report.precision_sell,
+                    target_buy=getattr(args, "target_buy_precision", 0.0) or 0.0,
+                    target_sell=getattr(args, "target_sell_precision", 0.0) or 0.0,
+                    holdout=report.holdout_accuracy,
+                )
+            except Exception:
+                pass
+
         attempt_record = {
             "attempt": attempt_idx + 1,
             "max_depth": max_depth,
             "max_iter": max_iter,
             "bars": attempt_bars,
             "holdout": round(holdout, 4),
+            "signal_precision": round(signal_prec, 4) if signal_prec is not None else None,
+            "precision_buy": round(report.precision_buy, 4) if report.precision_buy is not None else None,
+            "precision_sell": round(report.precision_sell, 4) if report.precision_sell is not None else None,
+            "recall_buy": round(report.recall_buy, 4) if report.recall_buy is not None else None,
+            "recall_sell": round(report.recall_sell, 4) if report.recall_sell is not None else None,
             "mean_test_accuracy": round(report.mean_test_accuracy, 4) if report.mean_test_accuracy else None,
             "best_test_accuracy": round(report.best_test_accuracy, 4) if report.best_test_accuracy else None,
             "n_folds": report.n_folds,
@@ -1666,27 +1724,36 @@ def adaptive_train_loop(
         }
         attempt_history.append(attempt_record)
 
-        if report.success and holdout >= target:
+        target_buy = getattr(args, "target_buy_precision", 0.0) or 0.0
+        target_sell = getattr(args, "target_sell_precision", 0.0) or 0.0
+        buy_ok = (report.precision_buy or 0.0) >= target_buy
+        sell_ok = (report.precision_sell or 0.0) >= target_sell
+
+        if report.success and buy_ok and sell_ok:
             log.info(
                 "adaptive_target_reached",
                 symbol=args.symbol,
                 timeframe=timeframe,
                 attempt=attempt_idx + 1,
+                precision_buy=round(report.precision_buy, 4) if report.precision_buy is not None else None,
+                precision_sell=round(report.precision_sell, 4) if report.precision_sell is not None else None,
+                target_buy=round(target_buy, 4),
+                target_sell=round(target_sell, 4),
                 holdout=round(holdout, 4),
-                target=round(target, 4),
             )
             _write_adaptive_progress("completed")
             return report
 
-        gap = target - holdout
         log.warning(
             "adaptive_attempt_failed",
             symbol=args.symbol,
             timeframe=timeframe,
             attempt=attempt_idx + 1,
+            precision_buy=round(report.precision_buy, 4) if report.precision_buy is not None else None,
+            precision_sell=round(report.precision_sell, 4) if report.precision_sell is not None else None,
+            target_buy=round(target_buy, 4),
+            target_sell=round(target_sell, 4),
             holdout=round(holdout, 4),
-            gap=round(gap, 4),
-            target=round(target, 4),
             success=report.success,
         )
         _write_adaptive_progress("running")
@@ -1907,8 +1974,9 @@ def main() -> None:
             "multires": args.multires,
             "holdout_fraction": args.holdout_fraction,
             "auto_tune": args.auto_tune,
-            "auto_tune_target": args.auto_tune_target,
             "auto_tune_max_trials": args.auto_tune_max_trials,
+            "target_buy_precision": getattr(args, "target_buy_precision", None),
+            "target_sell_precision": getattr(args, "target_sell_precision", None),
             "session_start_utc": args.session_start_utc,
             "session_end_utc": args.session_end_utc,
             "bars_requested_mt5": args.bars if args.source == "mt5" else None,

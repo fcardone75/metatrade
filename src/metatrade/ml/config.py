@@ -40,6 +40,11 @@ class MLConfig(BaseConfig):
     # Minimum class accuracy before a model is considered "trained"
     min_accuracy: float = Field(default=0.52, ge=0.5, le=1.0)
 
+    # Precision targets for BUY and SELL signals (adaptive loop stopping criteria).
+    # The loop stops when BOTH are met. Set to 0.0 to disable a specific check.
+    target_buy_precision: float = Field(default=0.55, ge=0.0, le=1.0)
+    target_sell_precision: float = Field(default=0.55, ge=0.0, le=1.0)
+
     # Minimum number of training samples
     min_train_samples: int = Field(default=100, ge=10)
 

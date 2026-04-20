@@ -83,6 +83,8 @@ class WalkForwardResult:
     best_fold_index: int = -1
     holdout_accuracy: float | None = None
     holdout_n_samples: int = 0
+    holdout_precision_by_class: dict[int, float] = field(default_factory=dict)
+    holdout_recall_by_class: dict[int, float] = field(default_factory=dict)
 
     @property
     def mean_test_accuracy(self) -> float:
@@ -95,6 +97,16 @@ class WalkForwardResult:
         if not self.folds:
             return 0.0
         return max(f.test_accuracy for f in self.folds)
+
+    @property
+    def holdout_signal_precision(self) -> float | None:
+        """Average precision on BUY (1) and SELL (-1) — the metric that matters for trading."""
+        values = [
+            self.holdout_precision_by_class[c]
+            for c in (1, -1)
+            if c in self.holdout_precision_by_class
+        ]
+        return sum(values) / len(values) if values else None
 
     @property
     def n_folds(self) -> int:
@@ -311,13 +323,27 @@ class WalkForwardTrainer:
             )
             n_holdout = len(holdout_X)
             if n_holdout > 0:
-                correct = sum(
-                    1
-                    for fv, lbl in zip(holdout_X, holdout_y, strict=False)
-                    if _safe_predict(best_model, fv) == lbl
-                )
+                preds = [_safe_predict(best_model, fv) for fv in holdout_X]
+                correct = sum(p == lbl for p, lbl in zip(preds, holdout_y))
                 result.holdout_accuracy = correct / n_holdout
                 result.holdout_n_samples = n_holdout
+
+                # Per-class precision and recall
+                classes = {1, -1, 0}
+                tp: dict[int, int] = {c: 0 for c in classes}
+                fp: dict[int, int] = {c: 0 for c in classes}
+                fn: dict[int, int] = {c: 0 for c in classes}
+                for pred, actual in zip(preds, holdout_y):
+                    if pred == actual:
+                        tp[pred] = tp.get(pred, 0) + 1
+                    else:
+                        fp[pred] = fp.get(pred, 0) + 1
+                        fn[actual] = fn.get(actual, 0) + 1
+                for c in classes:
+                    denom_p = tp[c] + fp[c]
+                    denom_r = tp[c] + fn[c]
+                    result.holdout_precision_by_class[c] = tp[c] / denom_p if denom_p else 0.0
+                    result.holdout_recall_by_class[c] = tp[c] / denom_r if denom_r else 0.0
 
         return result, final_model
 
