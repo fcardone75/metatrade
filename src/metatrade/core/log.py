@@ -12,7 +12,11 @@ Two output channels are configured by ``configure_logging()``:
              during development and live monitoring.
 
   File     — one JSON object per line written to ``<log_dir>/metatrade.log``.
-             Rotated daily; up to ``backup_days`` old files are kept.
+             Rotated by size (``LOG_MAX_MB``); up to ``LOG_BACKUP_DAYS`` old
+             files are kept.  Multi-process safe: uses
+             ``ConcurrentRotatingFileHandler`` (portalocker file-locking) so
+             that live runner and dashboard can write to the same file
+             simultaneously without corruption or rotation conflicts.
              Easy to grep, parse, and pipe into log-management tools.
 
 JSON line format (errors shown as example)::
@@ -53,6 +57,35 @@ import structlog
 # Public API
 # ---------------------------------------------------------------------------
 
+def _make_file_handler(
+    path: Path,
+    max_bytes: int,
+    backup_count: int,
+) -> logging.Handler:
+    """Return a multi-process-safe rotating file handler.
+
+    Tries ``ConcurrentRotatingFileHandler`` (portalocker file-locking) first.
+    Falls back to stdlib ``RotatingFileHandler`` if the library is not installed.
+    Both are safe for a single process; only the concurrent variant is safe for
+    multiple processes writing to the same file simultaneously.
+    """
+    try:
+        from concurrent_log_handler import ConcurrentRotatingFileHandler  # type: ignore[import]
+        return ConcurrentRotatingFileHandler(
+            filename=str(path),
+            maxBytes=max_bytes,
+            backupCount=backup_count,
+            encoding="utf-8",
+        )
+    except ImportError:
+        return logging.handlers.RotatingFileHandler(
+            filename=str(path),
+            maxBytes=max_bytes,
+            backupCount=backup_count,
+            encoding="utf-8",
+        )
+
+
 def configure_logging(
     level: str | None = None,
     *,
@@ -73,10 +106,13 @@ def configure_logging(
     LOG_DIR           logs/         Directory for the rotating log file.
                                     Pass an empty string to disable file output.
     LOG_MAX_MB        20            Max size of each log file in megabytes.
-    LOG_BACKUP_DAYS   30            Number of daily backup files to retain.
+    LOG_BACKUP_DAYS   30            Number of backup files to retain.
     ================  ============  =============================================
 
-    The file log uses daily rotation (``TimedRotatingFileHandler``).
+    The file handler is multi-process safe: uses ``ConcurrentRotatingFileHandler``
+    (portalocker file-locking) when available, falls back to stdlib
+    ``RotatingFileHandler``.  Multiple processes (live runner + dashboard) can
+    write to the same log file without corruption or rotation conflicts.
     """
     from metatrade.core.log_config import LogConfig  # local import avoids circular
     cfg = LogConfig()
@@ -133,30 +169,14 @@ def configure_logging(
         resolved_dir.mkdir(parents=True, exist_ok=True)
         log_path = resolved_dir / log_filename
 
-        # TimedRotatingFileHandler — rotates at midnight, keeps N backups.
-        # Each backup is named  metatrade.log.YYYY-MM-DD
-        file_handler = logging.handlers.TimedRotatingFileHandler(
-            filename=str(log_path),
-            when="midnight",
-            interval=1,
-            backupCount=resolved_backup,
-            encoding="utf-8",
-            utc=True,
-        )
+        file_handler = _make_file_handler(log_path, resolved_max, resolved_backup)
         file_handler.setFormatter(file_formatter)
         file_handler.setLevel(int_level)
         handlers.append(file_handler)
 
         # Dedicated error file — WARNING and above only, so problems stand out.
         error_path = resolved_dir / log_filename.replace(".log", "_errors.log")
-        error_handler = logging.handlers.TimedRotatingFileHandler(
-            filename=str(error_path),
-            when="midnight",
-            interval=1,
-            backupCount=resolved_backup,
-            encoding="utf-8",
-            utc=True,
-        )
+        error_handler = _make_file_handler(error_path, resolved_max, resolved_backup)
         error_handler.setFormatter(file_formatter)
         error_handler.setLevel(logging.WARNING)
         handlers.append(error_handler)
