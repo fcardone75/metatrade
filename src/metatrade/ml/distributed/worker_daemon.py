@@ -136,8 +136,8 @@ def _run_job(
         *filtered,
     ]
 
-    adaptive_path = work_dir / "adaptive_progress.json"
-    fold_path = work_dir / "training_progress.json"
+    adaptive_path = model_dir / "adaptive_progress.json"
+    fold_path = model_dir / "training_progress.json"
 
     # ── Launch sync + cancel-watch thread ────────────────────────────────────
     stop_event = threading.Event()
