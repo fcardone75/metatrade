@@ -123,6 +123,8 @@ class RetrainScheduler:
         self._mongo_cfg: Any = None
         self._mongo_db: Any = None
         self._remote_job_id: str | None = None
+        self._remote_best_precision_buy: float = 0.0
+        self._remote_best_precision_sell: float = 0.0
         self._init_mongo()
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -166,6 +168,7 @@ class RetrainScheduler:
             # Check if a remote job just completed
             if self._remote_job_id:
                 self._maybe_download_completed_model()
+                self._check_precision_notifications()
             return False
 
         if self._should_trigger(bar.timestamp_utc):
@@ -363,6 +366,39 @@ class RetrainScheduler:
             self._remote_job_id = None
         except Exception as exc:
             log.error("retrain_scheduler_model_download_failed", error=str(exc))
+
+    def _check_precision_notifications(self) -> None:
+        """Read latest progress from MongoDB and alert if BUY or SELL precision improved."""
+        if self._mongo_db is None or self._remote_job_id is None or self._alerter is None:
+            return
+        try:
+            col = self._mongo_db["training_progress"]
+            doc = col.find_one({"_id": self._remote_job_id})
+            if doc is None:
+                return
+            attempts = doc.get("attempts") or []
+            if not attempts:
+                return
+            latest = attempts[-1]
+            cur_buy: float = latest.get("precision_buy") or 0.0
+            cur_sell: float = latest.get("precision_sell") or 0.0
+            if cur_buy > self._remote_best_precision_buy or cur_sell > self._remote_best_precision_sell:
+                self._remote_best_precision_buy = max(self._remote_best_precision_buy, cur_buy)
+                self._remote_best_precision_sell = max(self._remote_best_precision_sell, cur_sell)
+                target_buy: float = self._cfg.target_buy_precision
+                target_sell: float = self._cfg.target_sell_precision
+                self._alerter.alert_training_precision_improved(
+                    symbol=doc.get("symbol", "?"),
+                    timeframe=doc.get("timeframe", "?"),
+                    attempt=latest.get("attempt", len(attempts)),
+                    precision_buy=cur_buy if cur_buy else None,
+                    precision_sell=cur_sell if cur_sell else None,
+                    target_buy=target_buy,
+                    target_sell=target_sell,
+                    holdout=latest.get("holdout"),
+                )
+        except Exception as exc:
+            log.debug("precision_notification_check_failed", error=str(exc))
 
     def get_remote_job_id(self) -> str | None:
         return self._remote_job_id

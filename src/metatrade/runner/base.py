@@ -103,12 +103,29 @@ def _format_adaptive_progress(data: dict, fold_data: dict | None = None) -> str:
         except Exception:
             elapsed_str = ""
 
+    # Best precision across all attempts
+    attempts_list = data.get("attempts", [])
+    best_buy = max((a.get("precision_buy") or 0.0 for a in attempts_list), default=0.0)
+    best_sell = max((a.get("precision_sell") or 0.0 for a in attempts_list), default=0.0)
+
+    target_buy = data.get("target_buy_precision")
+    target_sell = data.get("target_sell_precision")
+
+    def _prec_line(label: str, val: float, tgt: float | None) -> str:
+        s = f"  {label}: {val:.1%}"
+        if tgt:
+            icon = "✅" if val >= tgt else "🔄"
+            s += f" {icon} (target {tgt:.1%})"
+        return s
+
     lines = [
         f"{status_icon} <b>{symbol} {tf}</b>  [{data.get('status', '?').upper()}]",
         f"  Target:   {target:.2%}" if target else "",
         f"  Modello attuale: {current:.2%}" if current else "  Nessun modello precedente",
         f"  Tentativi: {done}/{max_att}",
         f"  Miglior holdout: {best_h:.2%}" if best_h else "  Miglior holdout: —",
+        _prec_line("BUY precision", best_buy, target_buy) if best_buy else "",
+        _prec_line("SELL precision", best_sell, target_sell) if best_sell else "",
         f"  In corso da: {elapsed_str}" if elapsed_str else "",
         f"  Aggiornato: {updated} UTC",
     ]
@@ -163,11 +180,10 @@ def _format_adaptive_progress(data: dict, fold_data: dict | None = None) -> str:
             lines.append(f"  Trial: {trials_done}/{max_trials}")
             lines.append(f"  Miglior holdout finora: {best_str}{cfg_str}")
 
-    attempts = data.get("attempts", [])
-    if attempts:
+    if attempts_list:
         lines.append("")
         lines.append("<b>Dettaglio tentativi:</b>")
-        for a in attempts:
+        for a in attempts_list:
             att_n = a.get("attempt", "?")
             h = a.get("holdout")
             h_str = f"{h:.2%}" if h is not None else "n/a"
@@ -176,8 +192,14 @@ def _format_adaptive_progress(data: dict, fold_data: dict | None = None) -> str:
             itr = a.get("max_iter", "?")
             dur = a.get("duration_sec")
             dur_str = f"{dur:.0f}s" if dur else ""
+            pb = a.get("precision_buy")
+            ps = a.get("precision_sell")
+            prec_str = ""
+            if pb is not None or ps is not None:
+                prec_str = f"  buy={pb:.1%}" if pb is not None else ""
+                prec_str += f"  sell={ps:.1%}" if ps is not None else ""
             lines.append(
-                f"  [{ok}] #{att_n} — holdout={h_str}  depth={depth}  iter={itr}  {dur_str}"
+                f"  [{ok}] #{att_n} — holdout={h_str}{prec_str}  d={depth}  i={itr}  {dur_str}"
             )
 
     return "\n".join(l for l in lines if l != "")

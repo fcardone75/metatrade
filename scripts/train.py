@@ -1561,8 +1561,6 @@ def adaptive_train_loop(
     attempt_history: list[dict] = []
     _adaptive_progress_path = args.model_dir / "adaptive_progress.json"
     _adaptive_started_at = datetime.now(UTC).isoformat()
-    _best_precision_buy: float = 0.0
-    _best_precision_sell: float = 0.0
 
     def _write_adaptive_progress(status: str, *, error_msg: str | None = None) -> None:
         best_h = (best_report.holdout_accuracy or 0.0) if best_report else 0.0
@@ -1571,6 +1569,8 @@ def adaptive_train_loop(
             "symbol": args.symbol,
             "timeframe": timeframe,
             "target": round(target, 4),
+            "target_buy_precision": getattr(args, "target_buy_precision", None),
+            "target_sell_precision": getattr(args, "target_sell_precision", None),
             "current_model_acc": round(current_acc, 4) if current_acc else None,
             "max_attempts": len(schedule),
             "best_holdout": round(best_h, 4) if best_h else None,
@@ -1680,28 +1680,6 @@ def adaptive_train_loop(
 
         if best_report is None or _score(report) > _score(best_report):
             best_report = report
-
-        # Fire Telegram alert if BUY or SELL precision improved over any previous attempt
-        cur_buy = report.precision_buy or 0.0
-        cur_sell = report.precision_sell or 0.0
-        if cur_buy > _best_precision_buy or cur_sell > _best_precision_sell:
-            _best_precision_buy = max(_best_precision_buy, cur_buy)
-            _best_precision_sell = max(_best_precision_sell, cur_sell)
-            try:
-                from metatrade.alerting.telegram_alerter import TelegramAlerter
-                _alerter = TelegramAlerter()
-                _alerter.alert_training_precision_improved(
-                    symbol=args.symbol,
-                    timeframe=timeframe,
-                    attempt=attempt_idx + 1,
-                    precision_buy=report.precision_buy,
-                    precision_sell=report.precision_sell,
-                    target_buy=getattr(args, "target_buy_precision", 0.0) or 0.0,
-                    target_sell=getattr(args, "target_sell_precision", 0.0) or 0.0,
-                    holdout=report.holdout_accuracy,
-                )
-            except Exception:
-                pass
 
         attempt_record = {
             "attempt": attempt_idx + 1,
