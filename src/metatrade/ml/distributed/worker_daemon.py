@@ -106,8 +106,11 @@ def _run_job(
     progress_store.init(job)
 
     # ── Build train.py command ────────────────────────────────────────────────
-    # Strip --source <val> and --file <val> from the master's train_args, then
-    # inject --source csv --file <downloaded_csv>. train.py uses --file, not --csv-file.
+    # Drop all environment-specific flags from the master's train_args
+    # (source, file, symbol, timeframe, model-dir are all master-side paths or
+    # data sources that are irrelevant on the worker). Inject correct values
+    # from the job document and the worker's own temp directory.
+    _ENV_FLAGS = {"--source", "--file", "--symbol", "--timeframe", "--model-dir"}
     base_args: list[str] = list(job.get("train_args", []))
     filtered: list[str] = []
     skip_next = False
@@ -115,16 +118,21 @@ def _run_job(
         if skip_next:
             skip_next = False
             continue
-        if arg in ("--source", "--file"):
-            skip_next = True  # drop this flag and its value
+        if arg in _ENV_FLAGS:
+            skip_next = True
             continue
         filtered.append(arg)
 
+    model_dir = work_dir / "models"
+    model_dir.mkdir(exist_ok=True)
     cmd = [
         sys.executable,
         str(_TRAIN_SCRIPT),
         "--source", "csv",
         "--file", str(csv_path),
+        "--symbol", symbol,
+        "--timeframe", timeframe,
+        "--model-dir", str(model_dir),
         *filtered,
     ]
 

@@ -372,6 +372,9 @@ def build_ml_stack(
 
     retrain_scheduler: RetrainScheduler | None = None
     if ml_cfg.retrain_enabled:
+        # Note: --source/--symbol/--timeframe/--model-dir are overridden by the
+        # worker using job metadata and its own local paths. They are kept here
+        # only for the local (non-distributed) training path.
         train_args = [
             "--source", "mt5",
             "--symbol", args.symbol,
