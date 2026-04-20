@@ -239,16 +239,27 @@ class RetrainScheduler:
         try:
             from metatrade.ml.distributed.config import MongoTrainConfig
             cfg = MongoTrainConfig()
-            if cfg.is_enabled and cfg.is_master and cfg.mongo_uri:
+            if not (cfg.is_enabled and cfg.is_master and cfg.mongo_uri):
+                return
+            try:
                 import pymongo  # type: ignore[import-untyped]
+            except ImportError:
+                log.error(
+                    "retrain_scheduler_mongo_pymongo_missing",
+                    hint="Run: pip install 'pymongo[srv]>=4.6'",
+                )
+                return
+            try:
                 client: Any = pymongo.MongoClient(cfg.mongo_uri, serverSelectionTimeoutMS=5_000)
                 client.admin.command("ping")
-                self._mongo_cfg = cfg
-                self._mongo_db = client[cfg.mongo_db]
-                log.info("retrain_scheduler_mongo_connected", db=cfg.mongo_db)
+            except Exception as exc:
+                log.error("retrain_scheduler_mongo_connection_failed", error=str(exc))
+                return
+            self._mongo_cfg = cfg
+            self._mongo_db = client[cfg.mongo_db]
+            log.info("retrain_scheduler_mongo_connected", db=cfg.mongo_db)
         except Exception as exc:
-            if self._mongo_cfg is not None:
-                log.warning("retrain_scheduler_mongo_init_failed", error=str(exc))
+            log.error("retrain_scheduler_mongo_init_error", error=str(exc))
 
     def _trigger_remote(self, symbol: str, timeframe: str, advance_slot: bool) -> bool:
         from metatrade.ml.distributed.data_transfer import DataTransfer
