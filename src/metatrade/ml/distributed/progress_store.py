@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -33,8 +34,8 @@ class MongoProgressStore:
             "max_attempts": 20,
             "best_holdout": None,
             "target": None,
-            "started_at_utc": None,
-            "updated_at_utc": None,
+            "started_at_utc": datetime.now(UTC).isoformat(),
+            "updated_at_utc": datetime.now(UTC).isoformat(),
             "attempts": [],
             "fold_data": None,
         }
