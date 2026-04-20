@@ -25,6 +25,8 @@ import pickle
 from dataclasses import dataclass, field
 from typing import Any
 
+import numpy as np
+
 from metatrade.core.log import get_logger
 from metatrade.ml.config import MLConfig
 from metatrade.ml.features import FeatureVector
@@ -161,7 +163,7 @@ class MLClassifier:
                 f"Need at least {self._config.min_train_samples} samples, got {n}"
             )
 
-        X = [fv.to_list() for fv in feature_vectors]
+        X = np.array([fv.to_list() for fv in feature_vectors], dtype=np.float64)
         y = labels
 
         model = _build_estimator(self._config, self._backend)
@@ -220,7 +222,7 @@ class MLClassifier:
                 "MLClassifier has not been trained. Call fit() first."
             )
 
-        X = [feature_vector.to_list()]
+        X = np.array([feature_vector.to_list()], dtype=np.float64)
         probas = self._model.predict_proba(X)[0]
         classes = self._model.classes_
 
