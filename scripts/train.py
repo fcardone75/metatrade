@@ -1580,7 +1580,8 @@ def adaptive_train_loop(
         if cache_file.exists():
             cache_file.unlink()
 
-        attempt_seed = (base_ml_cfg.random_seed + attempt_idx) % (2**31)
+        import random as _random
+        attempt_seed = _random.randint(0, 2**31 - 1)
         aml_cfg = MLConfig(
             train_window_bars=aargs.train_window,
             test_window_bars=aargs.test_window,
