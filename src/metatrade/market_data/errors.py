@@ -45,3 +45,7 @@ class SymbolNotFoundError(MarketDataError):
 
 class InsufficientHistoryError(DataError):
     """Broker does not have enough history for the requested date range."""
+
+
+class MissingDataError(MarketDataError):
+    """Required data (file, symbol, range) is not available."""
