@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 log = get_logger(__name__)
 
 _TRAIN_SCRIPT = Path(__file__).parent.parent.parent.parent.parent / "scripts" / "train.py"
-_PROGRESS_SYNC_INTERVAL = 10  # seconds between file→MongoDB syncs
+_PROGRESS_SYNC_INTERVAL = 3  # seconds between file→MongoDB syncs
 
 
 def _connect(cfg: MongoTrainConfig) -> Any:
