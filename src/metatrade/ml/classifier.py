@@ -169,6 +169,9 @@ class MLClassifier:
         self._metrics: ClassifierMetrics | None = None
         self._is_trained = False
         self._feature_names: list[str] = []
+        # XGBoost requires non-negative integer labels; we remap [-1,0,1] → [0,1,2]
+        # and store the inverse so predict() can restore domain labels.
+        self._inv_label_remap: dict[int, int] = {}
 
     @property
     def backend(self) -> str:
@@ -221,6 +224,15 @@ class MLClassifier:
         )
         y = labels
 
+        # XGBoost rejects negative class labels; remap domain labels to [0, N-1].
+        if self._backend == "xgboost":
+            unique = sorted(set(labels))
+            label_to_idx = {lbl: i for i, lbl in enumerate(unique)}
+            self._inv_label_remap = {i: lbl for i, lbl in enumerate(unique)}
+            y = [label_to_idx[lbl] for lbl in labels]
+        else:
+            self._inv_label_remap = {}
+
         model = _build_estimator(self._config, self._backend)
         log.info("ml_classifier_fit", backend=self._backend, n_samples=len(X))
         use_sample_weight = (
@@ -238,14 +250,17 @@ class MLClassifier:
         # Raw accuracy is used for _is_trained: min_accuracy is calibrated on raw
         # accuracy, and balanced accuracy can be artificially low on HOLD-dominated
         # M1/M5 datasets even when the model genuinely learns BUY/SELL patterns.
-        raw_accuracy = sum(p == lbl for p, lbl in zip(preds, y)) / n
+        # CatBoost/XGBoost predict() can return numpy scalars that accumulate into
+        # an ndarray inside Python's sum(); cast to float to ensure a plain scalar.
+        preds_flat = preds.ravel() if hasattr(preds, "ravel") else preds
+        raw_accuracy = float(sum(p == lbl for p, lbl in zip(preds_flat, y)) / n)
 
         if use_sample_weight:
             # Balanced accuracy: mean per-class recall (reported separately for
             # insight into BUY/SELL learning, but NOT used for is_trained gate).
             counts: dict[int, int] = {}
             correct_by_class: dict[int, int] = {}
-            for p, lbl in zip(preds, y):
+            for p, lbl in zip(preds_flat, y):
                 counts[lbl] = counts.get(lbl, 0) + 1
                 if p == lbl:
                     correct_by_class[lbl] = correct_by_class.get(lbl, 0) + 1
@@ -319,7 +334,8 @@ class MLClassifier:
 
         # Confidence = probability of the predicted class
         max_idx = int(probas.argmax())
-        direction = int(classes[max_idx])
+        predicted = int(classes[max_idx])
+        direction = self._inv_label_remap.get(predicted, predicted)
         confidence = float(probas[max_idx])
 
         return direction, confidence
