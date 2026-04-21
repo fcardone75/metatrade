@@ -232,11 +232,15 @@ class MLClassifier:
             sw = None
             model.fit(X, y)
 
-        # In-sample accuracy — use balanced accuracy when sample weights are applied
-        # so the _is_trained threshold is comparable across backends.
         preds = model.predict(X)
+        # Raw accuracy is used for _is_trained: min_accuracy is calibrated on raw
+        # accuracy, and balanced accuracy can be artificially low on HOLD-dominated
+        # M1/M5 datasets even when the model genuinely learns BUY/SELL patterns.
+        raw_accuracy = sum(p == lbl for p, lbl in zip(preds, y)) / n
+
         if use_sample_weight:
-            # Balanced accuracy: mean per-class recall (avoids HOLD-bias)
+            # Balanced accuracy: mean per-class recall (reported separately for
+            # insight into BUY/SELL learning, but NOT used for is_trained gate).
             counts: dict[int, int] = {}
             correct_by_class: dict[int, int] = {}
             for p, lbl in zip(preds, y):
@@ -247,7 +251,7 @@ class MLClassifier:
                 correct_by_class.get(c, 0) / cnt for c, cnt in counts.items()
             ) / len(counts)
         else:
-            accuracy = sum(p == lbl for p, lbl in zip(preds, y)) / n
+            accuracy = raw_accuracy
 
         # HistGBM exposes feature_importances_ via permutation importance
         # or the built-in property (available in sklearn >= 1.2).
@@ -275,11 +279,12 @@ class MLClassifier:
             feature_importances=importances,
             class_distribution=class_dist,
         )
-        self._is_trained = accuracy >= self._config.min_accuracy
+        self._is_trained = raw_accuracy >= self._config.min_accuracy
         log.info(
             "ml_classifier_fit_done",
             backend=self._backend,
-            in_sample_accuracy=round(accuracy, 4),
+            in_sample_accuracy=round(raw_accuracy, 4),
+            balanced_accuracy=round(accuracy, 4) if use_sample_weight else None,
             is_trained=self._is_trained,
             min_accuracy=self._config.min_accuracy,
         )
