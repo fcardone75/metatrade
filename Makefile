@@ -55,7 +55,9 @@ install-worker:   ## Install all dependencies needed on the ML worker (Linux)
 install-live:   ## Install all dependencies needed on the live master (Windows)
 	pip install -e ".[live,distributed,dev]"
 
-start-worker:   ## Start the ML training worker daemon
+start-worker:   ## Pull latest code, clear Python cache, reinstall, then start the ML worker daemon
+	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null; true
+	find . -name "*.pyc" -delete 2>/dev/null; true
 	python scripts/train_worker.py
 
 test:   ## Run full test suite with coverage
