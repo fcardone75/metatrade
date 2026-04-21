@@ -157,7 +157,7 @@ def parse_args() -> argparse.Namespace:
     _env_cfg = MLConfig()
     p.add_argument(
         "--backend",
-        choices=["histgbm", "lightgbm", "xgboost"],
+        choices=["histgbm", "lightgbm", "xgboost", "catboost"],
         default=_env_cfg.backend,
         help="ML backend (default: ML_BACKEND env or 'histgbm'). CLI takes precedence over env.",
     )
