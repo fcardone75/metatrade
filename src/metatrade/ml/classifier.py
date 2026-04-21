@@ -33,7 +33,7 @@ from metatrade.ml.features import FeatureVector
 
 log = get_logger(__name__)
 
-_VALID_BACKENDS = {"histgbm", "lightgbm", "xgboost"}
+_VALID_BACKENDS = {"histgbm", "lightgbm", "xgboost", "catboost"}
 
 
 def _build_estimator(config: MLConfig, backend: str) -> Any:
@@ -77,7 +77,6 @@ def _build_estimator(config: MLConfig, backend: str) -> Any:
                 learning_rate=config.learning_rate,
                 min_child_weight=config.min_child_samples,
                 random_state=config.random_seed,
-                use_label_encoder=False,
                 eval_metric="mlogloss",
                 verbosity=0,
             )
@@ -88,6 +87,26 @@ def _build_estimator(config: MLConfig, backend: str) -> Any:
             return xgb.XGBClassifier(**xgb_kwargs)
         except ImportError:
             log.warning("ml_backend_xgboost_not_installed", fallback="histgbm")
+            backend = "histgbm"
+
+    if backend == "catboost":
+        try:
+            from catboost import CatBoostClassifier  # type: ignore[import]
+            cb_kwargs: dict[str, Any] = dict(
+                iterations=config.max_iter,
+                depth=config.max_depth if config.max_depth else 6,
+                learning_rate=config.learning_rate,
+                min_data_in_leaf=config.min_child_samples,
+                random_seed=config.random_seed,
+                auto_class_weights="Balanced" if config.class_weight == "balanced" else None,
+                verbose=0,
+            )
+            if config.use_gpu:
+                cb_kwargs["task_type"] = "GPU"
+                log.info("ml_gpu_enabled", backend="catboost")
+            return CatBoostClassifier(**cb_kwargs)
+        except ImportError:
+            log.warning("ml_backend_catboost_not_installed", fallback="histgbm")
             backend = "histgbm"
 
     # histgbm (default / fallback)
