@@ -23,9 +23,10 @@ def _utcnow() -> str:
     return datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _make_job_id(symbol: str, timeframe: str) -> str:
+def _make_job_id(symbol: str, timeframe: str, backend: str = "") -> str:
     ts = datetime.datetime.now(datetime.UTC).strftime("%Y%m%d_%H%M")
-    return f"job_{symbol.lower()}_{timeframe.lower()}_{ts}"
+    suffix = f"_{backend.lower()}" if backend else ""
+    return f"job_{symbol.lower()}_{timeframe.lower()}_{ts}{suffix}"
 
 
 class MongoJobQueue:
@@ -42,7 +43,7 @@ class MongoJobQueue:
         train_args: list[str],
         triggered_by: str = "manual",
     ) -> str:
-        job_id = _make_job_id(symbol, timeframe)
+        job_id = _make_job_id(symbol, timeframe, backend)
         doc = {
             "_id": job_id,
             "status": STATUS_PENDING,
