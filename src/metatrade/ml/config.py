@@ -56,6 +56,10 @@ class MLConfig(BaseConfig):
     # Falls back to histgbm if the requested library is not installed.
     backend: str = Field(default="histgbm")
 
+    # GPU acceleration for supported backends (xgboost, lightgbm).
+    # histgbm (sklearn) does not support GPU and ignores this flag.
+    use_gpu: bool = Field(default=False)
+
     # Max number of boosting iterations / estimators (all backends)
     max_iter: int = Field(default=100, ge=10)
 

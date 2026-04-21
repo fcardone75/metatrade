@@ -49,7 +49,7 @@ def _build_estimator(config: MLConfig, backend: str) -> Any:
     if backend == "lightgbm":
         try:
             import lightgbm as lgb  # type: ignore[import]
-            return lgb.LGBMClassifier(
+            lgb_kwargs: dict[str, Any] = dict(
                 n_estimators=config.max_iter,
                 max_depth=config.max_depth if config.max_depth else -1,
                 num_leaves=config.num_leaves,
@@ -59,6 +59,10 @@ def _build_estimator(config: MLConfig, backend: str) -> Any:
                 class_weight=config.class_weight,
                 verbosity=-1,
             )
+            if config.use_gpu:
+                lgb_kwargs["device"] = "gpu"
+                log.info("ml_gpu_enabled", backend="lightgbm")
+            return lgb.LGBMClassifier(**lgb_kwargs)
         except ImportError:
             log.warning("ml_backend_lightgbm_not_installed", fallback="histgbm")
             backend = "histgbm"
@@ -66,7 +70,7 @@ def _build_estimator(config: MLConfig, backend: str) -> Any:
     if backend == "xgboost":
         try:
             import xgboost as xgb  # type: ignore[import]
-            return xgb.XGBClassifier(
+            xgb_kwargs: dict[str, Any] = dict(
                 n_estimators=config.max_iter,
                 max_depth=config.max_depth if config.max_depth else 6,
                 max_leaves=config.num_leaves,
@@ -77,6 +81,11 @@ def _build_estimator(config: MLConfig, backend: str) -> Any:
                 eval_metric="mlogloss",
                 verbosity=0,
             )
+            if config.use_gpu:
+                xgb_kwargs["tree_method"] = "hist"
+                xgb_kwargs["device"] = "cuda"
+                log.info("ml_gpu_enabled", backend="xgboost")
+            return xgb.XGBClassifier(**xgb_kwargs)
         except ImportError:
             log.warning("ml_backend_xgboost_not_installed", fallback="histgbm")
             backend = "histgbm"
