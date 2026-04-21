@@ -221,18 +221,33 @@ class MLClassifier:
 
         model = _build_estimator(self._config, self._backend)
         log.info("ml_classifier_fit", backend=self._backend, n_samples=len(X))
-        if (
+        use_sample_weight = (
             self._config.class_weight == "balanced"
             and self._backend not in _NATIVE_CLASS_WEIGHT_BACKENDS
-        ):
+        )
+        if use_sample_weight:
             sw = _balanced_sample_weights(labels)
             model.fit(X, y, sample_weight=sw)
         else:
+            sw = None
             model.fit(X, y)
 
-        # In-sample accuracy (training metric — not generalisation)
+        # In-sample accuracy — use balanced accuracy when sample weights are applied
+        # so the _is_trained threshold is comparable across backends.
         preds = model.predict(X)
-        accuracy = sum(p == lbl for p, lbl in zip(preds, y)) / n
+        if use_sample_weight:
+            # Balanced accuracy: mean per-class recall (avoids HOLD-bias)
+            counts: dict[int, int] = {}
+            correct_by_class: dict[int, int] = {}
+            for p, lbl in zip(preds, y):
+                counts[lbl] = counts.get(lbl, 0) + 1
+                if p == lbl:
+                    correct_by_class[lbl] = correct_by_class.get(lbl, 0) + 1
+            accuracy = sum(
+                correct_by_class.get(c, 0) / cnt for c, cnt in counts.items()
+            ) / len(counts)
+        else:
+            accuracy = sum(p == lbl for p, lbl in zip(preds, y)) / n
 
         # HistGBM exposes feature_importances_ via permutation importance
         # or the built-in property (available in sklearn >= 1.2).
