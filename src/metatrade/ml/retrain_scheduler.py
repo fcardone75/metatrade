@@ -479,6 +479,9 @@ class RetrainScheduler:
                             trial=fold_data.get("trials_done", "?"),
                             max_trials=fold_data.get("max_trials", "?"),
                             holdout=autotune_h,
+                            training_backend=doc.get("training_backend"),
+                            previous_model_acc=doc.get("current_model_acc"),
+                            previous_model_backend=doc.get("current_model_backend"),
                         )
 
                 # ── Completed attempt precision improvement ────────────────────

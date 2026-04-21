@@ -1567,8 +1567,8 @@ def _compute_adaptive_target(
     min_accuracy: float,
     min_improvement_pp: float,
     absolute_min: float,
-) -> tuple[float, float | None]:
-    """Return (target_accuracy, current_model_holdout_or_None).
+) -> tuple[float, float | None, str | None]:
+    """Return (target_accuracy, current_model_holdout_or_None, current_model_backend_or_None).
 
     No model -> target = min_accuracy.
     Has model -> target = max(current_holdout + min_improvement_pp, absolute_min).
@@ -1579,9 +1579,10 @@ def _compute_adaptive_target(
         active = _reg.get_active()
         if active is not None:
             current = active.tags.get("holdout_accuracy")
+            backend = active.tags.get("backend")
             if current is not None:
                 current = float(current)
-                return max(current + min_improvement_pp, absolute_min), current
+                return max(current + min_improvement_pp, absolute_min), current, backend
     except Exception as exc:
         log.warning(
             "adaptive_target_compute_failed",
@@ -1589,7 +1590,7 @@ def _compute_adaptive_target(
             error_type=type(exc).__name__,
             traceback=traceback.format_exc(),
         )
-    return min_accuracy, None
+    return min_accuracy, None, None
 
 
 def adaptive_train_loop(
@@ -1600,7 +1601,7 @@ def adaptive_train_loop(
     telemetry: TelemetryStore,
 ) -> TimeframeTrainReport:
     """Retry auto-tune with escalating complexity reduction until target met."""
-    target, current_acc = _compute_adaptive_target(
+    target, current_acc, current_model_backend = _compute_adaptive_target(
         args.model_dir,
         args.symbol,
         args.min_accuracy,
@@ -1656,6 +1657,8 @@ def adaptive_train_loop(
             "target_sell_precision": getattr(args, "target_sell_precision", None),
             "fallback_min": getattr(args, "fallback_min", None),
             "current_model_acc": round(current_acc, 4) if current_acc else None,
+            "current_model_backend": current_model_backend,
+            "training_backend": args.backend,
             "max_attempts": len(schedule),
             "best_holdout": round(best_h, 4) if best_h else None,
             "attempts_done": len(attempt_history),

@@ -434,13 +434,23 @@ class TelegramAlerter:
         trial: int | str,
         max_trials: int | str,
         holdout: float,
+        training_backend: str | None = None,
+        previous_model_acc: float | None = None,
+        previous_model_backend: str | None = None,
     ) -> None:
         """Alert when auto-tune finds a new best holdout during a single adaptive attempt."""
         if not self._cfg.notify_retrain_events:
             return
+        backend_str = f" [{training_backend}]" if training_backend else ""
+        if previous_model_acc is not None:
+            prev_backend_str = f" ({previous_model_backend})" if previous_model_backend else ""
+            prev_str = f"  Modello precedente: {previous_model_acc:.1%}{prev_backend_str}\n"
+        else:
+            prev_str = ""
         msg = (
-            f"🔍 <b>Auto-tune migliorato</b> — {symbol} {timeframe}\n"
+            f"🔍 <b>Auto-tune migliorato</b>{backend_str} — {symbol} {timeframe}\n"
             f"  Trial: {trial}/{max_trials}\n"
+            f"{prev_str}"
             f"  Miglior holdout: {holdout:.1%}"
         )
         self.send(msg, throttle_key=f"autotune_improved_{symbol}_{timeframe}")
