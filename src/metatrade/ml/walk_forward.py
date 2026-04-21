@@ -43,6 +43,7 @@ from datetime import datetime
 from typing import Any
 
 from metatrade.core.contracts.market import Bar
+from metatrade.core.log import get_logger
 from metatrade.core.utils.session import is_in_session
 from metatrade.ml.classifier import ClassifierMetrics, MLClassifier
 from metatrade.ml.config import MLConfig
@@ -55,6 +56,8 @@ from metatrade.ml.features import (
     extract_features_multires,
 )
 from metatrade.ml.labels import label_bars
+
+log = get_logger(__name__)
 
 # Type alias for a feature cache slot (None = insufficient bars or session-filtered)
 _FVType = FeatureVector | MultiResFeatureVector
@@ -447,5 +450,6 @@ def _safe_predict(classifier: MLClassifier, fv: _FVType) -> int:
     try:
         pred, _ = classifier.predict(fv)
         return pred
-    except RuntimeError:
+    except Exception as exc:
+        log.warning("ml_safe_predict_error", exc_type=type(exc).__name__, error=str(exc))
         return 0

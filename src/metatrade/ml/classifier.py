@@ -261,6 +261,13 @@ class MLClassifier:
             class_distribution=class_dist,
         )
         self._is_trained = accuracy >= self._config.min_accuracy
+        log.info(
+            "ml_classifier_fit_done",
+            backend=self._backend,
+            in_sample_accuracy=round(accuracy, 4),
+            is_trained=self._is_trained,
+            min_accuracy=self._config.min_accuracy,
+        )
         return self._metrics
 
     def predict(self, feature_vector: FeatureVector) -> tuple[int, float]:
