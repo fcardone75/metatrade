@@ -37,7 +37,9 @@ _VALID_BACKENDS = {"histgbm", "lightgbm", "xgboost", "catboost"}
 
 # Backends that handle class_weight internally via constructor param.
 # For all others, balanced sample_weight is computed and passed to fit().
-_NATIVE_CLASS_WEIGHT_BACKENDS = {"histgbm", "lightgbm"}
+# CatBoost uses auto_class_weights="Balanced" in its constructor, so it must
+# be listed here to avoid double-weighting (constructor + sample_weight in fit).
+_NATIVE_CLASS_WEIGHT_BACKENDS = {"histgbm", "lightgbm", "catboost"}
 
 
 def _balanced_sample_weights(labels: list[int]) -> list[float]:
