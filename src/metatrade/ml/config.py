@@ -113,6 +113,12 @@ class MLConfig(BaseConfig):
     # promotion. Prevents promoting models that barely passed training.
     candidate_min_holdout: float = Field(default=0.52, ge=0.0, le=1.0)
 
+    # ── Adaptive fallback floor ───────────────────────────────────────────────
+    # If after all adaptive attempts no model hits the precision targets, accept
+    # the best model found if its holdout accuracy is >= this floor.
+    # Set to 0.0 to always save the best model regardless of quality.
+    adaptive_fallback_min: float = Field(default=0.50, ge=0.0, le=1.0)
+
     # ── Background retraining scheduler ──────────────────────────────────────
     # Whether to automatically launch train.py in the background.
     retrain_enabled: bool = Field(default=False)

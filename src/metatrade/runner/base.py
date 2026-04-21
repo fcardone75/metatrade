@@ -118,14 +118,20 @@ def _format_adaptive_progress(data: dict, fold_data: dict | None = None) -> str:
             s += f" {icon} (target {tgt:.1%})"
         return s
 
+    result_type = data.get("result_type")
+    result_icons = {"full_success": "🏆", "fallback": "⚠️", "failed": "❌"}
+    result_str = f"  Risultato: {result_icons.get(result_type, '')} {result_type}" if result_type else ""
+
+    has_precision = bool(attempts_list)
     lines = [
         f"{status_icon} <b>{symbol} {tf}</b>  [{data.get('status', '?').upper()}]",
+        result_str,
         f"  Target:   {target:.2%}" if target else "",
         f"  Modello attuale: {current:.2%}" if current else "  Nessun modello precedente",
         f"  Tentativi: {done}/{max_att}",
         f"  Miglior holdout: {best_h:.2%}" if best_h else "  Miglior holdout: —",
-        _prec_line("BUY precision", best_buy, target_buy) if best_buy else "",
-        _prec_line("SELL precision", best_sell, target_sell) if best_sell else "",
+        _prec_line("BUY precision", best_buy, target_buy) if has_precision else "",
+        _prec_line("SELL precision", best_sell, target_sell) if has_precision else "",
         f"  In corso da: {elapsed_str}" if elapsed_str else "",
         f"  Aggiornato: {updated} UTC",
     ]
@@ -642,10 +648,10 @@ class BaseRunner:
             return "⚠️ Retraining non abilitato (ML_RETRAIN_ENABLED=false)."
 
         # ── Remote training (MongoDB) path ────────────────────────────────────
-        job_id = self._retrain_scheduler.get_remote_job_id()
         db = self._retrain_scheduler.get_mongo_db()
         if db is not None:
-            return self._cmd_training_remote(job_id, db)
+            job_ids = self._retrain_scheduler.get_remote_job_ids()
+            return self._cmd_training_remote(job_ids, db)
 
         # ── Local training path ────────────────────────────────────────────────
         try:
@@ -692,26 +698,41 @@ class BaseRunner:
         except Exception as exc:
             return f"🔁 Training in corso (errore lettura progress: {exc})."
 
-    def _cmd_training_remote(self, job_id: str | None, db: object) -> str:
+    def _cmd_training_remote(self, job_ids: list[str], db: object) -> str:
         from metatrade.ml.distributed.job_queue import MongoJobQueue
         from metatrade.ml.distributed.progress_store import MongoProgressStore
 
         queue = MongoJobQueue(db)  # type: ignore[arg-type]
         progress_store = MongoProgressStore(db)  # type: ignore[arg-type]
 
-        if job_id is None:
+        # If no active job IDs tracked locally, fall back to querying MongoDB
+        if not job_ids:
             active_job = queue.get_active_job()
             if active_job is None:
                 return "⏸ Nessun training remoto in corso."
-            job_id = active_job["_id"]
+            job_ids = [active_job["_id"]]
 
-        progress = progress_store.read(job_id)
-        if progress is None:
-            return f"🔁 Training remoto in coda (job: {job_id}).\nIn attesa che il worker inizi..."
+        sections: list[str] = []
+        for job_id in job_ids:
+            progress = progress_store.read(job_id)
+            backend = job_id  # fallback label
+            if progress is None:
+                sections.append(f"🔁 <b>Training remoto in coda</b>\nJob: <code>{job_id}</code>\nIn attesa che il worker inizi...")
+                continue
 
-        fold_data = progress.get("fold_data")
-        header = f"🔁 <b>Training remoto in corso</b>\nJob: <code>{job_id}</code>\n\n"
-        return header + _format_adaptive_progress(progress, fold_data)
+            # Try to get backend name from the job doc
+            try:
+                job_doc = queue._col.find_one({"_id": job_id}, {"backend": 1})
+                if job_doc and job_doc.get("backend"):
+                    backend = job_doc["backend"]
+            except Exception:
+                pass
+
+            fold_data = progress.get("fold_data")
+            header = f"🔁 <b>Training remoto</b> [{backend}]\nJob: <code>{job_id}</code>\n\n"
+            sections.append(header + _format_adaptive_progress(progress, fold_data))
+
+        return "\n\n―――\n\n".join(sections)
 
     def _cmd_remove_training(self, _args: str) -> str:
         db = self._retrain_scheduler.get_mongo_db() if self._retrain_scheduler else None

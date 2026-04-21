@@ -122,10 +122,13 @@ class RetrainScheduler:
         # ── Distributed training state ─────────────────────────────────────────
         self._mongo_cfg: Any = None
         self._mongo_db: Any = None
-        self._remote_job_id: str | None = None
+        # All active remote job IDs (one per backend when multi-backend is used)
+        self._remote_job_ids: list[str] = []
         self._remote_best_precision_buy: float = 0.0
         self._remote_best_precision_sell: float = 0.0
         self._remote_best_autotune_holdout: float = 0.0
+        # Fallback models collected when no full_success: (job_doc) sorted by quality
+        self._fallback_candidates: list[dict[str, Any]] = []
         self._init_mongo()
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -133,8 +136,8 @@ class RetrainScheduler:
     @property
     def is_training(self) -> bool:
         """True if a training process is currently running (local or remote)."""
-        if self._remote_job_id is not None:
-            return self._is_remote_job_active()
+        if self._remote_job_ids:
+            return self._is_any_remote_job_active()
         return self._process is not None and self._process.poll() is None
 
     @property
@@ -166,8 +169,7 @@ class RetrainScheduler:
             self._harvest_process(bar)
 
         if self.is_training:
-            # Check if a remote job just completed
-            if self._remote_job_id:
+            if self._remote_job_ids:
                 self._check_precision_notifications()
                 self._maybe_download_completed_model()
             return False
@@ -269,7 +271,6 @@ class RetrainScheduler:
         from metatrade.ml.distributed.data_transfer import DataTransfer
         from metatrade.ml.distributed.job_queue import MongoJobQueue
 
-        backend = _extract_arg(self._train_args, "--backend") or self._cfg.backend
         queue = MongoJobQueue(self._mongo_db)
         transfer = DataTransfer(self._mongo_db)
 
@@ -284,22 +285,42 @@ class RetrainScheduler:
                 hint="Run for longer before retraining, or increase --warmup-bars",
             )
 
+        # Parse backends: ML_BACKEND may be "histgbm|lightgbm|xgboost"
+        raw_backend = _extract_arg(self._train_args, "--backend") or self._cfg.backend
+        backends = [b.strip() for b in raw_backend.split("|") if b.strip()]
+
+        # Upload bars once, share the GridFS ID across all backend jobs
         try:
-            job_id = queue.push_job(
-                symbol=symbol,
-                timeframe=timeframe,
-                backend=backend,
-                train_args=self._train_args,
-                triggered_by="scheduled" if advance_slot else "manual",
-            )
-            # Upload bars and mark data_ready=True only after upload completes.
-            # Worker's poll_pending() checks data_ready, so it cannot start before this.
-            gridfs_id = transfer.upload_bars(job_id, symbol, timeframe, bars)
-            queue.mark_data_ready(job_id, gridfs_id)
-            self._remote_job_id = job_id
+            first_job_id = f"tmp_{symbol.lower()}_{timeframe.lower()}"
+            gridfs_id = transfer.upload_bars(first_job_id, symbol, timeframe, bars)
         except Exception as exc:
-            log.error("retrain_scheduler_remote_push_failed", error=str(exc))
+            log.error("retrain_scheduler_remote_upload_failed", error=str(exc))
             return False
+
+        launched_ids: list[str] = []
+        for backend in backends:
+            try:
+                job_id = queue.push_job(
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    backend=backend,
+                    train_args=self._train_args,
+                    triggered_by="scheduled" if advance_slot else "manual",
+                )
+                queue.mark_data_ready(job_id, gridfs_id)
+                launched_ids.append(job_id)
+                log.info("retrain_scheduler_remote_job_queued", job_id=job_id, backend=backend)
+            except Exception as exc:
+                log.error("retrain_scheduler_remote_push_failed", backend=backend, error=str(exc))
+
+        if not launched_ids:
+            return False
+
+        self._remote_job_ids = launched_ids
+        self._fallback_candidates = []
+        self._remote_best_precision_buy = 0.0
+        self._remote_best_precision_sell = 0.0
+        self._remote_best_autotune_holdout = 0.0
 
         self._bars_since_last = 0
         if advance_slot:
@@ -317,123 +338,187 @@ class RetrainScheduler:
                 trigger=self._cfg.retrain_trigger,
                 bars_or_hours=unit_val,
             )
-        log.info("retrain_scheduler_remote_job_queued", job_id=self._remote_job_id)
+        log.info("retrain_scheduler_remote_jobs_queued", count=len(launched_ids), backends=backends)
         return True
 
-    def _is_remote_job_active(self) -> bool:
-        if self._mongo_db is None or self._remote_job_id is None:
+    def _is_any_remote_job_active(self) -> bool:
+        if self._mongo_db is None or not self._remote_job_ids:
             return False
         try:
             from metatrade.ml.distributed.job_queue import STATUS_PENDING, STATUS_RUNNING, MongoJobQueue
             queue = MongoJobQueue(self._mongo_db)
-            job = queue._col.find_one({"_id": self._remote_job_id, "status": {"$in": [STATUS_PENDING, STATUS_RUNNING]}})
-            return job is not None
+            count = queue._col.count_documents({
+                "_id": {"$in": self._remote_job_ids},
+                "status": {"$in": [STATUS_PENDING, STATUS_RUNNING]},
+            })
+            return count > 0
         except Exception:
             return False
 
+    def _register_and_promote(self, job: dict[str, Any], model_bytes: bytes, promote: bool) -> str | None:
+        """Register model in registry, optionally promote it. Returns version."""
+        if self._model_registry is None:
+            return None
+        from metatrade.ml.classifier import MLClassifier
+        classifier = MLClassifier.deserialize(model_bytes, self._cfg)
+        snapshot = self._model_registry.register(
+            classifier,
+            symbol=job["symbol"],
+            version=job.get("model_version"),
+            tags={
+                "backend": job.get("backend"),
+                "holdout": job.get("holdout_accuracy"),
+                "result_type": job.get("result_type", "full_success"),
+                "source": "remote",
+            },
+        )
+        if promote:
+            self._model_registry.promote(snapshot.version)
+            log.info("retrain_scheduler_remote_model_promoted", version=snapshot.version)
+        else:
+            log.info("retrain_scheduler_remote_model_registered", version=snapshot.version)
+        return snapshot.version
+
     def _maybe_download_completed_model(self) -> None:
-        if self._mongo_db is None or self._remote_job_id is None:
+        """Check each remote job; promote full_success immediately, collect fallbacks."""
+        if self._mongo_db is None or not self._remote_job_ids:
             return
         try:
             from metatrade.ml.distributed.data_transfer import DataTransfer
             from metatrade.ml.distributed.job_queue import STATUS_COMPLETED, MongoJobQueue
             queue = MongoJobQueue(self._mongo_db)
-            job = queue._col.find_one({"_id": self._remote_job_id, "status": STATUS_COMPLETED})
-            if job is None:
-                return
-
             transfer = DataTransfer(self._mongo_db)
-            model_bytes = transfer.download_model(job["model_gridfs_id"])
 
-            if self._model_registry is not None:
-                from metatrade.ml.classifier import MLClassifier
-                classifier = MLClassifier.deserialize(model_bytes, self._cfg)
-                snapshot = self._model_registry.register(
-                    classifier,
-                    symbol=job["symbol"],
-                    version=job.get("model_version"),
-                    tags={"backend": job.get("backend"), "holdout": job.get("holdout_accuracy"), "source": "remote"},
-                )
-                self._model_registry.promote(snapshot.version)
-                log.info("retrain_scheduler_remote_model_loaded", version=snapshot.version)
+            still_active = list(self._remote_job_ids)
+            for job_id in list(self._remote_job_ids):
+                job = queue._col.find_one({"_id": job_id, "status": STATUS_COMPLETED})
+                if job is None:
+                    continue
 
-            if self._alerter is not None:
-                self._alerter.alert_retrain_complete(
-                    symbol=job["symbol"],
-                    timeframe=job["timeframe"],
-                    accuracy=job.get("holdout_accuracy") or 0.0,
-                    version=job.get("model_version") or "",
+                still_active.remove(job_id)
+                result_type = job.get("result_type", "full_success")
+
+                try:
+                    model_bytes = transfer.download_model(job["model_gridfs_id"])
+                except Exception as exc:
+                    log.error("retrain_scheduler_model_download_failed", job_id=job_id, error=str(exc))
+                    continue
+
+                if result_type == "full_success":
+                    # Promote immediately — targets were met
+                    self._register_and_promote(job, model_bytes, promote=True)
+                    if self._alerter is not None:
+                        self._alerter.alert_retrain_complete(
+                            symbol=job["symbol"],
+                            timeframe=job["timeframe"],
+                            new_version=job.get("model_version") or "",
+                            holdout_accuracy=job.get("holdout_accuracy") or 0.0,
+                            is_candidate=True,
+                            reason=f"Precision targets raggiunti (backend: {job.get('backend', '?')})",
+                        )
+                    # Cancel remaining backend jobs — we have a winner
+                    for other_id in still_active:
+                        queue.cancel_job(other_id)
+                    self._remote_job_ids = []
+                    self._fallback_candidates = []
+                    return
+
+                elif result_type == "fallback":
+                    # Register but don't promote yet — wait for all backends
+                    self._register_and_promote(job, model_bytes, promote=False)
+                    self._fallback_candidates.append(job)
+
+            self._remote_job_ids = still_active
+
+            # If all jobs finished and none was full_success, promote best fallback
+            if not still_active and self._fallback_candidates:
+                best = max(
+                    self._fallback_candidates,
+                    key=lambda j: (j.get("signal_precision") or j.get("holdout_accuracy") or 0.0),
                 )
-            self._remote_job_id = None
+                version = best.get("model_version")
+                if version and self._model_registry is not None:
+                    self._model_registry.promote(version)
+                    log.info("retrain_scheduler_fallback_promoted", version=version, backend=best.get("backend"))
+                if self._alerter is not None:
+                    self._alerter.alert_retrain_complete(
+                        symbol=best["symbol"],
+                        timeframe=best["timeframe"],
+                        new_version=version or "",
+                        holdout_accuracy=best.get("holdout_accuracy") or 0.0,
+                        is_candidate=False,
+                        reason=f"Fallback accettato (backend: {best.get('backend', '?')})",
+                    )
+                self._fallback_candidates = []
+
         except Exception as exc:
             log.error("retrain_scheduler_model_download_failed", error=str(exc))
 
     def _check_precision_notifications(self) -> None:
         """Read latest progress from MongoDB and alert on any training improvement."""
-        if self._mongo_db is None or self._remote_job_id is None or self._alerter is None:
+        if self._mongo_db is None or not self._remote_job_ids or self._alerter is None:
             return
         try:
             col = self._mongo_db["training_progress"]
-            doc = col.find_one({"_id": self._remote_job_id})
-            if doc is None:
-                return
-            symbol: str = doc.get("symbol", "?")
-            timeframe: str = doc.get("timeframe", "?")
+            for job_id in self._remote_job_ids:
+                doc = col.find_one({"_id": job_id})
+                if doc is None:
+                    continue
+                symbol: str = doc.get("symbol", "?")
+                timeframe: str = doc.get("timeframe", "?")
 
-            # ── Auto-tune holdout improvement (fold_data) ──────────────────────
-            fold_data = doc.get("fold_data") or {}
-            if fold_data.get("status") == "auto_tune":
-                autotune_h = fold_data.get("best_holdout")
-                if autotune_h is not None and autotune_h > self._remote_best_autotune_holdout:
-                    self._remote_best_autotune_holdout = autotune_h
-                    trial = fold_data.get("trials_done", "?")
-                    max_trials = fold_data.get("max_trials", "?")
-                    self._alerter.alert_training_autotune_improved(
+                # ── Auto-tune holdout improvement (fold_data) ──────────────────
+                fold_data = doc.get("fold_data") or {}
+                if fold_data.get("status") == "auto_tune":
+                    autotune_h = fold_data.get("best_holdout")
+                    if autotune_h is not None and autotune_h > self._remote_best_autotune_holdout:
+                        self._remote_best_autotune_holdout = autotune_h
+                        self._alerter.alert_training_autotune_improved(
+                            symbol=symbol,
+                            timeframe=timeframe,
+                            trial=fold_data.get("trials_done", "?"),
+                            max_trials=fold_data.get("max_trials", "?"),
+                            holdout=autotune_h,
+                        )
+
+                # ── Completed attempt precision improvement ────────────────────
+                attempts = doc.get("attempts") or []
+                if not attempts:
+                    continue
+                latest = attempts[-1]
+                raw_buy = latest.get("precision_buy")
+                raw_sell = latest.get("precision_sell")
+                if raw_buy is None and raw_sell is None:
+                    continue
+                cur_buy: float = raw_buy if raw_buy is not None else 0.0
+                cur_sell: float = raw_sell if raw_sell is not None else 0.0
+                if cur_buy > self._remote_best_precision_buy or cur_sell > self._remote_best_precision_sell:
+                    self._remote_best_precision_buy = max(self._remote_best_precision_buy, cur_buy)
+                    self._remote_best_precision_sell = max(self._remote_best_precision_sell, cur_sell)
+                    self._alerter.alert_training_precision_improved(
                         symbol=symbol,
                         timeframe=timeframe,
-                        trial=trial,
-                        max_trials=max_trials,
-                        holdout=autotune_h,
+                        attempt=latest.get("attempt", len(attempts)),
+                        precision_buy=cur_buy if cur_buy else None,
+                        precision_sell=cur_sell if cur_sell else None,
+                        target_buy=self._cfg.target_buy_precision,
+                        target_sell=self._cfg.target_sell_precision,
+                        holdout=latest.get("holdout"),
                     )
-
-            # ── Completed attempt precision improvement ────────────────────────
-            attempts = doc.get("attempts") or []
-            if not attempts:
-                return
-            latest = attempts[-1]
-            raw_buy = latest.get("precision_buy")
-            raw_sell = latest.get("precision_sell")
-            if raw_buy is None and raw_sell is None:
-                return
-            cur_buy: float = raw_buy if raw_buy is not None else 0.0
-            cur_sell: float = raw_sell if raw_sell is not None else 0.0
-            if cur_buy > self._remote_best_precision_buy or cur_sell > self._remote_best_precision_sell:
-                self._remote_best_precision_buy = max(self._remote_best_precision_buy, cur_buy)
-                self._remote_best_precision_sell = max(self._remote_best_precision_sell, cur_sell)
-                self._alerter.alert_training_precision_improved(
-                    symbol=symbol,
-                    timeframe=timeframe,
-                    attempt=latest.get("attempt", len(attempts)),
-                    precision_buy=cur_buy if cur_buy else None,
-                    precision_sell=cur_sell if cur_sell else None,
-                    target_buy=self._cfg.target_buy_precision,
-                    target_sell=self._cfg.target_sell_precision,
-                    holdout=latest.get("holdout"),
-                )
         except Exception as exc:
             log.debug("precision_notification_check_failed", error=str(exc))
 
     def get_remote_job_id(self) -> str | None:
-        return self._remote_job_id
+        return self._remote_job_ids[0] if self._remote_job_ids else None
+
+    def get_remote_job_ids(self) -> list[str]:
+        return list(self._remote_job_ids)
 
     def get_mongo_db(self) -> Any:
         return self._mongo_db
 
     def cancel_remote_job(self) -> list[str]:
-        """Cancel all active remote jobs on MongoDB and reset local state.
-
-        Returns list of cancelled job IDs (empty if mongo not enabled or no active jobs).
-        """
+        """Cancel all active remote jobs on MongoDB and reset local state."""
         if self._mongo_db is None:
             return []
         from metatrade.ml.distributed.job_queue import MongoJobQueue
@@ -442,7 +527,8 @@ class RetrainScheduler:
         timeframe = _extract_arg(self._train_args, "--timeframe")
         cancelled = queue.cancel_active(symbol=symbol, timeframe=timeframe)
         if cancelled:
-            self._remote_job_id = None
+            self._remote_job_ids = []
+            self._fallback_candidates = []
         return cancelled
 
     # ── Local subprocess launch ────────────────────────────────────────────────

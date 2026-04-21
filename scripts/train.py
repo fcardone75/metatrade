@@ -288,6 +288,16 @@ def parse_args() -> argparse.Namespace:
         metavar="N",
         help="Skip the first N adaptive attempts (used to resume an interrupted run).",
     )
+    p.add_argument(
+        "--fallback-min",
+        type=float,
+        default=_env_cfg.adaptive_fallback_min,
+        metavar="ACC",
+        help=(
+            "Minimum holdout to accept when precision targets are not met after all attempts. "
+            "Models below this floor are discarded (default from ML_ADAPTIVE_FALLBACK_MIN)."
+        ),
+    )
     return p.parse_args()
 
 
@@ -1597,15 +1607,17 @@ def adaptive_train_loop(
 
     best_report: TimeframeTrainReport | None = None
 
-    def _write_adaptive_progress(status: str, *, error_msg: str | None = None) -> None:
+    def _write_adaptive_progress(status: str, *, error_msg: str | None = None, result_type: str | None = None) -> None:
         best_h = (best_report.holdout_accuracy or 0.0) if best_report else 0.0
         payload: dict[str, object] = {
             "status": status,
+            "result_type": result_type,
             "symbol": args.symbol,
             "timeframe": timeframe,
             "target": round(target, 4),
             "target_buy_precision": getattr(args, "target_buy_precision", None),
             "target_sell_precision": getattr(args, "target_sell_precision", None),
+            "fallback_min": getattr(args, "fallback_min", None),
             "current_model_acc": round(current_acc, 4) if current_acc else None,
             "max_attempts": len(schedule),
             "best_holdout": round(best_h, 4) if best_h else None,
@@ -1757,7 +1769,7 @@ def adaptive_train_loop(
                 target_sell=round(target_sell, 4),
                 holdout=round(holdout, 4),
             )
-            _write_adaptive_progress("completed")
+            _write_adaptive_progress("completed", result_type="full_success")
             return report
 
         log.warning(
@@ -1783,20 +1795,23 @@ def adaptive_train_loop(
             )
 
     best_h = (best_report.holdout_accuracy or 0.0) if best_report else 0.0
-    _write_adaptive_progress("exhausted")
-    log.warning(
-        "adaptive_all_attempts_failed",
-        symbol=args.symbol,
-        timeframe=timeframe,
-        best_holdout=round(best_h, 4),
-        target=round(target, 4),
-        attempts=len(schedule),
-    )
-    if best_report is None:
+    fallback_min: float = getattr(args, "fallback_min", 0.0) or 0.0
+
+    if best_report is None or best_h < fallback_min:
+        _write_adaptive_progress("exhausted", result_type="failed")
+        log.warning(
+            "adaptive_all_attempts_failed",
+            symbol=args.symbol,
+            timeframe=timeframe,
+            best_holdout=round(best_h, 4),
+            fallback_min=round(fallback_min, 4),
+            target=round(target, 4),
+            attempts=len(schedule),
+        )
         return TimeframeTrainReport(
             timeframe=timeframe,
             success=False,
-            error="Adaptive training: tutti i tentativi esauriti.",
+            error=f"Adaptive training: tutti i tentativi esauriti. Miglior holdout {best_h:.1%} < fallback_min {fallback_min:.1%}.",
             bars_used=0,
             duration_sec=0.0,
             model_version=None,
@@ -1806,8 +1821,19 @@ def adaptive_train_loop(
             n_folds=0,
             folds=[],
             artifact_path=None,
-            holdout_accuracy=None,
+            holdout_accuracy=best_h or None,
         )
+
+    _write_adaptive_progress("exhausted", result_type="fallback")
+    log.warning(
+        "adaptive_fallback_accepted",
+        symbol=args.symbol,
+        timeframe=timeframe,
+        best_holdout=round(best_h, 4),
+        fallback_min=round(fallback_min, 4),
+        target=round(target, 4),
+        attempts=len(schedule),
+    )
     return best_report
 
 

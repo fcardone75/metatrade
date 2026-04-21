@@ -19,6 +19,7 @@ class MongoTrainConfig(BaseConfig):
     ml_train_mongo: bool = False
     ml_mt5_master: bool = True
     ml_worker_poll_sec: int = 30
+    ml_worker_max_parallel_jobs: int = 1
 
     @property
     def is_enabled(self) -> bool:

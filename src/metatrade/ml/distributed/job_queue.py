@@ -91,7 +91,16 @@ class MongoJobQueue:
             log.info("job_queue_claimed", job_id=job["_id"])
         return job  # type: ignore[return-value]
 
-    def complete(self, job_id: str, model_gridfs_id: Any, model_version: str, holdout_accuracy: float) -> None:
+    def complete(
+        self,
+        job_id: str,
+        model_gridfs_id: Any,
+        model_version: str,
+        holdout_accuracy: float,
+        result_type: str = "full_success",
+        signal_precision: float | None = None,
+    ) -> None:
+        """Mark job completed. result_type: 'full_success' | 'fallback' | 'failed'."""
         self._col.update_one(
             {"_id": job_id},
             {
@@ -100,11 +109,13 @@ class MongoJobQueue:
                     "model_gridfs_id": model_gridfs_id,
                     "model_version": model_version,
                     "holdout_accuracy": holdout_accuracy,
+                    "result_type": result_type,
+                    "signal_precision": signal_precision,
                     "completed_at": _utcnow(),
                 }
             },
         )
-        log.info("job_queue_completed", job_id=job_id, model_version=model_version)
+        log.info("job_queue_completed", job_id=job_id, model_version=model_version, result_type=result_type)
 
     def fail(self, job_id: str, error: str) -> None:
         self._col.update_one(

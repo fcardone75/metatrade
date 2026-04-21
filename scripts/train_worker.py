@@ -23,9 +23,11 @@ from pathlib import Path
 # Allow running from repo root without installing the package
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from metatrade.core.log import configure_logging
+from metatrade.core.log import configure_logging, get_logger
 from metatrade.ml.distributed.config import MongoTrainConfig
 from metatrade.ml.distributed.worker_daemon import WorkerDaemon
+
+log = get_logger(__name__)
 
 
 def main() -> None:
@@ -34,15 +36,15 @@ def main() -> None:
     cfg = MongoTrainConfig()
 
     if not cfg.is_enabled:
-        print("ML_TRAIN_MONGO is not set to true. Worker exiting.")
+        log.error("worker_disabled", reason="ML_TRAIN_MONGO is not true")
         sys.exit(1)
 
     if cfg.is_master:
-        print("ML_MT5_MASTER=true — this machine is the master, not the worker. Exiting.")
+        log.error("worker_is_master", reason="ML_MT5_MASTER=true — this machine is the master, not the worker")
         sys.exit(1)
 
     if not cfg.mongo_uri:
-        print("MONGO_URI is not set. Please configure it in .env.")
+        log.error("worker_no_mongo_uri", reason="MONGO_URI is not set")
         sys.exit(1)
 
     daemon = WorkerDaemon(cfg)

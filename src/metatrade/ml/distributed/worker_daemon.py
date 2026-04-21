@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import io
 import json
 import subprocess
@@ -151,6 +152,11 @@ def _run_job(
     fold_path = model_dir / "training_progress.json"
 
     resume_args = ["--adaptive-skip-attempts", str(skip_attempts)] if skip_attempts > 0 else []
+
+    # Inject --backend from job doc (overrides whatever was in train_args)
+    job_backend = job.get("backend")
+    backend_args = ["--backend", job_backend] if job_backend else []
+
     cmd = [
         sys.executable,
         str(_TRAIN_SCRIPT),
@@ -160,6 +166,7 @@ def _run_job(
         "--timeframe", timeframe,
         "--model-dir", str(model_dir),
         *filtered,
+        *backend_args,
         *resume_args,
     ]
 
@@ -253,17 +260,24 @@ def _run_job(
         queue.fail(job_id, f"model upload failed: {exc}")
         return
 
-    # Try to extract holdout accuracy from progress
+    # Extract result_type, holdout, signal_precision from adaptive_progress.json
     holdout: float = 0.0
-    try:
-        import json
-        if adaptive_path.exists():
+    result_type: str = "full_success"
+    signal_precision: float | None = None
+    if adaptive_path.exists():
+        try:
             ap = json.loads(adaptive_path.read_text())
             holdout = float(ap.get("best_holdout") or 0.0)
-    except Exception:
-        pass
+            result_type = ap.get("result_type") or "full_success"
+            # Best signal_precision across all attempts
+            attempts = ap.get("attempts") or []
+            precs = [a.get("signal_precision") for a in attempts if a.get("signal_precision") is not None]
+            if precs:
+                signal_precision = max(precs)
+        except Exception:
+            pass
 
-    queue.complete(job_id, model_gridfs_id, version, holdout)
+    queue.complete(job_id, model_gridfs_id, version, holdout, result_type=result_type, signal_precision=signal_precision)
     progress_store.mark_completed(job_id)
     log.info("worker_job_done", job_id=job_id, version=version, holdout=holdout)
 
@@ -276,7 +290,8 @@ class WorkerDaemon:
 
     def run(self) -> None:
         """Blocking poll loop. Runs until interrupted."""
-        log.info("worker_daemon_start", poll_sec=self._cfg.ml_worker_poll_sec)
+        max_parallel = max(1, self._cfg.ml_worker_max_parallel_jobs)
+        log.info("worker_daemon_start", poll_sec=self._cfg.ml_worker_poll_sec, max_parallel=max_parallel)
         db = _connect(self._cfg)
         queue = MongoJobQueue(db)
 
@@ -286,29 +301,44 @@ class WorkerDaemon:
         if reset_count:
             log.info("worker_reset_interrupted_jobs", count=reset_count)
 
-        while True:
+        def _run_and_cleanup(job: dict[str, Any]) -> None:
+            work_dir = _job_work_dir(job["_id"])
             try:
-                queue.reset_stale_jobs()
-                job = queue.poll_pending()
-                if job is None:
-                    time.sleep(self._cfg.ml_worker_poll_sec)
-                    continue
-
-                work_dir = _job_work_dir(job["_id"])
                 _run_job(job, db, work_dir)
-
-                # Clean up work dir only on successful completion
-                job_id = job["_id"]
-                try:
-                    import shutil
-                    shutil.rmtree(work_dir, ignore_errors=True)
-                    log.info("worker_workdir_cleaned", job_id=job_id)
-                except Exception:
-                    pass
-
-            except KeyboardInterrupt:
-                log.info("worker_daemon_stopped")
-                break
+                # Clean up only on success (keep dir on failure for debugging/resume)
+                import shutil
+                shutil.rmtree(work_dir, ignore_errors=True)
+                log.info("worker_workdir_cleaned", job_id=job["_id"])
             except Exception as exc:
-                log.error("worker_daemon_error", error=str(exc))
-                time.sleep(self._cfg.ml_worker_poll_sec)
+                log.error("worker_job_error", job_id=job["_id"], error=str(exc))
+
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_parallel)
+        active_futures: set[concurrent.futures.Future] = set()  # type: ignore[type-arg]
+
+        try:
+            while True:
+                try:
+                    queue.reset_stale_jobs()
+
+                    # Fill up to max_parallel slots
+                    active_futures = {f for f in active_futures if not f.done()}
+                    while len(active_futures) < max_parallel:
+                        job = queue.poll_pending()
+                        if job is None:
+                            break
+                        future = executor.submit(_run_and_cleanup, job)
+                        active_futures.add(future)
+                        log.info("worker_job_dispatched", job_id=job["_id"], active=len(active_futures))
+
+                    time.sleep(self._cfg.ml_worker_poll_sec)
+
+                except KeyboardInterrupt:
+                    raise
+                except Exception as exc:
+                    log.error("worker_daemon_error", error=str(exc))
+                    time.sleep(self._cfg.ml_worker_poll_sec)
+
+        except KeyboardInterrupt:
+            log.info("worker_daemon_stopping", active_jobs=len(active_futures))
+            executor.shutdown(wait=False, cancel_futures=False)
+            log.info("worker_daemon_stopped")

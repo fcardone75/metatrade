@@ -382,6 +382,9 @@ def build_ml_stack(
             "--model-dir", str(args.model_dir),
             "--holdout-fraction", "0.2",
             "--adaptive",
+            "--fallback-min", str(ml_cfg.adaptive_fallback_min),
+            "--target-buy-precision", str(ml_cfg.target_buy_precision),
+            "--target-sell-precision", str(ml_cfg.target_sell_precision),
         ]
         retrain_scheduler = RetrainScheduler(
             config=ml_cfg,
