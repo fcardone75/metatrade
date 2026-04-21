@@ -185,6 +185,16 @@ def _format_adaptive_progress(data: dict, fold_data: dict | None = None) -> str:
             lines.append("<b>Auto-tune in corso:</b>")
             lines.append(f"  Trial: {trials_done}/{max_trials}")
             lines.append(f"  Miglior holdout finora: {best_str}{cfg_str}")
+            cur_trial = fold_data.get("current_trial")
+            cur_folds_done = fold_data.get("current_trial_folds_done")
+            cur_folds_est = fold_data.get("current_trial_folds_est")
+            cur_eta = fold_data.get("current_trial_eta_sec")
+            cur_fwd = fold_data.get("current_trial_fwd")
+            cur_atr = fold_data.get("current_trial_atr")
+            if cur_trial is not None and cur_folds_done is not None:
+                eta_str = f"  ETA ~{cur_eta/60:.0f}m" if cur_eta and cur_eta >= 60 else (f"  ETA ~{cur_eta:.0f}s" if cur_eta else "")
+                params_str = f"  fwd={cur_fwd} atr={cur_atr}" if cur_fwd else ""
+                lines.append(f"  Trial #{cur_trial} — fold {cur_folds_done}/{cur_folds_est}{params_str}{eta_str}")
 
     if attempts_list:
         lines.append("")

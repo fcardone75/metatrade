@@ -1207,9 +1207,46 @@ def auto_tune_single_timeframe(
         )
         trainer = WalkForwardTrainer(trial_cfg)
         trial_t0 = time.perf_counter()
+        _trial_fold_times: list[float] = []
+        _trial_fold_last_ts = [time.perf_counter()]
+
+        _trial_est_folds = _estimate_max_walk_forward_folds(
+            len(bars), trial_cfg.train_window_bars, trial_cfg.test_window_bars, trial_cfg.step_bars
+        )
+
+        def _auto_tune_fold_progress(fold: WalkForwardFold) -> None:
+            now = time.perf_counter()
+            fold_dur = now - _trial_fold_last_ts[0]
+            _trial_fold_last_ts[0] = now
+            _trial_fold_times.append(fold_dur)
+            avg_fold = sum(_trial_fold_times[-10:]) / len(_trial_fold_times[-10:])
+            done = fold.fold_index + 1
+            est = _trial_est_folds
+            remaining = max(0, est - done)
+            _atomic_write_training_progress(
+                prog_path,
+                {
+                    "status": "auto_tune",
+                    "symbol": args.symbol,
+                    "timeframe": timeframe,
+                    "phase": "grid_search",
+                    "max_trials": max_trials,
+                    "trials_done": trial_idx,
+                    "current_trial": trial_idx + 1,
+                    "current_trial_fwd": fwd,
+                    "current_trial_atr": atr_mult,
+                    "current_trial_folds_done": done,
+                    "current_trial_folds_est": est,
+                    "current_trial_eta_sec": round(avg_fold * remaining, 1),
+                    "best_holdout": round(best_holdout, 4) if best_holdout >= 0 else None,
+                    "best_forward_bars": best_cfg.forward_bars if best_cfg else None,
+                    "best_atr_mult": best_cfg.atr_threshold_mult if best_cfg else None,
+                    "updated_at_utc": datetime.now(UTC).isoformat(),
+                },
+            )
 
         try:
-            result, model = trainer.run(bars, feature_cache=feature_cache)
+            result, model = trainer.run(bars, feature_cache=feature_cache, on_fold_complete=_auto_tune_fold_progress)
         except Exception as exc:  # noqa: BLE001
             tb = traceback.format_exc()
             log.error(
