@@ -35,6 +35,23 @@ log = get_logger(__name__)
 
 _VALID_BACKENDS = {"histgbm", "lightgbm", "xgboost", "catboost"}
 
+# Backends that handle class_weight internally via constructor param.
+# For all others, balanced sample_weight is computed and passed to fit().
+_NATIVE_CLASS_WEIGHT_BACKENDS = {"histgbm", "lightgbm"}
+
+
+def _balanced_sample_weights(labels: list[int]) -> list[float]:
+    """Compute per-sample weights for balanced class distribution."""
+    counts: dict[int, int] = {}
+    for lbl in labels:
+        counts[lbl] = counts.get(lbl, 0) + 1
+    n = len(labels)
+    n_classes = len(counts)
+    weight_for: dict[int, float] = {
+        cls: n / (n_classes * cnt) for cls, cnt in counts.items()
+    }
+    return [weight_for[lbl] for lbl in labels]
+
 
 def _build_estimator(config: MLConfig, backend: str) -> Any:
     """Instantiate the sklearn-compatible estimator for the given backend.
@@ -204,7 +221,14 @@ class MLClassifier:
 
         model = _build_estimator(self._config, self._backend)
         log.info("ml_classifier_fit", backend=self._backend, n_samples=len(X))
-        model.fit(X, y)
+        if (
+            self._config.class_weight == "balanced"
+            and self._backend not in _NATIVE_CLASS_WEIGHT_BACKENDS
+        ):
+            sw = _balanced_sample_weights(labels)
+            model.fit(X, y, sample_weight=sw)
+        else:
+            model.fit(X, y)
 
         # In-sample accuracy (training metric — not generalisation)
         preds = model.predict(X)
