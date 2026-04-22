@@ -8,8 +8,11 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from fastapi import Body, FastAPI, HTTPException, Query, Request
+import secrets
+
+from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -108,11 +111,44 @@ def _build_decision_progress(
     }
 
 
+_basic_security = HTTPBasic(auto_error=False)
+
+
+def _make_auth_dependency(user: str, password: str):
+    """Return a FastAPI dependency that enforces HTTP Basic Auth.
+
+    Uses secrets.compare_digest (constant-time) to prevent timing attacks.
+    When user/password are empty strings, auth is disabled — requests pass through.
+    """
+    auth_enabled = bool(user and password)
+
+    def _verify(credentials: HTTPBasicCredentials | None = Depends(_basic_security)) -> None:
+        if not auth_enabled:
+            return
+        if credentials is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required",
+                headers={"WWW-Authenticate": "Basic realm=\"MetaTrade Dashboard\""},
+            )
+        user_ok = secrets.compare_digest(credentials.username.encode(), user.encode())
+        pass_ok = secrets.compare_digest(credentials.password.encode(), password.encode())
+        if not (user_ok and pass_ok):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid credentials",
+                headers={"WWW-Authenticate": "Basic realm=\"MetaTrade Dashboard\""},
+            )
+
+    return _verify
+
+
 def create_app() -> FastAPI:
     obs_cfg = ObservabilityConfig.load()
     market_cfg = MarketDataConfig.load()
 
-    app = FastAPI(title=obs_cfg.title)
+    auth = _make_auth_dependency(obs_cfg.dashboard_user, obs_cfg.dashboard_password)
+    app = FastAPI(title=obs_cfg.title, dependencies=[Depends(auth)])
     app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
     telemetry = TelemetryStore.from_env()

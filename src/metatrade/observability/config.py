@@ -13,6 +13,12 @@ class ObservabilityConfig(BaseConfig):
     title: str = "MetaTrade Control Room"
     refresh_seconds: int = 10
 
+    # HTTP Basic Auth — set both to enable password protection.
+    # Leave either empty to disable auth (useful for local development).
+    # Set via OBSERVABILITY_DASHBOARD_USER / OBSERVABILITY_DASHBOARD_PASSWORD.
+    dashboard_user: str = ""
+    dashboard_password: str = ""
+
     model_config = {
         "env_prefix": "OBSERVABILITY_",
         "env_file": str(Path(__file__).parent.parent.parent.parent / ".env"),
