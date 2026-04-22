@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from metatrade.alerting.command_handler import CommandHandler
 
 
@@ -53,6 +51,7 @@ class TestHelpCommand:
         reply = h.dispatch("/help", "")
         assert "/help" in reply
         assert "/status" in reply
+        assert "/trained" in reply
 
     def test_help_marks_unregistered_commands(self):
         h = CommandHandler()

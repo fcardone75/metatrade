@@ -101,6 +101,7 @@ class CommandHandler:
             "/positions": "Posizioni aperte in dettaglio",
             "/balance": "Snapshot account (balance, equity, margin)",
             "/model": "Info modello ML attivo",
+            "/trained": "Storico modelli salvati/scartati",
             "/accuracy": "Accuracy live dettagliata",
             "/daily": "Riepilogo giornata on-demand",
             "/retrain": "Avvia retraining manuale",

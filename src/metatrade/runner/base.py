@@ -17,6 +17,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 from metatrade.alerting.command_handler import CommandHandler
 from metatrade.alerting.command_receiver import TelegramCommandReceiver
@@ -219,6 +220,70 @@ def _format_adaptive_progress(data: dict, fold_data: dict | None = None) -> str:
             )
 
     return "\n".join(l for l in lines if l != "")
+
+
+def _pct(value: object, *, digits: int = 1) -> str:
+    if value is None:
+        return "n/a"
+    try:
+        return f"{float(value):.{digits}%}"
+    except (TypeError, ValueError):
+        return "n/a"
+
+
+def _fmt_ts(value: object) -> str:
+    if value in (None, ""):
+        return "n/a"
+    try:
+        if isinstance(value, str):
+            raw = value.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(raw)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=UTC)
+        else:
+            dt = datetime.fromtimestamp(float(value), UTC)
+        return dt.strftime("%Y-%m-%d %H:%M UTC")
+    except (TypeError, ValueError, OSError):
+        return str(value)
+
+
+def _sort_ts(value: object) -> float:
+    if value in (None, ""):
+        return 0.0
+    try:
+        if isinstance(value, str):
+            raw = value.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(raw)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=UTC)
+            return dt.timestamp()
+        return float(value)
+    except (TypeError, ValueError, OSError):
+        return 0.0
+
+
+def _json_obj(raw: object) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        return raw
+    if not raw:
+        return {}
+    try:
+        data = json.loads(str(raw))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _model_dir() -> Path:
+    try:
+        from metatrade.ml.config import MLConfig as _MLCfg
+        return Path(_MLCfg().model_registry_dir)
+    except Exception:
+        return Path("data/models")
+
+
+def _report_sort_key(report: dict[str, Any]) -> str:
+    return str(report.get("generated_at_utc") or "")
 
 
 class BaseRunner:
@@ -505,6 +570,7 @@ class BaseRunner:
         ch.register("/positions", self._cmd_positions)
         ch.register("/balance",   self._cmd_balance)
         ch.register("/model",     self._cmd_model)
+        ch.register("/trained",   self._cmd_trained)
         ch.register("/accuracy",  self._cmd_accuracy)
         ch.register("/daily",     self._cmd_daily)
         ch.register("/retrain",        self._cmd_retrain)
@@ -592,6 +658,234 @@ class BaseRunner:
             f"  Holdout:   {h_str}"
             f"{live_str}"
         )
+
+    def _cmd_trained(self, args: str) -> str:
+        """Show saved/discarded model history.
+
+        Supported filters:
+          /trained active  → active saved model only
+          /trained failed  → failed/discarded report rows only
+          /trained m1      → only one timeframe
+          /trained all     → longer output
+        """
+        tokens = {t.strip().lower() for t in args.split() if t.strip()}
+        failed_only = bool(tokens & {"failed", "fail", "scartati", "scartato"})
+        active_only = "active" in tokens or "attivo" in tokens
+        all_rows = "all" in tokens or "tutti" in tokens
+        tf_filter = next((t.upper() for t in tokens if t.upper() in {"M1", "M5", "M15", "M30", "H1", "H4", "D1"}), None)
+        limit = 12 if all_rows else 8
+
+        entries: list[dict[str, Any]] = []
+
+        if not failed_only:
+            entries.extend(self._trained_entries_from_telemetry(active_only, tf_filter))
+
+        if not active_only:
+            entries.extend(self._trained_entries_from_remote_jobs(failed_only, tf_filter))
+            entries.extend(self._trained_entries_from_reports(tf_filter))
+
+        if not entries:
+            suffix = f" per {tf_filter}" if tf_filter else ""
+            return f"🧠 Nessuno storico modelli trovato{suffix}."
+
+        entries.sort(key=lambda e: _sort_ts(e.get("sort_ts")), reverse=True)
+        lines = ["🧠 <b>Modelli / training conclusi</b>"]
+        shown = 0
+        seen: set[str] = set()
+        for entry in entries:
+            key = str(entry.get("key") or "")
+            if key and key in seen:
+                continue
+            if key:
+                seen.add(key)
+            lines.append("")
+            lines.extend(entry["lines"])
+            shown += 1
+            if shown >= limit:
+                break
+
+        if shown < len(entries):
+            lines.append("")
+            lines.append(f"Altri risultati: {len(entries) - shown}. Usa <code>/trained all</code>.")
+        return "\n".join(lines)
+
+    def _trained_entries_from_telemetry(
+        self,
+        active_only: bool,
+        tf_filter: str | None,
+    ) -> list[dict[str, Any]]:
+        if self._telemetry is None:
+            return []
+
+        entries: list[dict[str, Any]] = []
+        try:
+            artifacts = self._telemetry.list_model_artifacts(limit=50)
+        except Exception as exc:
+            log.warning("trained_command_artifacts_failed", error=str(exc))
+            artifacts = []
+
+        for row in artifacts:
+            timeframe = str(row.get("timeframe") or "?").upper()
+            if tf_filter and timeframe != tf_filter:
+                continue
+            is_active = bool(row.get("is_active"))
+            if active_only and not is_active:
+                continue
+            details = _json_obj(row.get("details"))
+            holdout = details.get("holdout_accuracy")
+            version = str(row.get("version") or "versione sconosciuta")
+            state = "ACTIVE" if is_active else "SAVED"
+            icon = "✅" if is_active else "📦"
+            lines = [
+                f"{icon} <b>{state}</b> {row.get('symbol', '?')} {timeframe}",
+                f"<code>{version}</code>",
+                (
+                    f"Best: {_pct(row.get('best_test_accuracy'))}"
+                    f" | Mean: {_pct(row.get('mean_test_accuracy'))}"
+                    f" | Holdout: {_pct(holdout)}"
+                ),
+                f"Fold: {details.get('best_fold', 'n/a')} | Creato: {_fmt_ts(row.get('created_at'))}",
+            ]
+            entries.append(
+                {
+                    "key": f"artifact:{version}",
+                    "sort_ts": row.get("created_at"),
+                    "lines": lines,
+                }
+            )
+
+        try:
+            runs = self._telemetry.list_training_runs(limit=50)
+        except Exception as exc:
+            log.warning("trained_command_runs_failed", error=str(exc))
+            runs = []
+
+        artifact_versions = {str(a.get("version")) for a in artifacts}
+        for row in runs:
+            version = str(row.get("model_version") or "")
+            if version and version in artifact_versions:
+                continue
+            timeframe = str(row.get("timeframe") or "?").upper()
+            if tf_filter and timeframe != tf_filter:
+                continue
+            details = _json_obj(row.get("details"))
+            status = str(row.get("status") or "?").upper()
+            icon = "✅" if status == "COMPLETED" and version else "⚠️"
+            lines = [
+                f"{icon} <b>{status}</b> {row.get('symbol', '?')} {timeframe}",
+                f"<code>{version or row.get('training_id', 'training')}</code>",
+                (
+                    f"Best: {_pct(row.get('best_test_accuracy'))}"
+                    f" | Mean: {_pct(row.get('mean_test_accuracy'))}"
+                    f" | Holdout: {_pct(details.get('holdout_accuracy'))}"
+                ),
+                f"Fold: {row.get('best_fold', 'n/a')} | Fine: {_fmt_ts(row.get('completed_at'))}",
+            ]
+            entries.append(
+                {
+                    "key": f"run:{row.get('training_id')}",
+                    "sort_ts": row.get("completed_at") or row.get("started_at"),
+                    "lines": lines,
+                }
+            )
+
+        return entries
+
+    def _trained_entries_from_reports(self, tf_filter: str | None) -> list[dict[str, Any]]:
+        reports_dir = _model_dir() / "training_reports"
+        if not reports_dir.exists():
+            return []
+
+        reports: list[dict[str, Any]] = []
+        for path in reports_dir.glob("summary_*.json"):
+            try:
+                report = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            if isinstance(report, dict):
+                report["_path_name"] = path.name
+                reports.append(report)
+
+        reports.sort(key=_report_sort_key, reverse=True)
+        entries: list[dict[str, Any]] = []
+        for report in reports[:30]:
+            generated = report.get("generated_at_utc")
+            min_accuracy = report.get("min_accuracy")
+            symbol = report.get("symbol", "?")
+            for run in report.get("runs", []):
+                if not isinstance(run, dict) or run.get("success"):
+                    continue
+                timeframe = str(run.get("timeframe") or "?").upper()
+                if tf_filter and timeframe != tf_filter:
+                    continue
+                best = run.get("best_test_accuracy")
+                error = str(run.get("error") or "training non salvato").strip()
+                if len(error) > 130:
+                    error = error[:127].rstrip() + "..."
+                lines = [
+                    f"❌ <b>SCARTATO</b> {symbol} {timeframe}",
+                    f"Best: {_pct(best)} | Target: {_pct(min_accuracy)} | Fold: {run.get('best_fold_index', 'n/a')}",
+                    f"Motivo: {error}",
+                    f"Report: <code>{report.get('_path_name')}</code> | {_fmt_ts(generated)}",
+                ]
+                entries.append(
+                    {
+                        "key": f"report:{report.get('_path_name')}:{timeframe}",
+                        "sort_ts": generated,
+                        "lines": lines,
+                    }
+                )
+        return entries
+
+    def _trained_entries_from_remote_jobs(
+        self,
+        failed_only: bool,
+        tf_filter: str | None,
+    ) -> list[dict[str, Any]]:
+        if self._retrain_scheduler is None:
+            return []
+        db = self._retrain_scheduler.get_mongo_db()
+        if db is None:
+            return []
+        try:
+            docs = list(
+                db["training_jobs"]
+                .find({"status": {"$nin": ["pending", "running"]}})
+                .sort("completed_at", -1)
+                .limit(10)
+            )
+        except Exception as exc:
+            log.warning("trained_command_remote_jobs_failed", error=str(exc))
+            return []
+
+        entries: list[dict[str, Any]] = []
+        for doc in docs:
+            timeframe = str(doc.get("timeframe") or "?").upper()
+            if tf_filter and timeframe != tf_filter:
+                continue
+            status = str(doc.get("status") or "?").upper()
+            if failed_only and status == "COMPLETED":
+                continue
+            icon = "✅" if status == "COMPLETED" else "❌"
+            backend = doc.get("backend") or "remote"
+            score = doc.get("signal_precision") or doc.get("holdout_accuracy")
+            error = str(doc.get("error") or "").strip()
+            lines = [
+                f"{icon} <b>REMOTE {status}</b> {doc.get('symbol', '?')} {timeframe} [{backend}]",
+                f"Job: <code>{doc.get('_id')}</code>",
+                f"Score: {_pct(score)} | Holdout: {_pct(doc.get('holdout_accuracy'))}",
+                f"Versione: <code>{doc.get('model_version') or 'n/a'}</code> | Fine: {_fmt_ts(doc.get('completed_at'))}",
+            ]
+            if error:
+                lines.append(f"Motivo: {error[:130]}")
+            entries.append(
+                {
+                    "key": f"remote:{doc.get('_id')}",
+                    "sort_ts": doc.get("completed_at") or doc.get("started_at") or doc.get("created_at"),
+                    "lines": lines,
+                }
+            )
+        return entries
 
     def _cmd_accuracy(self, _args: str) -> str:
         if self._live_tracker is None:
