@@ -329,6 +329,7 @@ class LiveRunner(BaseRunner):
 
         # ── Act on the decision ───────────────────────────────────────────────
         if decision.action == ExitAction.CLOSE_FULL:
+            mt5_profit = float(pos.get("profit", 0.0))
             closed = self._broker.close_position_by_ticket(
                 ticket=ticket,
                 symbol=symbol,
@@ -343,6 +344,13 @@ class LiveRunner(BaseRunner):
                 reason=decision.explanation,
                 accepted=closed,
             )
+            if closed:
+                self._record_live_close(
+                    pos=pos,
+                    exit_price=current_price,
+                    exit_reason=decision.explanation,
+                    profit=mt5_profit,
+                )
             return {
                 "ticket": ticket, "symbol": symbol,
                 "action": "CLOSE_FULL", "new_sl": None,
@@ -350,6 +358,7 @@ class LiveRunner(BaseRunner):
             }
 
         if decision.action == ExitAction.CLOSE_PARTIAL:
+            mt5_profit_partial = float(pos.get("profit", 0.0)) * decision.close_pct
             close_lots = float(lot_size) * decision.close_pct
             closed = self._broker.close_position_by_ticket(
                 ticket=ticket,
@@ -365,6 +374,13 @@ class LiveRunner(BaseRunner):
                 score=decision.aggregate_score,
                 accepted=closed,
             )
+            if closed:
+                self._record_live_close(
+                    pos=pos,
+                    exit_price=current_price,
+                    exit_reason=f"partial ({decision.close_pct:.0%})",
+                    profit=mt5_profit_partial,
+                )
             return {
                 "ticket": ticket, "symbol": symbol,
                 "action": "CLOSE_PARTIAL", "new_sl": None,
@@ -400,3 +416,84 @@ class LiveRunner(BaseRunner):
                 }
 
         return None
+
+    def _record_live_close(
+        self,
+        pos: dict,
+        exit_price: Decimal,
+        exit_reason: str,
+        profit: float,
+    ) -> None:
+        """Update daily stats and fire close notification after a live position closes."""
+        self._daily_pnl += Decimal(str(round(profit, 2)))
+        if profit > 0:
+            self._daily_wins += 1
+        elif profit < 0:
+            self._daily_losses += 1
+
+        if self._alerter is None:
+            return
+
+        is_buy = pos.get("type") == 0
+        side = "BUY" if is_buy else "SELL"
+        entry = Decimal(str(pos.get("price_open", 0)))
+        opened_at = pos.get("time_utc")
+        duration_bars: int | None = None
+        if opened_at is not None:
+            delta = datetime.now(UTC) - opened_at
+            duration_bars = max(1, int(delta.total_seconds() / 60))
+
+        try:
+            self._alerter.alert_trade_closed(
+                symbol=pos.get("symbol", self._symbol),
+                side=side,
+                pnl=profit,
+                exit_reason=exit_reason,
+                entry=entry,
+                exit_price=exit_price,
+                pnl_pips=None,
+                duration_bars=duration_bars,
+                session_pnl=float(self._daily_pnl),
+            )
+        except Exception as exc:
+            log.warning("live_runner_alert_trade_closed_failed", error=str(exc))
+
+    def _format_open_positions(self) -> str:
+        """Return Telegram-ready HTML with live MT5 position details."""
+        try:
+            positions = self._broker.get_open_positions()
+        except Exception:
+            positions = []
+
+        if not positions:
+            return "📋 <b>Posizioni aperte (0)</b>\n\nNessuna posizione aperta."
+
+        lines = [f"📋 <b>Posizioni aperte ({len(positions)})</b>"]
+        now = datetime.now(UTC)
+        for pos in positions:
+            is_buy = pos.get("type") == 0
+            side_icon = "🟢" if is_buy else "🔴"
+            side_str = "BUY" if is_buy else "SELL"
+            sl_val = pos.get("sl", 0.0)
+            tp_val = pos.get("tp", 0.0)
+            sl_str = f"{sl_val:.5f}" if sl_val else "—"
+            tp_str = f"{tp_val:.5f}" if tp_val else "—"
+            profit = pos.get("profit", 0.0)
+            profit_sign = "+" if profit >= 0 else ""
+
+            opened_at = pos.get("time_utc")
+            dur_str = ""
+            if opened_at is not None:
+                delta = now - opened_at
+                hours, rem = divmod(int(delta.total_seconds()), 3600)
+                mins = rem // 60
+                dur_str = f"  ({hours}h {mins}m fa)" if hours else f"  ({mins}m fa)"
+
+            lines.append(
+                f"\n{side_icon} <b>{pos.get('symbol', '?')}</b>  {side_str}"
+                f"  {pos.get('volume', '?')} lot\n"
+                f"  Entry:  {pos.get('price_open', 0):.5f}{dur_str}\n"
+                f"  SL:     {sl_str}  |  TP: {tp_str}\n"
+                f"  PnL:    {profit_sign}{profit:.2f} USD"
+            )
+        return "\n".join(lines)

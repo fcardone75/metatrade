@@ -137,6 +137,7 @@ class PaperRunner(BaseRunner):
         balance = account.balance
         equity = account.equity
         free_margin = account.free_margin
+        open_positions = account.open_positions_count
 
         result = self.process_bar(
             bars=self._bar_buffer,
@@ -144,6 +145,7 @@ class PaperRunner(BaseRunner):
             account_equity=equity,
             free_margin=free_margin,
             timestamp_utc=bar.timestamp_utc,
+            open_positions=open_positions,
         )
 
         if result is not None and result.approved and result.position_size is not None:
