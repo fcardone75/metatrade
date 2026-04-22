@@ -89,12 +89,20 @@ class MLConfig(BaseConfig):
     # Set to 0.0 to disable (no holdout reserved).
     holdout_fraction: float = Field(default=0.0, ge=0.0, lt=1.0)
 
+    # ── Embargo ───────────────────────────────────────────────────────────────
+    # Number of bars excluded between the end of the training window and the
+    # start of the test window.  Prevents leakage from autocorrelated consecutive
+    # bars.  Set to forward_bars (same as the label horizon) as a minimum.
+    # On M1 with forward_bars=5, an embargo of 5 bars = 5 minutes of gap.
+    embargo_bars: int = Field(default=5, ge=0)
+
     # ── Session filter ────────────────────────────────────────────────────────
     # When both are set, only bars whose UTC hour is in [start, end) are used
     # for training.  Helps remove thin-market noise on M1/M5.
+    # Must mirror RUNNER_SESSION_FILTER_UTC_START/END to avoid train/live mismatch.
     # Example: start=7, end=21 keeps London + NY sessions only.
-    session_filter_utc_start: int | None = Field(default=None, ge=0, lt=24)
-    session_filter_utc_end: int | None = Field(default=None, ge=0, lt=24)
+    session_filter_utc_start: int | None = Field(default=7, ge=0, lt=24)
+    session_filter_utc_end: int | None = Field(default=21, ge=0, lt=24)
 
     # ── Live accuracy tracking ────────────────────────────────────────────────
     # Minimum number of evaluated BUY/SELL predictions before the live accuracy

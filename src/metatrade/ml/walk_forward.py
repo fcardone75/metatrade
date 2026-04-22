@@ -264,8 +264,10 @@ class WalkForwardTrainer:
         fold_index = 0
         train_end = cfg.train_window_bars
 
-        while train_end + cfg.test_window_bars <= holdout_start:
-            test_start = train_end
+        while train_end + cfg.embargo_bars + cfg.test_window_bars <= holdout_start:
+            # embargo_bars: skip this many bars between train and test to prevent
+            # leakage from autocorrelated consecutive bars (should be >= forward_bars).
+            test_start = train_end + cfg.embargo_bars
             test_end = min(test_start + cfg.test_window_bars, holdout_start)
 
             train_X, train_y = self._build_from_cache(

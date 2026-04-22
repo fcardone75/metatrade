@@ -34,14 +34,14 @@ class TestBreakEvenRule:
 
     def test_below_trigger_holds(self):
         # trigger_pips=15, profit=10pip → not triggered
-        rule = BreakEvenRule(BreakEvenConfig(trigger_pips=15.0, buffer_pips=2.0))
+        rule = BreakEvenRule(BreakEvenConfig(enabled=True, trigger_pips=15.0, buffer_pips=2.0))
         ctx = make_long_ctx("1.1010")
         sig = rule.evaluate(ctx)
         assert sig.action == ExitAction.HOLD
 
     def test_at_trigger_returns_hold_with_suggested_sl(self):
         # profit=15pip → trigger hit → HOLD but suggested_sl = entry + buffer = 1.1000 + 0.0002
-        rule = BreakEvenRule(BreakEvenConfig(trigger_pips=15.0, buffer_pips=2.0))
+        rule = BreakEvenRule(BreakEvenConfig(enabled=True, trigger_pips=15.0, buffer_pips=2.0))
         ctx = make_long_ctx("1.1015")
         sig = rule.evaluate(ctx)
         assert sig.action == ExitAction.HOLD  # never directly closes
@@ -53,7 +53,7 @@ class TestBreakEvenRule:
 
     def test_already_at_break_even_skips(self):
         # SL already at entry+buffer → should skip (no change)
-        rule = BreakEvenRule(BreakEvenConfig(trigger_pips=15.0, buffer_pips=2.0))
+        rule = BreakEvenRule(BreakEvenConfig(enabled=True, trigger_pips=15.0, buffer_pips=2.0))
         # SL = 1.1002 = entry + 2pip already
         ctx = make_long_ctx("1.1020", stop_loss="1.1002")
         sl = rule.suggested_sl(ctx)
@@ -62,7 +62,7 @@ class TestBreakEvenRule:
 
     def test_sl_above_entry_already_skip(self):
         # SL already beyond entry (1.1010 > entry 1.1000) — no update
-        rule = BreakEvenRule(BreakEvenConfig(trigger_pips=15.0, buffer_pips=2.0))
+        rule = BreakEvenRule(BreakEvenConfig(enabled=True, trigger_pips=15.0, buffer_pips=2.0))
         ctx = make_long_ctx("1.1020", stop_loss="1.1010")
         sl = rule.suggested_sl(ctx)
         assert sl is None
@@ -87,7 +87,7 @@ def make_short_ctx(current_price="1.0980", stop_loss=None):
 class TestBreakEvenRuleShort:
     def test_short_already_at_break_even_holds(self):
         """SL already at or below break-even for SHORT."""
-        rule = BreakEvenRule(BreakEvenConfig(trigger_pips=15.0, buffer_pips=2.0))
+        rule = BreakEvenRule(BreakEvenConfig(enabled=True, trigger_pips=15.0, buffer_pips=2.0))
         # be_sl = entry - buffer = 1.1000 - 0.0002 = 1.0998
         # SL at 1.0998 is already <= be_sl → skip
         ctx = make_short_ctx("1.0985", stop_loss="1.0998")
@@ -96,7 +96,7 @@ class TestBreakEvenRuleShort:
 
     def test_short_suggested_sl_when_not_triggered(self):
         """suggested_sl returns None when trigger pips not reached for SHORT."""
-        rule = BreakEvenRule(BreakEvenConfig(trigger_pips=15.0, buffer_pips=2.0))
+        rule = BreakEvenRule(BreakEvenConfig(enabled=True, trigger_pips=15.0, buffer_pips=2.0))
         # Only 5 pips profit on SHORT — not at trigger yet
         ctx = make_short_ctx("1.0995")
         sl = rule.suggested_sl(ctx)
@@ -104,7 +104,7 @@ class TestBreakEvenRuleShort:
 
     def test_short_be_sl_is_below_entry(self):
         """For SHORT, break-even SL = entry - buffer (below entry)."""
-        rule = BreakEvenRule(BreakEvenConfig(trigger_pips=15.0, buffer_pips=2.0))
+        rule = BreakEvenRule(BreakEvenConfig(enabled=True, trigger_pips=15.0, buffer_pips=2.0))
         ctx = make_short_ctx("1.0985")
         # 15 pips profit, trigger reached
         sl = rule.suggested_sl(ctx)
@@ -114,7 +114,7 @@ class TestBreakEvenRuleShort:
 
     def test_short_suggested_sl_skipped_when_current_sl_better(self):
         """suggested_sl returns None if existing SL is already <= be_sl for SHORT."""
-        rule = BreakEvenRule(BreakEvenConfig(trigger_pips=15.0, buffer_pips=2.0))
+        rule = BreakEvenRule(BreakEvenConfig(enabled=True, trigger_pips=15.0, buffer_pips=2.0))
         # be_sl = 1.0998, existing SL = 1.0990 (better than be_sl for SHORT)
         ctx = make_short_ctx("1.0985", stop_loss="1.0990")
         sl = rule.suggested_sl(ctx)

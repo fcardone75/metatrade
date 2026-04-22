@@ -40,7 +40,7 @@ class TestConsensusConfig:
 
     def test_default_threshold(self) -> None:
         cfg = ConsensusConfig()
-        assert cfg.threshold == 0.60
+        assert cfg.threshold == 0.65
 
     def test_invalid_threshold_raises(self) -> None:
         with pytest.raises(Exception):
@@ -80,7 +80,9 @@ class TestConsensusEngineFactory:
         assert engine.mode == ConsensusMode.DYNAMIC_VOTE
 
     def test_evaluate_returns_result(self) -> None:
-        engine = ConsensusEngine(ConsensusConfig())
+        # Use explicit min_signals=1 so this unit test is not coupled to the
+        # production default (which is 3 to reduce false positives).
+        engine = ConsensusEngine(ConsensusConfig(min_signals=1))
         signals = [make_signal(SignalDirection.BUY)]
         result = engine.evaluate("EURUSD", signals, T0)
         assert result.symbol == "EURUSD"

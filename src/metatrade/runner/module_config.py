@@ -63,8 +63,11 @@ class ModuleConfig:
     """
 
     # ── Trend-following ───────────────────────────────────────────────────────
-    ema_crossover: bool = True
-    """EMA(9)/HMA(21) crossover — primary trend-entry signal."""
+    ema_crossover: bool = False
+    """EMA(9)/HMA(21) crossover — DISABLED: redundant with MACD."""
+
+    macd: bool = True
+    """MACD(12,26,9) trend/momentum signal — preferred over EMA Crossover."""
 
     multi_tf_h4: bool = True
     """Multi-timeframe H1 → H4 trend alignment."""
@@ -72,19 +75,16 @@ class ModuleConfig:
     multi_tf_d1: bool = True
     """Multi-timeframe H1 → D1 macro trend alignment (needs ~500 bars warmup)."""
 
-    adx: bool = True
-    """ADX trend-strength and directional filter."""
+    adx: bool = False
+    """ADX trend-strength filter — DISABLED: redundant with Market Regime module."""
 
     # ── Breakout ──────────────────────────────────────────────────────────────
     donchian_breakout: bool = True
-    """20-period Donchian Channel breakout (Turtle Trading entry).
-    BUY when close > prev N-period high; SELL when close < prev N-period low."""
+    """Donchian Channel breakout — period adapts to timeframe (50 on M1/M5, 20 on M15+)."""
 
     # ── Volatility / squeeze ─────────────────────────────────────────────────
-    keltner_squeeze: bool = True
-    """Bollinger Band / Keltner Channel squeeze detector.
-    HOLD during volatility compression; BUY/SELL on KC breakout.
-    Replaces StochasticRsiModule (redundant with AdaptiveRsiModule)."""
+    keltner_squeeze: bool = False
+    """Bollinger/Keltner squeeze — DISABLED: redundant with Bollinger Bands module."""
 
     # ── Mean-reversion / oscillators ─────────────────────────────────────────
     adaptive_rsi: bool = True
@@ -97,8 +97,8 @@ class ModuleConfig:
     pivot_points: bool = True
     """Classic daily pivot points (ATR-adaptive touch distance)."""
 
-    swing_levels: bool = True
-    """Dynamic support/resistance from confirmed swing highs/lows."""
+    swing_levels: bool = False
+    """Dynamic S/R from swing highs/lows — DISABLED: redundant with Pivot Points + Donchian."""
 
     # ── Regime ────────────────────────────────────────────────────────────────
     market_regime: bool = True
@@ -106,14 +106,12 @@ class ModuleConfig:
     Provides a meta-vote that reinforces or dampens other modules."""
 
     # ── Time / calendar filters ───────────────────────────────────────────────
-    seasonality: bool = True
-    """Session quality + day-of-week filter (avoids Asian dead zone, etc.)."""
+    seasonality: bool = False
+    """Session quality filter — DISABLED: replaced by session_filter_utc_start/end in RunnerConfig."""
 
-    news_calendar: bool = True
-    """High-impact economic event filter.
-    Returns HOLD around NFP, FOMC, ECB announcements.
-    Requires ``finnhub_api_key`` for dynamic calendar; falls back to
-    hardcoded schedule otherwise."""
+    news_calendar: bool = False
+    """Economic event filter — DISABLED: hardcoded schedule is unreliable.
+    Use the spread filter (max_spread_pips) as a dynamic volatility gate instead."""
 
     # ── Machine learning ─────────────────────────────────────────────────────
     ml: bool = True

@@ -26,11 +26,14 @@ class ConsensusConfig(BaseSettings):
 
     # Minimum vote share (0.0, 1.0] for the winning direction to be actionable.
     # If no direction reaches this threshold → HOLD (is_actionable=False).
-    threshold: float = 0.60
+    # 0.65 is more conservative than the previous 0.60 default, reducing false signals
+    # from correlated module clusters that would otherwise reach 0.60 easily.
+    threshold: float = 0.65
 
     # Minimum number of signals required to produce an actionable result.
     # Fewer signals → HOLD regardless of vote share.
-    min_signals: int = 1
+    # Require at least 3 independent module signals before opening a trade.
+    min_signals: int = 3
 
     # Per-module weights for WEIGHTED_VOTE / DYNAMIC_VOTE.
     # Keys are module_id strings. Unknown modules fall back to default_weight.

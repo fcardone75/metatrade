@@ -86,10 +86,27 @@ def make_runner(
 # ── ModuleConfig tests ─────────────────────────────────────────────────────────
 
 class TestModuleConfig:
-    def test_defaults_all_true(self) -> None:
+    # Modules that default to True (kept by the technical review)
+    _DEFAULT_ON = {
+        "macd", "multi_tf_h4", "multi_tf_d1", "donchian_breakout",
+        "adaptive_rsi", "bollinger_bands", "pivot_points", "market_regime", "ml",
+    }
+    # Modules that default to False (disabled by the technical review as redundant)
+    _DEFAULT_OFF = {
+        "ema_crossover", "adx", "keltner_squeeze", "swing_levels",
+        "seasonality", "news_calendar",
+    }
+
+    def test_defaults_on_modules(self) -> None:
         cfg = ModuleConfig()
-        for k, v in cfg.summary().items():
-            assert v is True, f"{k} should default to True"
+        for k in self._DEFAULT_ON:
+            assert getattr(cfg, k) is True, f"{k} should default to True"
+
+    def test_defaults_off_modules(self) -> None:
+        """Redundant modules are disabled by default to reduce signal correlation."""
+        cfg = ModuleConfig()
+        for k in self._DEFAULT_OFF:
+            assert getattr(cfg, k) is False, f"{k} should default to False"
 
     def test_summary_returns_only_bools(self) -> None:
         cfg = ModuleConfig(finnhub_api_key="abc")
@@ -99,14 +116,11 @@ class TestModuleConfig:
         assert "finnhub_api_key" not in s
 
     def test_can_disable_individual_modules(self) -> None:
-        cfg = ModuleConfig(ml=False, news_calendar=False, multi_tf_d1=False,
-                           donchian_breakout=False, keltner_squeeze=False)
+        cfg = ModuleConfig(ml=False, multi_tf_d1=False, donchian_breakout=False)
         assert cfg.ml is False
-        assert cfg.news_calendar is False
         assert cfg.multi_tf_d1 is False
         assert cfg.donchian_breakout is False
-        assert cfg.keltner_squeeze is False
-        assert cfg.ema_crossover is True  # unchanged
+        assert cfg.macd is True  # unchanged
 
     def test_finnhub_api_key_stored(self) -> None:
         cfg = ModuleConfig(finnhub_api_key="my_secret_key")
@@ -166,7 +180,7 @@ class TestBuildModules:
 
     def test_all_disabled_returns_empty(self) -> None:
         cfg = ModuleConfig(
-            ema_crossover=False, multi_tf_h4=False, multi_tf_d1=False,
+            ema_crossover=False, macd=False, multi_tf_h4=False, multi_tf_d1=False,
             adx=False, donchian_breakout=False, keltner_squeeze=False,
             market_regime=False, adaptive_rsi=False,
             bollinger_bands=False, pivot_points=False,
@@ -207,7 +221,7 @@ class TestRunnerConfigNewFields:
     def test_defaults(self) -> None:
         cfg = RunnerConfig()
         assert cfg.max_spread_pips == 3.0
-        assert cfg.signal_cooldown_bars == 3
+        assert cfg.signal_cooldown_bars == 14
         assert cfg.drawdown_recovery_threshold_pct == 0.05
         assert cfg.drawdown_recovery_risk_mult == 0.5
 

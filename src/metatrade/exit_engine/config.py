@@ -27,7 +27,10 @@ class TrailingStopConfig:
 
 @dataclass
 class BreakEvenConfig:
-    enabled:      bool  = True
+    # Disabled: BreakEven is a side-effect (SL mutation) disguised as a vote.
+    # It violates the clean vote contract of the ExitEngine.
+    # Break-even behaviour is handled by the TrailingStop ratchet instead.
+    enabled:      bool  = False
     trigger_pips: float = 15.0   # move SL to break-even after 15 pip profit
     buffer_pips:  float = 2.0    # SL at entry + 2 pip (not exactly 0)
 
@@ -35,14 +38,18 @@ class BreakEvenConfig:
 @dataclass
 class TimeExitConfig:
     enabled:              bool  = True
-    max_holding_bars:     int   = 48      # barre al timeframe corrente
+    # 24 bars at the active timeframe: ~2h on M5, ~6h on M15, ~12h on M30.
+    # Shorter than the previous 48-bar default to avoid holding through regime changes.
+    max_holding_bars:     int   = 24
     close_on_session_end: bool  = True
     session_end_hour_utc: int   = 21      # New York session close
 
 
 @dataclass
 class SetupInvalidationConfig:
-    enabled:                bool         = True
+    # Disabled: overlaps with VolatilityExit. Both close on "thesis no longer holds".
+    # On M1/M5 the MA cross fires almost continuously and creates noise.
+    enabled:                bool         = False
     ma_cross_fast:          int          = 9
     ma_cross_slow:          int          = 21
     invalidate_on_ma_cross: bool         = True
@@ -51,7 +58,9 @@ class SetupInvalidationConfig:
 
 @dataclass
 class VolatilityExitConfig:
-    enabled:          bool  = True
+    # Disabled: overlaps with SetupInvalidation. Reducing to 3 core rules
+    # (TrailingStop, TimeExit, GiveBack) before adding rules with evidence.
+    enabled:          bool  = False
     atr_period:       int   = 14
     atr_expansion_mult: float = 2.0  # exit if current ATR > entry_atr * mult
 
@@ -70,7 +79,9 @@ class PartialExitLevel:
 
 @dataclass
 class PartialExitConfig:
-    enabled: bool = True
+    # Disabled: creates GiveBack peak-calculation issues after partial close,
+    # and adds complexity without measurable benefit at this stage.
+    enabled: bool = False
     levels:  list[PartialExitLevel] = field(default_factory=lambda: [
         PartialExitLevel(pips=20.0, close_pct=0.33),
         PartialExitLevel(pips=40.0, close_pct=0.33),
@@ -81,7 +92,10 @@ class PartialExitConfig:
 
 @dataclass
 class ReputationConfig:
-    learning_rate:      float = 0.15   # EMA alpha for weight updates
+    # learning_rate=0.0 disables online weight updates — rules run with fixed
+    # equal weights until enough trade data exists for statistically valid learning.
+    # Enable learning (e.g. 0.15) only after accumulating 500+ trades per rule.
+    learning_rate:      float = 0.0    # 0.0 = fixed weights, >0 = adaptive EMA
     min_weight:         float = 5.0
     max_weight:         float = 95.0
     initial_weight:     float = 50.0   # cold-start neutral

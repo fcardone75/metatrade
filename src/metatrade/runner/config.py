@@ -19,15 +19,17 @@ class RunnerConfig(BaseConfig):
     symbol: str = Field(default="EURUSD")
 
     # ── Consensus ─────────────────────────────────────────────────────────────
-    # Minimum consensus ratio to open a trade (0.6 = 60% of weighted votes)
-    consensus_threshold: float = Field(default=0.6, ge=0.5, le=1.0)
+    # Minimum consensus ratio to open a trade (0.65 = 65% of weighted votes)
+    consensus_threshold: float = Field(default=0.65, ge=0.5, le=1.0)
 
     # Minimum number of module signals before consensus is attempted
-    min_signals: int = Field(default=2, ge=1)
+    min_signals: int = Field(default=3, ge=1)
 
     # ── Risk ─────────────────────────────────────────────────────────────────
-    max_risk_pct: float = Field(default=0.01, gt=0.0, le=0.05)
-    daily_loss_limit_pct: float = Field(default=0.05, gt=0.0, le=1.0)
+    # 0.5% per trade is more conservative than 1% — appropriate until edge is proven
+    max_risk_pct: float = Field(default=0.005, gt=0.0, le=0.05)
+    # Tighter daily loss limit: 3% instead of 5%
+    daily_loss_limit_pct: float = Field(default=0.03, gt=0.0, le=1.0)
     auto_kill_drawdown_pct: float = Field(default=0.10, gt=0.0, le=1.0)
     max_open_positions: int = Field(default=3, ge=1)
 
@@ -45,8 +47,9 @@ class RunnerConfig(BaseConfig):
 
     # ── Signal cooldown ───────────────────────────────────────────────────────
     # After any approved trade, block further entries for this many bars.
-    # Set to 0 to disable cooldown.
-    signal_cooldown_bars: int = Field(default=3, ge=0)
+    # 14 bars ≈ 1 ATR period — prevents immediate re-entry on the same noise.
+    # On M5 this is 70 minutes; on M15 it is 3.5 hours.
+    signal_cooldown_bars: int = Field(default=14, ge=0)
 
     # ── Drawdown recovery ─────────────────────────────────────────────────────
     # If peak-to-trough drawdown exceeds this fraction (e.g. 0.05 = 5 %),
@@ -59,7 +62,9 @@ class RunnerConfig(BaseConfig):
     # SL = entry ± chandelier_atr_mult × ATR(chandelier_atr_period)
     # Adapts to current volatility, far superior to a fixed-pip stop.
     chandelier_atr_period: int = Field(default=14, ge=1)
-    chandelier_atr_mult: float = Field(default=2.0, gt=0.0)
+    # 2.5× instead of 2.0× — slightly wider SL gives the trade more room before
+    # being stopped out by normal intrabar noise, especially on M1/M5.
+    chandelier_atr_mult: float = Field(default=2.5, gt=0.0)
 
     # ── Minimum SL distance (pip floor) ──────────────────────────────────────
     # Hard floor on stop-loss distance from entry, in pips.  Applied both to
@@ -89,13 +94,13 @@ class RunnerConfig(BaseConfig):
     daily_loss_limit_usd: float = Field(default=0.0, ge=0.0)
 
     # ── Session filter ────────────────────────────────────────────────────────
-    # When both are set, new trade entries are blocked outside the session window.
+    # New trade entries are blocked outside [start, end) UTC.
     # Exits and stop-losses are always processed regardless of session hours.
-    # Must mirror the ML_SESSION_FILTER_UTC_START/END used during training so
+    # Must mirror ML_SESSION_FILTER_UTC_START/END used during training so
     # the model runs only on the distribution it was trained on.
-    # Example: start=7, end=21 → London + NY sessions only.
-    session_filter_utc_start: int | None = Field(default=None, ge=0, lt=24)
-    session_filter_utc_end: int | None = Field(default=None, ge=0, lt=24)
+    # Default 7–21 UTC = London open through NY close (removes thin Asian session).
+    session_filter_utc_start: int | None = Field(default=7, ge=0, lt=24)
+    session_filter_utc_end: int | None = Field(default=21, ge=0, lt=24)
 
     # ── Backtest-specific ─────────────────────────────────────────────────────
     initial_balance: float = Field(default=10000.0, gt=0.0)

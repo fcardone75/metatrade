@@ -163,7 +163,7 @@ class TestRunnerConfig:
     def test_defaults(self) -> None:
         cfg = RunnerConfig()
         assert cfg.symbol == "EURUSD"
-        assert cfg.consensus_threshold == 0.6
+        assert cfg.consensus_threshold == 0.65
         assert cfg.min_signals >= 1
         assert cfg.max_risk_pct > 0.0
 

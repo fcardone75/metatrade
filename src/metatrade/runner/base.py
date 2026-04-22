@@ -235,7 +235,7 @@ class BaseRunner:
         self,
         config: RunnerConfig,
         modules: list[ITechnicalModule],
-        auto_weight: bool = True,
+        auto_weight: bool = False,
         weight_forward_bars: int = 5,
         alerter: TelegramAlerter | None = None,
         telemetry: TelemetryStore | None = None,
@@ -255,13 +255,13 @@ class BaseRunner:
         Args:
             config:                 RunnerConfig for this session.
             modules:                List of ITechnicalModule instances.
-            auto_weight:            If True (default), use DYNAMIC_VOTE consensus
-                                    and automatically update module weights based
-                                    on how well each module predicted market
-                                    direction over the next ``weight_forward_bars``
-                                    bars.  Weights are proportional to accuracy:
-                                    a large error reduces the weight more than a
-                                    small one.
+            auto_weight:            If True, use DYNAMIC_VOTE consensus and
+                                    automatically update module weights based on
+                                    how well each module predicted market direction
+                                    over the next ``weight_forward_bars`` bars.
+                                    Default False — fixed weights (SIMPLE_VOTE) are
+                                    more reproducible and avoid overfitting to recent
+                                    performance before edge is proven.
             weight_forward_bars:    Bars ahead used to evaluate signal accuracy.
                                     Must match the ML labelling horizon (default 5).
             alerter:                Optional TelegramAlerter for operational alerts.

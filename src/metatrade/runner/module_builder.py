@@ -51,6 +51,10 @@ def build_modules(
         from metatrade.technical_analysis.modules.ema_crossover import EmaCrossoverModule
         modules.append(EmaCrossoverModule(fast_period=9, slow_period=21, timeframe_id=tf))
 
+    if module_cfg.macd:
+        from metatrade.technical_analysis.modules.macd_module import MacdModule
+        modules.append(MacdModule(fast=12, slow=26, signal=9, timeframe_id=tf))
+
     if module_cfg.multi_tf_h4:
         from metatrade.technical_analysis.modules.multi_timeframe_module import MultiTimeframeModule
         modules.append(MultiTimeframeModule(
@@ -72,7 +76,10 @@ def build_modules(
     # ── Breakout ──────────────────────────────────────────────────────────────
     if module_cfg.donchian_breakout:
         from metatrade.technical_analysis.modules.donchian_module import DonchianBreakoutModule
-        modules.append(DonchianBreakoutModule(period=20, timeframe_id=tf))
+        # Period adapts to timeframe: on M1/M5, 20 bars = 20–100 minutes (too short).
+        # Use 50 bars on short TFs for a more meaningful breakout window.
+        donchian_period = 50 if tf in ("m1", "m5") else 20
+        modules.append(DonchianBreakoutModule(period=donchian_period, timeframe_id=tf))
 
     # ── Regime (placed early so it casts a broad vote before oscillators) ─────
     if module_cfg.market_regime:

@@ -364,6 +364,8 @@ class TestBaseRunnerAutoWeight:
             daily_loss_limit_pct=0.99,
             auto_kill_drawdown_pct=0.99,
             signal_cooldown_bars=0,  # disable cooldown so weight tracker can accumulate data
+            session_filter_utc_start=None,  # disable session filter in unit tests
+            session_filter_utc_end=None,
         )
         runner = BaseRunner(
             config=cfg,
