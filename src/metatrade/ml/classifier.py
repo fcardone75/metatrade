@@ -22,6 +22,7 @@ the internal reference atomically.
 from __future__ import annotations
 
 import pickle
+import subprocess
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -34,12 +35,29 @@ from metatrade.ml.features import FeatureVector
 log = get_logger(__name__)
 
 _VALID_BACKENDS = {"histgbm", "lightgbm", "xgboost", "catboost"}
+# Minimum free GPU memory (MB) required to enable catboost GPU mode.
+# Below this threshold we silently fall back to CPU to avoid a hard OOM abort.
+_MIN_CATBOOST_GPU_MB = 2048
 
 # Backends that handle class_weight internally via constructor param.
 # For all others, balanced sample_weight is computed and passed to fit().
 # CatBoost uses auto_class_weights="Balanced" in its constructor, so it must
 # be listed here to avoid double-weighting (constructor + sample_weight in fit).
 _NATIVE_CLASS_WEIGHT_BACKENDS = {"histgbm", "lightgbm", "catboost"}
+
+
+def _free_gpu_mb() -> int | None:
+    """Return free GPU memory in MB for GPU 0 via nvidia-smi, or None if unavailable."""
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            return int(result.stdout.strip().split("\n")[0])
+    except Exception:
+        pass
+    return None
 
 
 def _balanced_sample_weights(labels: list[int]) -> list[float]:
@@ -121,8 +139,16 @@ def _build_estimator(config: MLConfig, backend: str) -> Any:
                 verbose=0,
             )
             if config.use_gpu:
-                cb_kwargs["task_type"] = "GPU"
-                log.info("ml_gpu_enabled", backend="catboost")
+                free_mb = _free_gpu_mb()
+                if free_mb is not None and free_mb < _MIN_CATBOOST_GPU_MB:
+                    log.warning(
+                        "ml_catboost_gpu_skipped_low_memory",
+                        free_gpu_mb=free_mb,
+                        min_required_mb=_MIN_CATBOOST_GPU_MB,
+                    )
+                else:
+                    cb_kwargs["task_type"] = "GPU"
+                    log.info("ml_gpu_enabled", backend="catboost", free_gpu_mb=free_mb)
             return CatBoostClassifier(**cb_kwargs)
         except ImportError:
             log.warning("ml_backend_catboost_not_installed", fallback="histgbm")

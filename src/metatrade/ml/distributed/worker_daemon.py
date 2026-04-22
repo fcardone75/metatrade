@@ -69,6 +69,16 @@ def _sync_loop(
         except Exception as exc:
             log.warning("worker_sync_error", job_id=job_id, error=str(exc))
 
+        # Refresh started_at so reset_stale_jobs() doesn't reclaim a long-running job.
+        try:
+            now_str = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+            db["training_jobs"].update_one(
+                {"_id": job_id},
+                {"$set": {"started_at": now_str}},
+            )
+        except Exception:
+            pass
+
         # Check if master has cancelled this job
         if not cancel_event.is_set():
             try:
