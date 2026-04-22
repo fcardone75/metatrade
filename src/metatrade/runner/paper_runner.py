@@ -9,14 +9,16 @@ bars in real-time as they arrive.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from metatrade.alerting.command_handler import CommandHandler
 from metatrade.alerting.telegram_alerter import TelegramAlerter
 from metatrade.broker.paper_broker import PaperBrokerAdapter as PaperBroker
 from metatrade.core.contracts.market import Bar
+from metatrade.core.contracts.position import Position
+from metatrade.core.enums import PositionSide, RunMode
 from metatrade.core.contracts.risk import RiskDecision, RiskVeto
-from metatrade.core.enums import RunMode
 from metatrade.ml.live_tracker import LiveAccuracyTracker
 from metatrade.ml.model_watcher import ModelWatcher
 from metatrade.ml.retrain_scheduler import RetrainScheduler
@@ -26,6 +28,8 @@ from metatrade.runner.config import RunnerConfig
 from metatrade.technical_analysis.interface import ITechnicalModule
 
 log = logging.getLogger(__name__)
+
+_PIP_SIZE = Decimal("0.0001")
 
 
 class PaperRunner(BaseRunner):
@@ -75,6 +79,11 @@ class PaperRunner(BaseRunner):
         self._bar_buffer: list[Bar] = []
         self._pending_order_id: str | None = None
 
+        # Daily stats — reset each session start; updated on position close
+        self._daily_pnl: Decimal = Decimal("0")
+        self._daily_wins: int = 0
+        self._daily_losses: int = 0
+
     @property
     def broker(self) -> PaperBroker:
         return self._broker
@@ -97,6 +106,9 @@ class PaperRunner(BaseRunner):
         # Keep buffer bounded to last 500 bars
         if len(self._bar_buffer) > 500:
             self._bar_buffer = self._bar_buffer[-500:]
+
+        # Check SL/TP on existing positions before processing the new bar
+        self._check_and_close_positions(bar)
 
         # Flush any pending fill
         if self._pending_order_id is not None:
@@ -140,6 +152,111 @@ class PaperRunner(BaseRunner):
                 self._pending_order_id = order_id
 
         return result
+
+    def _check_and_close_positions(self, bar: Bar) -> None:
+        """Check all open positions for SL/TP hits on this bar and fire notifications."""
+        closed = self._broker.check_sl_tp(
+            bar_high=bar.high,
+            bar_low=bar.low,
+            bar_close=bar.close,
+            now_utc=bar.timestamp_utc,
+        )
+        for closed_pos, exit_reason, pnl in closed:
+            self._on_position_closed(closed_pos, exit_reason, pnl)
+
+    def _on_position_closed(
+        self,
+        pos: Position,
+        exit_reason: str,
+        pnl: Decimal,
+    ) -> None:
+        """Update stats and fire Telegram close notification."""
+        self._daily_pnl += pnl
+        if pnl > 0:
+            self._daily_wins += 1
+        elif pnl < 0:
+            self._daily_losses += 1
+
+        if self._alerter is None:
+            return
+
+        pnl_pips: float | None = None
+        if pos.close_price is not None:
+            raw_diff = (
+                (pos.close_price - pos.entry_price)
+                if pos.side == PositionSide.LONG
+                else (pos.entry_price - pos.close_price)
+            )
+            pnl_pips = float(raw_diff / _PIP_SIZE)
+
+        duration_bars: int | None = None
+        if pos.opened_at_utc and pos.closed_at_utc:
+            delta = pos.closed_at_utc - pos.opened_at_utc
+            duration_bars = max(1, int(delta.total_seconds() / 60))
+
+        try:
+            self._alerter.alert_trade_closed(
+                symbol=pos.symbol,
+                side=pos.side.value,
+                pnl=float(pnl),
+                exit_reason=exit_reason,
+                entry=pos.entry_price,
+                exit_price=pos.close_price,
+                pnl_pips=pnl_pips,
+                duration_bars=duration_bars,
+                balance_after=self._broker._balance,
+                session_pnl=float(self._daily_pnl),
+            )
+        except Exception as exc:
+            log.warning("paper_runner_alert_trade_closed_failed: %s", exc)
+
+    def _format_open_positions(self) -> str:
+        """Return a detailed HTML string of all open positions for Telegram."""
+        positions = self._broker.get_open_positions_list()
+        if not positions:
+            return "📋 <b>Posizioni aperte (0)</b>\n\nNessuna posizione aperta."
+
+        lines = [f"📋 <b>Posizioni aperte ({len(positions)})</b>"]
+        now = datetime.now(UTC)
+        for pos in positions:
+            side_icon = "🟢" if pos.side == PositionSide.LONG else "🔴"
+            sl_str = f"{float(pos.stop_loss):.5f}" if pos.stop_loss else "—"
+            tp_str = f"{float(pos.take_profit):.5f}" if pos.take_profit else "—"
+
+            # Unrealized PnL using last known quote
+            pnl_str = ""
+            try:
+                bid, ask = self._broker.get_current_price(pos.symbol)
+                current = bid if pos.side == PositionSide.SHORT else ask
+                raw_diff = (
+                    (current - pos.entry_price)
+                    if pos.side == PositionSide.LONG
+                    else (pos.entry_price - current)
+                )
+                pnl_pips = float(raw_diff / _PIP_SIZE)
+                sign = "+" if pnl_pips >= 0 else ""
+                pnl_str = f"\n  PnL:    {sign}{pnl_pips:.1f} pip"
+            except Exception:
+                pass
+
+            # Duration since open
+            delta = now - pos.opened_at_utc
+            hours, rem = divmod(int(delta.total_seconds()), 3600)
+            mins = rem // 60
+            dur_str = f"{hours}h {mins}m" if hours else f"{mins}m"
+
+            lines.append(
+                f"\n{side_icon} <b>{pos.symbol}</b>  {pos.side.value.upper()}"
+                f"  {pos.lot_size} lot\n"
+                f"  Entry:  {float(pos.entry_price):.5f}  ({dur_str} fa)\n"
+                f"  SL:     {sl_str}  |  TP: {tp_str}"
+                f"{pnl_str}"
+            )
+        return "\n".join(lines)
+
+    def _get_open_positions(self) -> list:
+        """Return open positions for intermarket exposure accounting."""
+        return self._broker.get_open_positions_list()
 
     def _submit_to_paper(
         self,

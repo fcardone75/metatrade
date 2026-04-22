@@ -457,6 +457,11 @@ class BaseRunner:
         # fire it exactly once per UTC day at daily_summary_hour_utc.
         self._daily_summary_sent_date: date | None = None
 
+        # ── Closed-trade stats (updated by subclasses via _on_trade_closed) ────
+        self._daily_pnl: Decimal = Decimal("0")
+        self._daily_wins: int = 0
+        self._daily_losses: int = 0
+
     @property
     def stats(self) -> RunStats:
         return self._stats
@@ -617,9 +622,28 @@ class BaseRunner:
         )
 
     def _cmd_positions(self, _args: str) -> str:
+        return self._format_open_positions()
+
+    def _format_open_positions(self) -> str:
+        """Return a Telegram-ready HTML string of open positions.
+
+        Subclasses with position tracking (e.g. PaperRunner) override this
+        to provide per-position details. Base implementation shows the count
+        from the last account snapshot.
+        """
         acc = self._last_account
         n = acc.open_positions_count if acc else 0
-        return f"📋 <b>Posizioni aperte ({n})</b>\n\nDettagli disponibili tramite il broker."
+        return f"📋 <b>Posizioni aperte ({n})</b>\n\nDettagli non disponibili in questa modalità."
+
+    def _daily_win_rate(self) -> float:
+        n = self._daily_wins + self._daily_losses
+        return self._daily_wins / n if n > 0 else 0.0
+
+    def _daily_max_dd(self) -> Decimal:
+        if self._peak_equity <= Decimal("0") or self._last_account is None:
+            return Decimal("0")
+        dd = self._peak_equity - self._last_account.equity
+        return max(Decimal("0"), dd)
 
     def _cmd_balance(self, _args: str) -> str:
         acc = self._last_account
@@ -926,10 +950,10 @@ class BaseRunner:
             symbol=self._symbol,
             timeframe=self._timeframe or "",
             n_trades=self._stats.trades_executed,
-            total_pnl=Decimal("0"),
+            total_pnl=self._daily_pnl,
             pnl_pips=None,
-            win_rate=0.0,
-            max_dd=Decimal("0"),
+            win_rate=self._daily_win_rate(),
+            max_dd=self._daily_max_dd(),
             balance=self._last_account.balance,
             model_version=mv,
             live_accuracy=live_acc,
@@ -1374,10 +1398,10 @@ class BaseRunner:
                     symbol=self._symbol,
                     timeframe=self._timeframe or "",
                     n_trades=self._stats.trades_executed,
-                    total_pnl=Decimal("0"),
+                    total_pnl=self._daily_pnl,
                     pnl_pips=None,
-                    win_rate=0.0,
-                    max_dd=Decimal("0"),
+                    win_rate=self._daily_win_rate(),
+                    max_dd=self._daily_max_dd(),
                     balance=account_balance,
                     model_version=mv,
                     live_accuracy=live_acc,
