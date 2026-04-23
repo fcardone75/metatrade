@@ -128,16 +128,30 @@ class TelegramCommandReceiver:
             return
 
         text = (message.get("text") or "").strip()
-        if not text.startswith("/"):
+        if not text:
             return
 
-        # "/pause 5 min" → command="/pause", args="5 min"
-        parts = text.split(None, 1)
-        command = parts[0].lower()
-        # Strip bot suffix: /status@MyBotName → /status
-        if "@" in command:
-            command = command.split("@")[0]
-        args = parts[1] if len(parts) > 1 else ""
+        # Accetta messaggi che iniziano con "/" (comandi classici) oppure con
+        # un'emoji (bottoni della quick keyboard, es. "📊 positions"). I messaggi
+        # di testo semplice ("hello world") vengono ignorati.
+        if text.startswith("/"):
+            # "/pause 5 min" → command="/pause", args="5 min"
+            parts = text.split(None, 1)
+            command = parts[0].lower()
+            # Strip bot suffix: /status@MyBotName → /status
+            if "@" in command:
+                command = command.split("@")[0]
+            args = parts[1] if len(parts) > 1 else ""
+        elif ord(text[0]) > 127:
+            # Bottoni quick keyboard: "📊 positions" → command="/positions"
+            import re
+            match = re.search(r"[A-Za-z][A-Za-z0-9_]+", text)
+            if not match:
+                return
+            command = "/" + match.group(0).lower()
+            args = text[match.end():].strip()
+        else:
+            return
 
         log.info(
             "telegram_command_received",

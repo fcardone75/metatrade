@@ -523,6 +523,8 @@ class BaseRunner:
                 model_version=model_version,
                 session_filter=sess_filter,
             )
+            if self._command_receiver is not None:
+                self._alerter.send_quick_keyboard()
         self._session_started = True
         self._session_start_time = datetime.now(UTC)
 

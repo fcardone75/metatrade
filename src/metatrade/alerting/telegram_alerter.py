@@ -510,15 +510,62 @@ class TelegramAlerter:
     def _is_active(self) -> bool:
         return bool(self._cfg.enabled and self._cfg.bot_token and self._cfg.chat_id)
 
-    def _post(self, text: str) -> None:
+    # ── Reply keyboard ────────────────────────────────────────────────────────
+
+    # Bottoni rapidi mostrati sotto il campo messaggio del bot.
+    # Gli emoji sono decorativi; il testo del bottone viene inviato come
+    # messaggio quando premuto, quindi deve coincidere con un comando valido
+    # registrato in ``CommandHandler``.
+    QUICK_KEYBOARD: tuple[tuple[str, ...], ...] = (
+        ("📊 positions", "🔄 sync", "📅 daily"),
+        ("🔁 retrain", "🎯 training", "🏆 trained"),
+    )
+
+    def send_quick_keyboard(
+        self,
+        message: str = "⌨️ Comandi rapidi attivi",
+        *,
+        persistent: bool = True,
+    ) -> None:
+        """Invia (o aggiorna) la reply keyboard persistente con i comandi rapidi.
+
+        Args:
+            message:    Testo del messaggio a cui è allegata la keyboard.
+            persistent: Se True, la keyboard rimane visibile finché non viene
+                        rimossa esplicitamente.
+        """
+        if not self._is_active():
+            return
+        keyboard = [
+            [{"text": label} for label in row]
+            for row in self.QUICK_KEYBOARD
+        ]
+        reply_markup = {
+            "keyboard": keyboard,
+            "resize_keyboard": True,
+            "is_persistent": persistent,
+            "one_time_keyboard": False,
+        }
+        self._post(message, reply_markup=reply_markup)
+
+    def remove_quick_keyboard(self, message: str = "⌨️ Tastiera rimossa") -> None:
+        """Rimuove la reply keyboard persistente."""
+        if not self._is_active():
+            return
+        self._post(message, reply_markup={"remove_keyboard": True})
+
+    def _post(self, text: str, *, reply_markup: dict | None = None) -> None:
         """HTTP POST to Telegram sendMessage — fire-and-forget."""
         import json as _json
         url = _TELEGRAM_API.format(token=self._cfg.bot_token, method="sendMessage")
-        payload = _json.dumps({
+        body: dict = {
             "chat_id": self._cfg.chat_id,
             "text": text,
             "parse_mode": "HTML",
-        }).encode("utf-8")
+        }
+        if reply_markup is not None:
+            body["reply_markup"] = reply_markup
+        payload = _json.dumps(body).encode("utf-8")
         req = urllib.request.Request(
             url,
             data=payload,
