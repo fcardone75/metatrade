@@ -225,7 +225,7 @@ class WalkForwardTrainer:
                                     feature_cache is None).
 
         Returns:
-            (result, final_model) — WalkForwardResult + last trained classifier.
+            (result, best_model) — WalkForwardResult + best-fold classifier.
         """
         cfg = self._config
         n = len(bars)
@@ -313,7 +313,10 @@ class WalkForwardTrainer:
             if on_fold_complete is not None:
                 on_fold_complete(fold)
 
-            if test_accuracy > best_accuracy:
+            # Only consider trained classifiers: in-sample accuracy may have
+            # dropped below min_accuracy even when test accuracy is high, and
+            # ModelRegistry.register() refuses untrained classifiers.
+            if classifier.is_trained and test_accuracy > best_accuracy:
                 best_accuracy = test_accuracy
                 result.best_fold_index = fold_index
                 best_model = classifier

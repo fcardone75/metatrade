@@ -1394,6 +1394,34 @@ def auto_tune_single_timeframe(
             recall_sell=round(r, 4) if (r := best_result.holdout_recall_by_class.get(-1)) is not None else None,
         )
 
+    if not best_model.is_trained:
+        msg = (
+            "Auto-tune: il miglior modello per test accuracy non ha superato min_accuracy in-sample. "
+            "Abbassa --min-accuracy o aumenta --bars."
+        )
+        log.warning(
+            "auto_tune_best_model_untrained",
+            symbol=args.symbol,
+            timeframe=timeframe,
+            min_accuracy=best_cfg.min_accuracy,
+            msg=msg,
+        )
+        return TimeframeTrainReport(
+            timeframe=timeframe,
+            success=False,
+            error=msg,
+            bars_used=n_bars,
+            duration_sec=round(time.perf_counter() - t0, 3),
+            model_version=None,
+            mean_test_accuracy=float(best_result.mean_test_accuracy),
+            best_test_accuracy=float(best_result.best_test_accuracy),
+            best_fold_index=int(best_result.best_fold_index),
+            n_folds=best_result.n_folds,
+            folds=[fold_to_dict(f) for f in best_result.folds],
+            artifact_path=None,
+            holdout_accuracy=float(best_holdout),
+        )
+
     args.model_dir.mkdir(parents=True, exist_ok=True)
     registry = ModelRegistry(config=best_cfg, persist=True)
     best_fold = best_result.folds[best_result.best_fold_index]
