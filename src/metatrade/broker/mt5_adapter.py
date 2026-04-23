@@ -680,6 +680,68 @@ class MT5BrokerAdapter(IBrokerAdapter):
             })
         return result
 
+    def get_deals_for_position(self, position_ticket: int) -> list[dict]:
+        """Return all deals for a position ticket (entry + exit).
+
+        Useful for computing realized PnL of a position closed by MT5 natively
+        (e.g. SL/TP hit on the broker server).
+
+        Each dict: ticket, time_utc, type, entry (0=IN 1=OUT 2=INOUT),
+                   volume, price, profit, commission, swap, symbol.
+        """
+        if not self._connected:
+            return []
+        mt5 = _get_mt5()
+        deals = mt5.history_deals_get(position=position_ticket)
+        if deals is None:
+            return []
+        result = []
+        for d in deals:
+            result.append({
+                "ticket":     d.ticket,
+                "time_utc":   datetime.fromtimestamp(d.time, tz=UTC),
+                "type":       d.type,
+                "entry":      d.entry,   # 0=IN, 1=OUT, 2=INOUT
+                "volume":     d.volume,
+                "price":      d.price,
+                "profit":     d.profit,
+                "commission": d.commission,
+                "swap":       d.swap,
+                "symbol":     d.symbol,
+            })
+        return result
+
+    def get_deals_since(self, from_dt: datetime, to_dt: datetime) -> list[dict]:
+        """Return all deals in [from_dt, to_dt] (inclusive).
+
+        Useful for reconstructing daily PnL after a restart.
+        Each dict: ticket, position, time_utc, type, entry (0=IN 1=OUT 2=INOUT),
+                   volume, price, profit, commission, swap, symbol, comment.
+        """
+        if not self._connected:
+            return []
+        mt5 = _get_mt5()
+        deals = mt5.history_deals_get(from_dt, to_dt)
+        if deals is None:
+            return []
+        result = []
+        for d in deals:
+            result.append({
+                "ticket":     d.ticket,
+                "position":   d.position_id,
+                "time_utc":   datetime.fromtimestamp(d.time, tz=UTC),
+                "type":       d.type,
+                "entry":      d.entry,
+                "volume":     d.volume,
+                "price":      d.price,
+                "profit":     d.profit,
+                "commission": d.commission,
+                "swap":       d.swap,
+                "symbol":     d.symbol,
+                "comment":    d.comment,
+            })
+        return result
+
     def modify_sl_tp(
         self,
         ticket: int,

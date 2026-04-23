@@ -96,6 +96,13 @@ class LiveRunner(BaseRunner):
         )
         self._bar_buffer: list[Bar] = []
         self._connected = False
+        # Last-known open positions by ticket — used to detect MT5 native closures
+        # (SL/TP hit server-side without going through ExitEngine).
+        self._tracked_positions: dict[int, dict] = {}
+
+        # Register live-specific commands after super().__init__()
+        if self._command_handler is not None:
+            self._command_handler.register("/sync", self._cmd_sync)
 
     @property
     def is_connected(self) -> bool:
@@ -142,6 +149,9 @@ class LiveRunner(BaseRunner):
             self._bar_buffer.append(bar)
             if len(self._bar_buffer) > 500:
                 self._bar_buffer = self._bar_buffer[-500:]
+
+            # Detect positions closed by MT5 natively (SL/TP server-side)
+            self._detect_mt5_closes()
 
             # Pull current account state from broker
             account = self._broker.get_account()
@@ -416,6 +426,100 @@ class LiveRunner(BaseRunner):
                 }
 
         return None
+
+    def _cmd_sync(self, _args: str) -> str:
+        """Telegram command: rebuild daily stats from MT5 deal history."""
+        result = self._sync_daily_from_history()
+        if result is None:
+            return "⚠️ Impossibile leggere la history MT5 — broker disconnesso?"
+        wins, losses, pnl = result
+        n = wins + losses
+        wr = f"{wins / n:.1%}" if n > 0 else "n/a"
+        sign = "+" if pnl >= 0 else ""
+        return (
+            f"🔄 <b>Sync completato — oggi</b>\n"
+            f"  Chiusi:   {n}  (W:{wins} / L:{losses})\n"
+            f"  Win rate: {wr}\n"
+            f"  PnL:      {sign}{pnl:.2f} USD"
+        )
+
+    def _sync_daily_from_history(self) -> tuple[int, int, float] | None:
+        """Read MT5 OUT deals from midnight UTC to now and reset daily counters.
+
+        Returns (wins, losses, total_pnl) or None on broker error.
+        This is idempotent — calling it multiple times just re-reads history.
+        """
+        try:
+            from datetime import date
+            today_start = datetime.combine(date.today(), datetime.min.time()).replace(tzinfo=UTC)
+            deals = self._broker.get_deals_since(today_start, datetime.now(UTC))
+        except Exception as exc:
+            log.warning("sync_daily_history_failed", error=str(exc))
+            return None
+
+        wins = 0
+        losses = 0
+        total_pnl = 0.0
+        for d in deals:
+            if d.get("entry") != 1:  # only OUT (closing) deals
+                continue
+            pnl = d["profit"] + d["commission"] + d.get("swap", 0.0)
+            total_pnl += pnl
+            if pnl > 0:
+                wins += 1
+            elif pnl < 0:
+                losses += 1
+
+        self._daily_pnl = Decimal(str(round(total_pnl, 2)))
+        self._daily_wins = wins
+        self._daily_losses = losses
+        log.info(
+            "daily_stats_synced_from_history",
+            wins=wins, losses=losses, total_pnl=round(total_pnl, 2),
+        )
+        return (wins, losses, total_pnl)
+
+    def _detect_mt5_closes(self) -> None:
+        """Detect positions closed by MT5 (SL/TP server-side) and fire notifications.
+
+        Compares the current MT5 position list against the previously tracked set.
+        Any ticket that disappeared was closed outside of ExitEngine — query the
+        deal history for the realized PnL and fire the standard close notification.
+        """
+        try:
+            current = self._broker.get_open_positions()
+        except Exception:
+            return
+
+        current_by_ticket = {p["ticket"]: p for p in current}
+
+        for ticket, pos_data in list(self._tracked_positions.items()):
+            if ticket not in current_by_ticket:
+                # Position gone — find the OUT deal for PnL and exit price
+                profit = 0.0
+                exit_price: Decimal | None = None
+                exit_reason = "sl/tp"
+                try:
+                    deals = self._broker.get_deals_for_position(ticket)
+                    for d in deals:
+                        if d.get("entry") == 1:  # DEAL_ENTRY_OUT
+                            profit += d["profit"] + d["commission"] + d.get("swap", 0)
+                            if d.get("price"):
+                                exit_price = Decimal(str(d["price"]))
+                except Exception as exc:
+                    log.warning("live_detect_mt5_close_deal_failed", ticket=ticket, error=str(exc))
+
+                if exit_price is None:
+                    exit_price = Decimal(str(pos_data.get("price_open", 0)))
+
+                self._record_live_close(
+                    pos=pos_data,
+                    exit_price=exit_price,
+                    exit_reason=exit_reason,
+                    profit=profit,
+                )
+
+        self._tracked_positions = current_by_ticket
 
     def _record_live_close(
         self,
