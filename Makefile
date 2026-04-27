@@ -5,7 +5,18 @@
         paper paper-no-ml \
         live live-confirmed live-no-ml \
         run-dashboard stop-services \
-        kill kill-emergency reset-kill
+        kill kill-emergency reset-kill \
+        venv-ensure
+
+# ── Virtualenv: stesso effetto di "source .venv/bin/activate" per ogni ricetta ─
+# Make avvia una shell nuova per ogni riga; esportare PATH e VIRTUAL_ENV qui
+# garantisce che python/pip/pytest nelle ricette usino il venv se esiste.
+VENV     ?= .venv
+VENV_ABS := $(abspath $(VENV))
+ifneq ($(wildcard $(VENV)/bin/python),)
+  export PATH := $(VENV_ABS)/bin:$(PATH)
+  export VIRTUAL_ENV := $(VENV_ABS)
+endif
 
 # ── Configurable defaults (override on the command line) ──────────────────────
 SYMBOL    ?= EURUSD
@@ -33,6 +44,19 @@ PAPER_EXTRA          ?=
 
 # ─────────────────────────────────────────────────────────────────────────────
 
+venv-ensure:   ## Verifica .venv e mostra l'interprete Python usato dalle ricette make
+	@test -f "$(VENV)/bin/activate" || { \
+		printf '%s\n' "Manca $(VENV). Crea con: python3 -m venv $(VENV) && make install"; \
+		exit 1; \
+	}
+	@py="$$(command -v python)"; \
+	if [ "$$py" = "$(VENV_ABS)/bin/python" ]; then \
+		printf '%s\n' "OK: ricette make usano il venv ($$py)"; \
+	else \
+		printf '%s\n' "Attenzione: python=$$py (atteso $(VENV_ABS)/bin/python)"; \
+		exit 1; \
+	fi
+
 help:   ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-24s\033[0m %s\n", $$1, $$2}'
@@ -55,7 +79,7 @@ install-worker:   ## Install all dependencies needed on the ML worker (Linux)
 install-live:   ## Install all dependencies needed on the live master (Windows)
 	pip install -e ".[live,distributed,dev]"
 
-start-worker:   ## clear Python cache, reinstall, then start the ML worker daemon
+start-worker: venv-ensure ## clear Python cache, reinstall, then start the ML worker daemon
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null; true
 	find . -name "*.pyc" -delete 2>/dev/null; true
 	python scripts/train_worker.py
@@ -266,7 +290,7 @@ live-no-ml:   ## Start LIVE trading with technical indicators only — REAL MONE
 
 # ── Dashboard ─────────────────────────────────────────────────────────────────
 
-run-dashboard:   ## Start FastAPI observability dashboard (OBSERVABILITY_PORT in .env, default 8080)
+run-dashboard: venv-ensure  ## Start FastAPI observability dashboard (OBSERVABILITY_PORT in .env, default 8080)
 	python scripts/run_dashboard.py
 
 # Suggerimento Windows: liberare la porta prima di run-dashboard
