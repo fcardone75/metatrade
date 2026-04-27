@@ -1,461 +1,296 @@
-Agisci come un Principal Quant ML Engineer, Senior Python Architect e refactoring lead.
+# ML Module Evolution — Piano PR Incrementale
 
-Devi lavorare su un repository reale chiamato MetaTrade.
-Il tuo obiettivo NON è fare teoria, ma progettare e implementare una nuova versione del modulo ML già esistente, rispettando l’architettura attuale del repository e introducendo gradualmente una nuova capacità:
+## Contesto
 
-1. output probabilistico BUY / HOLD / SELL calibrato
-2. secondo output continuo che rappresenti la qualità economica attesa del setup
+Il modulo ML attuale (`src/metatrade/ml/`) produce:
 
-ATTENZIONE:
-- non devi fare un refactor distruttivo
-- non devi rompere la compatibilità con il sistema attuale
-- non devi riscrivere tutto da zero senza motivo
-- devi lavorare per fasi incrementali
-- ogni fase deve lasciare il sistema in stato funzionante
-- ogni cambiamento deve essere motivato
-- ogni scelta deve essere coerente con il codice già esistente
-
-==================================================
-1. CONTESTO REALE DEL REPOSITORY
-==================================================
-
-Esistono già questi elementi nel repository:
-
-- src/metatrade/ml/labels.py
-  - contiene il labeling attuale con funzione tipo label_bars()
-  - oggi usa classificazione 3 classi BUY / HOLD / SELL
-  - forward_bars = 5
-  - threshold = (ATR14 / close) * atr_threshold_mult
-  - HOLD se il return assoluto è sotto soglia
-  - NON usa triple barrier
-  - NON usa TP/SL
-  - NON usa spread/costi
-  - NON considera il path intra-barra
-
-- src/metatrade/ml/features.py
-  - contiene le feature ML attuali
-  - esistono due strutture principali:
-    - FeatureVector
-    - MultiResFeatureVector
-  - single timeframe + contesto M5/M15 per alcuni modelli
-
-- src/metatrade/ml/module.py
-  - contiene il modulo ML attuale integrato nel sistema
-  - oggi produce direction + confidence
-  - se confidence < 0.55 forza HOLD
-  - il segnale entra nel ConsensusEngine come voto
-
-- MLConfig
-  - configurazione ML esistente
-  - include forward_bars, atr_threshold_mult e altri parametri attuali
-
-- ModelRegistry
-  - salva snapshot di modelli separati per timeframe e simbolo
-  - naming stile ml_m1, ml_m5, ecc.
-
-Vincoli architetturali attuali:
-- un modello per timeframe e per simbolo
-- il modulo ML è un modulo del consensus, non un motore separato
-- il RiskManager non usa ancora la confidence ML per il sizing
-- esiste un sistema separato per candidati SL/TP, ma è indipendente dal classificatore ML
-
-==================================================
-2. STATO ATTUALE DA CUI PARTIRE
-==================================================
-
-Target attuale:
 - classificazione 3 classi BUY / HOLD / SELL
-- horizon fisso = 5 barre
-- soglia ATR-scaled
-- nessun target continuo
-
-Feature attuali:
-- returns multi-lag
-- ema distances / ema cross
-- RSI / MACD / Stoch / ADX slope
-- ATR rel / std / atr zscore
-- candlestick body / wick
-- tick volume relative
-- time cyclic features
-- donchian_pos / bb_pct_b / rsi_divergence / hurst_short
-- MultiRes context M5/M15
-
-Limitazioni attuali:
-- niente spread come feature
-- niente cost proxy
-- niente intermarket feature nel vettore ML
-- nessun output economico atteso
-- confidence = sola max class probability
-- labeling limitato al close a t+5
-
-==================================================
-3. OBIETTIVO DEL LAVORO
-==================================================
-
-Devi evolvere il modulo ML esistente in modo repository-aware.
-
-Il nuovo modulo deve arrivare a produrre:
-
-OUTPUT 1
-Probabilità calibrate:
-- P(BUY)
-- P(HOLD)
-- P(SELL)
-
-OUTPUT 2
-Uno score continuo di trade quality / expected economic value.
-
-Questo nuovo modulo deve:
-- restare compatibile con src/metatrade/ml/module.py
-- poter convivere inizialmente con la logica attuale
-- salvare e caricare i nuovi artefatti via ModelRegistry
-- rispettare il modello “uno per timeframe e simbolo”
-- essere introdotto in più fasi, non tutto insieme
-
-==================================================
-4. VINCOLI DI IMPLEMENTAZIONE
-==================================================
-
-Devi rispettare tutti questi vincoli:
-
-- Python 3.12+
-- design modulare
-- classi piccole e testabili
-- no notebook-centric code
-- no giant script
-- type hints completi
-- docstring utili
-- logging strutturato
-- fail fast su input invalidi
-- niente hardcode inutile
-- configurazione centralizzata
-- separazione netta tra:
-  - labeling
-  - feature engineering
-  - training
-  - calibration
-  - evaluation
-  - inference
-  - persistence
-- retrocompatibilità dove possibile
-- non rompere le interfacce attuali senza proporre piano di migrazione
-- codice leggibile e production-grade
-- niente segreti hardcoded
-- serializzazione artefatti gestita in modo esplicito
-- validazione robusta per serie temporali
-- evitare leakage e overfitting
-
-==================================================
-5. DECISIONE TECNICA RICHIESTA
-==================================================
-
-Devi scegliere e implementare la migliore architettura tra queste:
-
-A. classificatore + regressore separato
-B. multi-output model
-C. classificatore + meta-labeling
-D. altra soluzione migliore, se motivata
-
-Non voglio neutralità.
-Scegli la soluzione migliore per questo repository e questo sistema.
-
-==================================================
-6. QUELLO CHE DEVI PRODURRE
-==================================================
-
-Devi fornire:
-
-1. analisi del codice attuale a livello architetturale
-2. proposta di modifica repository-aware
-3. elenco file da modificare
-4. elenco file nuovi da creare
-5. classi nuove da introdurre
-6. modifiche puntuali a labels.py, features.py, module.py, MLConfig, ModelRegistry
-7. strategia di compatibilità con il sistema attuale
-8. implementazione del nuovo training flow
-9. implementazione del nuovo inference flow
-10. persistenza del nuovo secondo output
-11. test minimi
-12. piano incrementale a fasi
-13. criteri di completamento per ogni fase
-
-==================================================
-7. FASI OBBLIGATORIE DA RISPETTARE
-==================================================
-
-Devi strutturare il lavoro in queste fasi.
-NON saltarle.
-NON accorparle in modo confuso.
-Ogni fase deve:
-- avere obiettivo
-- file toccati
-- classi introdotte
-- compatibilità
-- test
-- definition of done
-
-------------------------------------------
-FASE 1 — ANALISI E HARDENING DEL MODULO ATTUALE
-------------------------------------------
-
-Obiettivo:
-- consolidare l’attuale classificatore
-- rendere più chiari contratti dati, config, training/inference separation
-- preparare il terreno al secondo output senza introdurlo ancora
-
-In questa fase devi:
-- analizzare src/metatrade/ml/labels.py
-- analizzare src/metatrade/ml/features.py
-- analizzare src/metatrade/ml/module.py
-- analizzare MLConfig
-- analizzare ModelRegistry
-
-Poi devi proporre e implementare:
-- pulizia delle interfacce
-- DTO / dataclass / pydantic model per input-output del modulo ML
-- separazione tra artifacts di training e predictor di inference
-- persistenza esplicita dei metadata del modello
-- metadata schema delle feature
-- gestione versione modello
-- logging migliore
-- test minimi sul flusso attuale
-
-Vincolo:
-- il comportamento esterno deve restare il più possibile invariato
-- il modulo deve continuare a produrre direction + confidence come oggi
-
-Definition of Done Fase 1:
-- il sistema continua a funzionare come prima
-- il modulo ML è più pulito e testabile
-- esiste una base architetturale pronta per il nuovo output continuo
-
-------------------------------------------
-FASE 2 — OUTPUT PROBABILISTICO COMPLETO E CALIBRATO
-------------------------------------------
-
-Obiettivo:
-- evolvere il classificatore esistente per restituire probabilità calibrate BUY/HOLD/SELL
-- mantenere retrocompatibilità con direction + confidence
-
-In questa fase devi:
-- introdurre una struttura output tipo MlPrediction o equivalente
-- aggiungere:
-  - probability_buy
-  - probability_hold
-  - probability_sell
-  - selected_direction
-  - confidence
-  - confidence_margin
-- implementare calibration layer
-- scegliere e motivare tecnica di calibration
-- aggiornare il predictor
-- aggiornare ModelRegistry per salvare anche calibratore + metadata
-- fare in modo che module.py continui a poter emettere AnalysisSignal compatibile col consensus attuale
-
-Vincolo:
-- nessun secondo output continuo ancora
-- retrocompatibilità obbligatoria
-
-Definition of Done Fase 2:
-- il classificatore produce probabilità calibrate
-- il modulo esistente continua a funzionare
-- il consensus può ancora ricevere direction + confidence
-- esistono test su probabilità e inferenza
-
-------------------------------------------
-FASE 3 — INTRODUZIONE DEL SECONDO OUTPUT CONTINUO
-------------------------------------------
-
-Obiettivo:
-- introdurre un secondo modello o componente che stimi la qualità economica attesa del setup
-
-In questa fase devi:
-- definire il miglior target continuo per questo repository
-- confrontare almeno:
-  - expected future return
-  - expected pips
-  - expected value in R
-  - TP-before-SL probability
-- scegliere una soluzione netta
-- implementare il relativo label builder
-- creare trainer e predictor del secondo output
-- integrare il risultato in un output finale tipo:
-  - expected_value_score
-  - expected_value_r o metrica equivalente
-  - quality_bucket
-
-Vincolo:
-- in questa fase il secondo output deve essere disponibile come metadata del modulo ML
-- NON deve ancora pilotare il sizing del RiskManager
-- il sistema deve restare compatibile con il consensus esistente
-
-Definition of Done Fase 3:
-- il modulo ML produce due output
-- il secondo output è persistito, caricato e disponibile in inference
-- l’output è integrabile come metadata senza rompere il sistema
-
-------------------------------------------
-FASE 4 — MIGLIORAMENTO DEL LABELING E VALIDAZIONE
-------------------------------------------
-
-Obiettivo:
-- migliorare la qualità statistica del modulo ML
-- superare i limiti del solo target close@t+5
-- rafforzare la metodologia di validazione
-
-In questa fase devi:
-- criticare l’attuale labeling in labels.py
-- proporre V1 e V2:
-  - V1 pragmatica: miglioramento minimo difendibile
-  - V2 avanzata: triple barrier o approccio equivalente
-- spiegare come introdurre spread/cost proxy nel labeling o nella valutazione
-- rivedere horizon e soglie
-- progettare walk-forward / expanding validation
-- definire embargo corretto
-- definire metriche appropriate
-- ridurre rischio leakage / selection bias / multiple testing
-
-Vincolo:
-- la fase può introdurre nuove classi o file, ma deve spiegare come convivere con il labeling legacy
-- niente rottura cieca della pipeline esistente
-
-Definition of Done Fase 4:
-- esiste una pipeline di validazione seria
-- il labeling è documentato, migliorato e confrontabile col legacy
-- sono definite metriche robuste e criteri di promozione
-
-------------------------------------------
-FASE 5 — INTEGRAZIONE EVOLUTIVA NEL CONSENSUS
-------------------------------------------
-
-Obiettivo:
-- usare meglio i nuovi output senza rompere il comportamento attuale
-
-In questa fase devi:
-- spiegare come module.py deve esporre il nuovo output
-- decidere se expected_value_score deve restare metadata oppure entrare nella logica decisionale
-- proporre una migrazione graduale del consensus
-- spiegare come usare confidence_margin e expected_value_score
-- proporre un piano per futuro uso in:
-  - trade filtering
-  - ranking
-  - priorità segnali
-  - eventuale future sizing, ma non implementarlo se non necessario
-
-Vincolo:
-- questa fase deve essere compatibile con l’attuale ConsensusEngine
-- ogni modifica deve avere fallback semplice
-
-Definition of Done Fase 5:
-- il sistema ha un percorso chiaro per usare i nuovi output
-- non viene rotto il voto attuale
-- la migrazione è graduale e controllabile
-
-==================================================
-8. FILE E CLASSI: COSA DEVI PROPORRE IN MODO CONCRETO
-==================================================
-
-Devi proporre in modo esplicito:
-
-File esistenti da modificare:
-- src/metatrade/ml/labels.py
-- src/metatrade/ml/features.py
-- src/metatrade/ml/module.py
-- file dove vive MLConfig
-- file dove vive ModelRegistry
-
-File nuovi suggeriti, se servono, ad esempio:
-- src/metatrade/ml/contracts.py
-- src/metatrade/ml/prediction.py
-- src/metatrade/ml/calibration.py
-- src/metatrade/ml/trainers.py
-- src/metatrade/ml/evaluation.py
-- src/metatrade/ml/targets.py
-- src/metatrade/ml/artifacts.py
-
-Non sei obbligato a usare questi nomi, ma devi proporre una struttura concreta e coerente col repository.
-
-Per ogni file devi dire:
-- scopo
-- classi/funzioni principali
-- dipendenze
-- perché serve
-
-==================================================
-9. REQUISITI SUI CONTRATTI DATI
-==================================================
-
-Devi introdurre contratti dati chiari.
-Per esempio, o equivalente migliore:
-
-- MlFeatureRow
-- MlTrainingDataset
-- MlClassificationTarget
-- MlContinuousTarget
-- MlPrediction
-- MlModelArtifacts
-- MlCalibrationArtifacts
-- MlEvaluationReport
-
-Devono essere tipizzati e serializzabili.
-
-==================================================
-10. OUTPUT FINALE DESIDERATO
-==================================================
-
-L’output finale della tua risposta deve contenere:
-
-1. Executive Summary
-2. Analisi del modulo ML attuale
-3. Architettura repository-aware proposta
-4. Fase 1
-5. Fase 2
-6. Fase 3
-7. Fase 4
-8. Fase 5
-9. File da modificare
-10. File nuovi da creare
-11. Classi / contratti dati
-12. Esempi di patch o codice Python
-13. Test da scrivere
-14. Strategia di migrazione
-15. Rischi e limiti
-16. Verdetto finale
-
-==================================================
-11. STILE DI LAVORO OBBLIGATORIO
-==================================================
-
-Lavora come se dovessi aprire una PR seria su questo repository.
-
-Questo significa:
-- niente risposte vaghe
-- niente teoria astratta senza file/classi
-- niente riscrittura totale non richiesta
-- ogni proposta deve essere collegata ai path reali
-- ogni fase deve essere implementabile da sola
-- ogni fase deve lasciare il repository in stato coerente
-
-Ora produci una proposta completa, concreta e orientata a implementazione.
-
-
-
-
-
-----
-Adesso trasforma la proposta in un piano da PR incrementali.
-
-Voglio una tabella con una PR per fase.
-
-Per ogni PR indicami:
-- nome PR
-- obiettivo
-- file modificati
-- file nuovi
-- classi introdotte
-- test da aggiungere
-- compatibilità backward
-- rischio tecnico
-- criterio di merge
-
-Poi, per la PR 1, scrivi anche una checklist operativa dettagliata passo-passo.
+- confidence = max class probability
+- labeling sul close a t+5 con soglia ATR-scaled
+
+L'obiettivo è evolvere il modulo per produrre:
+
+1. **Probabilità calibrate** P(BUY) / P(HOLD) / P(SELL)
+2. **Score continuo** di qualità economica attesa (expected value in R-multiple)
+
+---
+
+## Decisione architetturale
+
+### Scelta: Classificatore + Regressore separato (opzione A)
+
+Motivazione:
+
+- Il classificatore esistente ha già interfaccia stabile — non si tocca il nucleo di training
+- Il regressore (EV score) si addestra su un target diverso (R-multiple) e può fallire senza impattare il classificatore
+- La calibrazione si applica sopra al classificatore esistente senza modificare i pesi del modello
+- Ogni componente è testabile e sostituibile in modo indipendente
+- Meta-labeling (opzione C) richiede confidenza nel classificatore base già alta; non è il caso attuale
+
+---
+
+## Tabella PR
+
+| # | Nome PR | Obiettivo | File modificati | File nuovi | Classi introdotte | Test da aggiungere | Backward compat | Rischio tecnico | Criterio di merge |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | `ml/contracts-hardening` | Contratti dati espliciti, separazione artifacts/inference, metadata schema feature, logging migliorato | `classifier.py`, `registry.py`, `module.py` | `contracts.py`, `artifacts.py` | `MlPrediction`, `MlModelArtifacts`, `MlFeatureSchema`, `ArtifactStore` | `test_contracts.py`, `test_artifacts.py` | Piena — `AnalysisSignal` invariato | Basso | Tutti i test esistenti passano; nuovi test ≥ 90% coverage |
+| 2 | `ml/calibration` | Probabilità calibrate BUY/HOLD/SELL, `MlPrediction` come DTO primario, calibratore persistito nel registry | `classifier.py`, `module.py`, `registry.py`, `config.py` | `calibration.py`, `prediction.py` | `ProbabilityCalibrator`, `MlPrediction` (con `p_buy/p_hold/p_sell/confidence_margin`) | `test_calibration.py`, `test_prediction.py` | Piena — `direction` e `confidence` invariati, nuovi campi in metadata | Medio — calibrazione può shiftare probabilità | ECE < 0.05 su holdout; esistenti test passano |
+| 3 | `ml/expected-value` | Secondo output continuo: EV score in R-multiple, trainer separato, persistito nel registry | `config.py`, `registry.py`, `module.py` | `targets.py`, `trainers.py` | `ContinuousTargetBuilder`, `MlContinuousTarget`, `ExpectedValueTrainer` | `test_targets.py`, `test_trainers.py` | Piena — EV score solo in `AnalysisSignal.metadata` | Medio-alto — rischio leakage, doppio artefatto | R² > 0.05 su OOS; nessun leakage rilevato |
+| 4 | `ml/labeling-v2` | Labeling path-aware (triple barrier), spread/cost proxy, walk-forward evaluation rigorosa | `labels.py`, `walk_forward.py`, `config.py` | `evaluation.py`, `labeling/triple_barrier.py` | `TripleBarrierLabeler`, `WalkForwardEvaluator`, `MlEvaluationReport` | `test_evaluation.py`, `test_labels_v2.py` | Piena — `label_bars()` invariata, `label_bars_v2()` additive | Medio — nuova distribuzione classi da documentare | Report OOS generato; distribuzione classi documentata |
+| 5 | `ml/consensus-integration` | Esporre `confidence_margin` e `expected_value_score` come campi first-class, enrichment opzionale del segnale | `module.py`, `config.py` | `signal_enricher.py` | `MlSignalEnricher` | `test_signal_enricher.py`, integration test | Piena — logica consensus invariata | Basso — solo metadata additive | Consensus voting invariato; metadata enriched; tutti i test passano |
+
+---
+
+## PR 1 — Checklist Operativa Dettagliata
+
+**Branch:** `feature/ml-contracts-hardening`
+
+**Obiettivo:** introdurre contratti dati espliciti, separare artifacts da inference, aggiungere metadata schema delle feature, migliorare logging. Il comportamento esterno rimane identico.
+
+---
+
+### Step 1 — Setup e analisi baseline
+
+- [ ] Esegui `make test` e verifica che tutti i test esistenti passino (baseline verde)
+- [ ] Esegui `make typecheck` e annota gli errori mypy pre-esistenti nel modulo `ml/`
+- [ ] Leggi e comprendi completamente:
+  - `src/metatrade/ml/classifier.py` — in particolare `predict()`, `serialize()`, `deserialize()`
+  - `src/metatrade/ml/registry.py` — `ModelSnapshot`, `_write_to_disk()`, `load_from_disk()`
+  - `src/metatrade/ml/module.py` — `MLModule.analyse()` e i casi di fallback
+  - `src/metatrade/ml/features.py` — `FeatureVector`, `feature_names()`, `MIN_FEATURE_BARS`
+- [ ] Identifica tutti i posti dove i tipi di output del classificatore sono usati come tuple `(direction, confidence)` e dove `ModelSnapshot` viene costruito
+
+---
+
+### Step 2 — Creare `src/metatrade/ml/contracts.py`
+
+- [ ] Crea il file con i seguenti dataclass frozen:
+
+```python
+# src/metatrade/ml/contracts.py
+
+@dataclass(frozen=True)
+class MlPrediction:
+    """Output del classificatore per una singola osservazione."""
+    direction: int          # 1=BUY, -1=SELL, 0=HOLD
+    confidence: float       # max class probability
+    raw_direction: int      # direction prima del remap XGBoost
+    metadata: dict[str, object] = field(default_factory=dict)
+
+@dataclass(frozen=True)
+class MlFeatureSchema:
+    """Descrizione del vettore feature usato per training/inference."""
+    feature_names: tuple[str, ...]
+    feature_count: int
+    min_bars: int
+    vector_class: str       # nome della classe FeatureVector usata
+
+@dataclass(frozen=True)
+class MlModelArtifacts:
+    """Bundle di tutto ciò che serve per caricare e usare un modello."""
+    version: str
+    symbol: str
+    created_at: float
+    feature_schema: MlFeatureSchema
+    model_bytes: bytes
+    metrics: dict[str, object]  # accuracy, n_samples, feature_importances, class_distribution
+    tags: dict[str, object] = field(default_factory=dict)
+
+@dataclass(frozen=True)
+class MlEvaluationReport:
+    """Metriche di valutazione di un fold o holdout."""
+    fold_id: int
+    n_samples: int
+    accuracy: float
+    buy_precision: float
+    sell_precision: float
+    hold_precision: float
+    buy_recall: float
+    sell_recall: float
+    class_distribution: dict[int, int]
+```
+
+- [ ] Aggiungi type hints completi e docstring utili
+- [ ] Non aggiungere dipendenze da altri moduli del package (solo stdlib)
+- [ ] Esegui `make typecheck` sul file
+
+---
+
+### Step 3 — Creare `src/metatrade/ml/artifacts.py`
+
+- [ ] Crea `ArtifactStore` — responsabilità: serializzare/deserializzare `MlModelArtifacts` su disco in modo atomico
+
+```python
+# src/metatrade/ml/artifacts.py
+
+class ArtifactStore:
+    """Persist e carica MlModelArtifacts su disco."""
+
+    def __init__(self, registry_dir: str | Path) -> None: ...
+
+    def save(self, artifacts: MlModelArtifacts) -> Path:
+        """Scrive atomicamente .pkl (model_bytes) + .json (metadata) su disco."""
+        ...
+
+    def load(self, symbol: str, version: str) -> MlModelArtifacts | None:
+        """Carica artifacts da disco. Ritorna None se non esiste."""
+        ...
+
+    def list_versions(self, symbol: str) -> list[str]:
+        """Lista versioni disponibili su disco per un simbolo, newest first."""
+        ...
+```
+
+- [ ] Il `.json` deve contenere tutto ciò che è in `MlModelArtifacts` tranne `model_bytes`
+- [ ] Usa `os.replace()` per write atomico (già pattern del registry)
+- [ ] Gestisci `OSError` e `json.JSONDecodeError` con logging strutturato, non eccezioni propagate
+- [ ] Il `.pkl` contiene solo `model_bytes` (già bytes — nessun doppio pickle)
+
+---
+
+### Step 4 — Aggiornare `classifier.py`
+
+- [ ] Aggiungi metodo `predict_raw(feature_vector) -> MlPrediction` che restituisce `MlPrediction` invece di `tuple[int, float]`
+  - mantieni `predict()` invariato per backward compat
+  - `predict_raw()` estrae `raw_direction` prima del remap e lo espone
+- [ ] Aggiungi `feature_schema() -> MlFeatureSchema` che ritorna lo schema delle feature usate nell'ultimo `fit()`
+- [ ] Aggiorna `ClassifierMetrics.to_dict() -> dict[str, object]` per facilitare serializzazione in `MlModelArtifacts`
+- [ ] Aggiorna `serialize()` / `deserialize()` per includere `_feature_names` e `_inv_label_remap` nei bytes serializzati
+  - usa `{"model": model_bytes, "feature_names": [...], "inv_label_remap": {...}}` come dizionario pickle, non solo il modello grezzo
+  - mantieni backward compat leggendo anche il vecchio formato (solo il modello sklearn)
+
+---
+
+### Step 5 — Aggiornare `registry.py`
+
+- [ ] Aggiungi campo `feature_schema: MlFeatureSchema | None = None` a `ModelSnapshot`
+- [ ] Aggiorna `register()` per accettare e salvare `feature_schema`
+- [ ] Aggiorna `_write_to_disk()` per usare `ArtifactStore` invece della logica inline
+- [ ] Aggiorna `load_from_disk()` per usare `ArtifactStore.load()` e ricostruire `ModelSnapshot` con tutti i metadati (non più placeholder con accuracy=0.0)
+- [ ] Mantieni l'API pubblica invariata: `register()`, `get_active()`, `promote()`, `clear()`
+
+---
+
+### Step 6 — Aggiornare `module.py`
+
+- [ ] Sostituisci `snapshot.classifier.predict(fv)` con `snapshot.classifier.predict_raw(fv)` dove disponibile
+- [ ] Espandi `metadata` nell'`AnalysisSignal` ritornato per includere:
+
+```python
+metadata={
+    "model_version": snapshot.version,
+    "raw_direction": prediction.raw_direction,
+    "confidence": prediction.confidence,
+    "model_available": True,
+    "features_ok": True,
+    "feature_count": len(fv.to_list()),
+}
+```
+
+- [ ] Aggiungi log strutturato per ogni predizione (a livello DEBUG, non INFO):
+
+```python
+log.debug("ml_prediction", direction=direction.value, confidence=confidence, module=self.module_id)
+```
+
+- [ ] Mantieni esattamente lo stesso comportamento per HOLD fallback
+
+---
+
+### Step 7 — Scrivere i test
+
+**`tests/ml/test_contracts.py`**
+
+- [ ] Verifica che `MlPrediction` sia frozen (raise `FrozenInstanceError` se si tenta modifica)
+- [ ] Verifica che `MlFeatureSchema` con `feature_count != len(feature_names)` sia rilevato (validazione manuale o `__post_init__`)
+- [ ] Verifica serializzazione JSON di `MlModelArtifacts` (tutti i campi eccetto `model_bytes` devono essere JSON-serializzabili)
+- [ ] Verifica che `MlEvaluationReport` con buy_precision fuori `[0,1]` sollevi `ValueError` se si aggiunge validazione
+
+**`tests/ml/test_artifacts.py`**
+
+- [ ] `ArtifactStore.save()` → `ArtifactStore.load()` round-trip con verifica campi
+- [ ] `load()` con versione inesistente ritorna `None`
+- [ ] `save()` è atomico: simula interruzione tra `.pkl.tmp` e `.pkl`, verifica che `load()` non trovi dati corrotti
+- [ ] `list_versions()` ritorna solo versioni con sia `.pkl` che `.json` presenti
+- [ ] `list_versions()` ordine newest-first
+
+**`tests/ml/test_classifier_contracts.py`** (estensione di test esistenti)
+
+- [ ] `predict_raw()` ritorna `MlPrediction` con campi corretti
+- [ ] `serialize()` → `deserialize()` preserva `_feature_names` e `_inv_label_remap`
+- [ ] `feature_schema()` prima di `fit()` solleva `RuntimeError`
+- [ ] `feature_schema()` dopo `fit()` ha `feature_count == len(feature_names)`
+
+---
+
+### Step 8 — Aggiornare `__init__.py`
+
+- [ ] Aggiungi export di `MlPrediction`, `MlModelArtifacts`, `MlFeatureSchema`, `MlEvaluationReport`, `ArtifactStore` dal package `ml`
+
+---
+
+### Step 9 — Quality gates
+
+- [ ] `make test` — tutti i test esistenti passano
+- [ ] `make test-fast` sui soli test nuovi — passa
+- [ ] `make typecheck` — nessun errore nuovo introdotto
+- [ ] `make lint` — nessun warning nuovo
+- [ ] Coverage `tests/ml/` ≥ 90%
+- [ ] Nessun `assert` in produzione — usa eccezioni della gerarchia `MetaTradeError` o builtin appropriati
+- [ ] Nessun `print()` — solo `log.debug/info/warning`
+- [ ] Tutti i valori monetari rimangono `Decimal` (non introdurre `float` per prezzi)
+
+---
+
+### Step 10 — Verifica backward compat
+
+- [ ] Esegui una sessione paper in dry-run e verifica che `MLModule.analyse()` emetta `AnalysisSignal` con stessa struttura di prima
+- [ ] Verifica che il `ConsensusEngine` non sia impattato: i campi `direction` e `confidence` su `AnalysisSignal` sono invariati
+- [ ] Verifica che `ModelRegistry.load_from_disk()` carichi correttamente modelli salvati prima di questa PR (test di compatibilità con file fixture `.pkl` e `.json` del vecchio formato)
+
+---
+
+### Step 11 — PR Description template
+
+```markdown
+## ML/Contracts — Hardening interfacce e contratti dati (PR 1/5)
+
+### Cosa cambia
+
+- Nuovo `contracts.py`: MlPrediction, MlModelArtifacts, MlFeatureSchema, MlEvaluationReport
+- Nuovo `artifacts.py`: ArtifactStore con save/load atomico
+- `classifier.py`: predict_raw(), feature_schema(), serialize preserva feature_names
+- `registry.py`: delega disk I/O ad ArtifactStore, preserva feature_schema
+- `module.py`: usa predict_raw(), metadata arricchito, logging strutturato
+
+### Cosa NON cambia
+
+- Interfaccia AnalysisSignal — stessa struttura per il ConsensusEngine
+- Comportamento HOLD fallback — identico
+- API pubblica ModelRegistry — register/get_active/promote/clear invariati
+
+### Test
+
+- test_contracts.py (nuovo)
+- test_artifacts.py (nuovo)
+- test_classifier_contracts.py (esteso)
+- Tutti i test pre-esistenti passano
+
+### Criterio di merge
+
+- Coverage ml/ >= 90%
+- mypy strict senza nuovi errori
+- Nessuna regressione nel backtest runner
+```
+
+---
+
+## Note architetturali per PR successive
+
+**PR 2 (calibrazione)** potrà aggiungere `ProbabilityCalibrator` come artefatto opzionale in `MlModelArtifacts`, senza cambiare la struttura del registry.
+
+**PR 3 (EV score)** aggiungerà un secondo slot `ev_model_bytes: bytes | None` in `MlModelArtifacts` — backward compat garantita da `None` default.
+
+**PR 4 (labeling v2)** introdurrà `label_bars_v2()` come funzione aggiuntiva in `labels.py` — `label_bars()` invariata.
+
+**PR 5 (consensus integration)** è puramente additive su `AnalysisSignal.metadata` — il voting del `ConsensusEngine` non cambia.

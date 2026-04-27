@@ -18,10 +18,14 @@ from datetime import datetime
 from metatrade.core.contracts.market import Bar
 from metatrade.core.contracts.signal import AnalysisSignal
 from metatrade.core.enums import SignalDirection
+from metatrade.core.log import get_logger
 from metatrade.core.versioning import ModuleVersion
 from metatrade.ml.features import MIN_FEATURE_BARS, extract_features
 from metatrade.ml.registry import ModelRegistry
+from metatrade.ml.signal_enricher import MlSignalEnricher
 from metatrade.technical_analysis.interface import ITechnicalModule
+
+log = get_logger(__name__)
 
 _VERSION = ModuleVersion(1, 0, 0)
 
@@ -44,10 +48,12 @@ class MLModule(ITechnicalModule):
         registry: ModelRegistry | None,
         timeframe_id: str = "h1",
         min_confidence: float = _MIN_CONFIDENCE_THRESHOLD,
+        enricher: MlSignalEnricher | None = None,
     ) -> None:
         self._registry = registry
         self._timeframe_id = timeframe_id
         self._min_confidence = min_confidence
+        self._enricher = enricher
 
     @property
     def module_id(self) -> str:
@@ -97,7 +103,7 @@ class MLModule(ITechnicalModule):
             )
 
         try:
-            raw_direction, confidence = snapshot.classifier.predict(fv)
+            prediction = snapshot.classifier.predict_raw(fv)
         except RuntimeError:
             return AnalysisSignal(
                 direction=SignalDirection.HOLD,
@@ -108,6 +114,9 @@ class MLModule(ITechnicalModule):
                 timestamp_utc=timestamp_utc,
                 metadata={"model_available": True, "features_ok": True},
             )
+
+        direction_int = prediction.direction
+        confidence = prediction.confidence
 
         # Low-confidence predictions are downgraded to HOLD
         if confidence < self._min_confidence:
@@ -121,24 +130,57 @@ class MLModule(ITechnicalModule):
                 1: SignalDirection.BUY,
                 -1: SignalDirection.SELL,
                 0: SignalDirection.HOLD,
-            }.get(raw_direction, SignalDirection.HOLD)
+            }.get(direction_int, SignalDirection.HOLD)
             reason = (
                 f"{self.module_id}: predicted {direction.value} "
                 f"(confidence={confidence:.2f}, model={snapshot.version})"
             )
 
-        return AnalysisSignal(
+        log.debug(
+            "ml_prediction",
+            module=self.module_id,
+            direction=direction.value,
+            confidence=round(confidence, 4),
+            raw_direction=prediction.raw_direction,
+            model_version=snapshot.version,
+        )
+
+        meta: dict[str, object] = {
+            "model_version": snapshot.version,
+            "direction_int": direction_int,
+            "raw_direction": prediction.raw_direction,
+            "confidence": confidence,
+            "model_available": True,
+            "features_ok": True,
+            "feature_count": len(fv.to_list()),
+        }
+        if prediction.p_buy is not None:
+            meta["p_buy"] = round(prediction.p_buy, 4)
+        if prediction.p_hold is not None:
+            meta["p_hold"] = round(prediction.p_hold, 4)
+        if prediction.p_sell is not None:
+            meta["p_sell"] = round(prediction.p_sell, 4)
+        if prediction.confidence_margin is not None:
+            meta["confidence_margin"] = round(prediction.confidence_margin, 4)
+
+        if snapshot.ev_trainer is not None and snapshot.ev_trainer.is_trained:
+            try:
+                ev_score = snapshot.ev_trainer.predict(fv)
+                meta["expected_value_score"] = round(ev_score, 4)
+            except RuntimeError:
+                pass
+
+        signal = AnalysisSignal(
             direction=direction,
             confidence=round(confidence, 4),
             reason=reason,
             module_id=self.module_id,
             module_version=_VERSION,
             timestamp_utc=timestamp_utc,
-            metadata={
-                "model_version": snapshot.version,
-                "raw_direction": raw_direction,
-                "confidence": confidence,
-                "model_available": True,
-                "features_ok": True,
-            },
+            metadata=meta,
         )
+
+        if self._enricher is not None:
+            signal = self._enricher.enrich(signal)
+
+        return signal

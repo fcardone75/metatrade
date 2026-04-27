@@ -29,8 +29,11 @@ from typing import Any
 import numpy as np
 
 from metatrade.core.log import get_logger
+from metatrade.ml.calibration import ProbabilityCalibrator
 from metatrade.ml.config import MLConfig
-from metatrade.ml.features import FeatureVector
+from metatrade.ml.contracts import MlFeatureSchema, MlPrediction
+from metatrade.ml.features import MIN_FEATURE_BARS, FeatureVector
+from metatrade.ml.prediction import build_ml_prediction
 
 log = get_logger(__name__)
 
@@ -175,6 +178,15 @@ class ClassifierMetrics:
     feature_importances: dict[str, float] = field(default_factory=dict)
     class_distribution: dict[int, int] = field(default_factory=dict)
 
+    def to_dict(self) -> dict[str, object]:
+        """Serialize to a JSON-safe dict for persistence in MlModelArtifacts."""
+        return {
+            "accuracy": self.accuracy,
+            "n_samples": self.n_samples,
+            "feature_importances": self.feature_importances,
+            "class_distribution": {str(k): v for k, v in self.class_distribution.items()},
+        }
+
 
 class MLClassifier:
     """Pluggable gradient-boosting classifier for signal generation.
@@ -195,9 +207,11 @@ class MLClassifier:
         self._metrics: ClassifierMetrics | None = None
         self._is_trained = False
         self._feature_names: list[str] = []
+        self._vector_class: str = "FeatureVector"
         # XGBoost requires non-negative integer labels; we remap [-1,0,1] → [0,1,2]
         # and store the inverse so predict() can restore domain labels.
         self._inv_label_remap: dict[int, int] = {}
+        self._calibrator: ProbabilityCalibrator | None = None
 
     @property
     def backend(self) -> str:
@@ -244,6 +258,7 @@ class MLClassifier:
 
         fv_cls = type(feature_vectors[0]) if feature_vectors else FeatureVector
         self._feature_names = fv_cls.feature_names()
+        self._vector_class = fv_cls.__name__
         X = pd.DataFrame(
             [fv.to_list() for fv in feature_vectors],
             columns=self._feature_names,
@@ -333,6 +348,131 @@ class MLClassifier:
         )
         return self._metrics
 
+    def predict_raw(self, feature_vector: FeatureVector) -> MlPrediction:
+        """Predict signal direction and confidence, returning a typed MlPrediction.
+
+        When a fitted ``ProbabilityCalibrator`` is attached (via ``calibrate()``),
+        the returned ``direction``, ``confidence``, and per-class probabilities
+        (``p_buy`` / ``p_hold`` / ``p_sell``) reflect the calibrated output.
+        ``raw_direction`` always reflects the uncalibrated argmax.
+
+        Args:
+            feature_vector: Extracted features for the current bar.
+
+        Returns:
+            ``MlPrediction`` with direction, confidence, raw_direction,
+            per-class probabilities and confidence_margin.
+
+        Raises:
+            RuntimeError: If the model has not been trained yet.
+        """
+        if self._model is None or not self._is_trained:
+            raise RuntimeError(
+                "MLClassifier has not been trained. Call fit() first."
+            )
+
+        import pandas as pd
+
+        X = pd.DataFrame([feature_vector.to_list()], columns=self._feature_names or None)
+        probas: np.ndarray = self._model.predict_proba(X)[0]
+        raw_classes = [int(c) for c in self._model.classes_]
+        raw_direction = raw_classes[int(probas.argmax())]
+
+        calibrated_probas: np.ndarray | None = None
+        if self._calibrator is not None and self._calibrator.is_fitted:
+            calibrated_probas = self._calibrator.calibrate(probas.reshape(1, -1))[0]
+
+        return build_ml_prediction(
+            raw_direction=raw_direction,
+            probas=probas,
+            classes=raw_classes,
+            inv_label_remap=self._inv_label_remap,
+            calibrated_probas=calibrated_probas,
+        )
+
+    def feature_schema(self) -> MlFeatureSchema:
+        """Return the feature schema recorded during the last ``fit()`` call.
+
+        Raises:
+            RuntimeError: If the model has not been trained yet.
+        """
+        if not self._is_trained or not self._feature_names:
+            raise RuntimeError(
+                "MLClassifier has not been trained. Call fit() first."
+            )
+        return MlFeatureSchema(
+            feature_names=tuple(self._feature_names),
+            feature_count=len(self._feature_names),
+            min_bars=MIN_FEATURE_BARS,
+            vector_class=self._vector_class,
+        )
+
+    def calibrate(
+        self,
+        holdout_vectors: list[FeatureVector],
+        holdout_labels: list[int],
+        method: str = "isotonic",
+    ) -> ProbabilityCalibrator:
+        """Fit a post-hoc probability calibrator on a holdout set.
+
+        The calibrator adjusts raw ``predict_proba`` outputs so that the
+        stated confidence better matches empirical accuracy (lower ECE).
+        After this call, ``predict_raw()`` automatically uses the calibrated
+        probabilities.
+
+        Args:
+            holdout_vectors: Feature vectors from a held-out split (not used
+                             in training — using training data causes leakage).
+            holdout_labels:  True domain labels for each holdout vector.
+            method:          Calibration algorithm — ``"isotonic"`` or ``"sigmoid"``.
+
+        Returns:
+            The fitted ``ProbabilityCalibrator`` instance (also stored
+            internally so ``predict_raw()`` picks it up automatically).
+
+        Raises:
+            RuntimeError: If the classifier has not been trained yet.
+        """
+        if not self._is_trained or self._model is None:
+            raise RuntimeError(
+                "MLClassifier has not been trained. Call fit() first."
+            )
+
+        import pandas as pd
+
+        X = pd.DataFrame(
+            [fv.to_list() for fv in holdout_vectors],
+            columns=self._feature_names or None,
+        )
+        probas: np.ndarray = self._model.predict_proba(X)
+        raw_classes = [int(c) for c in self._model.classes_]
+
+        # Map domain labels back to raw class space (required for XGBoost remap)
+        if self._inv_label_remap:
+            domain_to_raw = {v: k for k, v in self._inv_label_remap.items()}
+            raw_labels = [domain_to_raw.get(lbl, lbl) for lbl in holdout_labels]
+        else:
+            raw_labels = list(holdout_labels)
+
+        calibrator = ProbabilityCalibrator(method=method)
+        calibrator.fit(probas, raw_labels, raw_classes)
+        self._calibrator = calibrator
+
+        ece = calibrator.ece(probas, raw_labels)
+        log.info(
+            "classifier_calibrated",
+            method=method,
+            n_samples=len(holdout_vectors),
+            holdout_ece=round(ece, 4),
+        )
+        return calibrator
+
+    def serialize_calibrator(self) -> bytes | None:
+        """Return serialized calibrator bytes, or ``None`` if not fitted."""
+        if self._calibrator is None or not self._calibrator.is_fitted:
+            return None
+        return self._calibrator.serialize()
+
     def predict(self, feature_vector: FeatureVector) -> tuple[int, float]:
         """Predict signal direction and confidence for a single feature vector.
 
@@ -367,30 +507,60 @@ class MLClassifier:
         return direction, confidence
 
     def serialize(self) -> bytes:
-        """Serialize the model to bytes (via pickle) for storage.
+        """Serialize the model and metadata to bytes for storage.
+
+        The payload is a dict containing the raw sklearn model bytes plus
+        the feature names and label remap needed for correct inference.
+        Legacy callers that expect raw model bytes are handled in ``deserialize()``.
 
         Returns:
-            Pickled bytes of the sklearn model.
+            Pickled dict with keys: ``model``, ``feature_names``,
+            ``inv_label_remap``, ``vector_class``.
 
         Raises:
             RuntimeError: If the model has not been trained.
         """
         if self._model is None:
             raise RuntimeError("No trained model to serialize.")
-        return pickle.dumps(self._model)
+        payload = {
+            "model": pickle.dumps(self._model),
+            "feature_names": self._feature_names,
+            "inv_label_remap": self._inv_label_remap,
+            "vector_class": self._vector_class,
+        }
+        return pickle.dumps(payload)
 
     @classmethod
     def deserialize(cls, data: bytes, config: MLConfig | None = None) -> MLClassifier:
         """Reconstruct a classifier from serialized bytes.
 
+        Supports both the new dict-payload format (produced by the current
+        ``serialize()``) and the legacy format where ``data`` is a direct
+        pickle of the sklearn estimator.
+
         Args:
-            data:   Pickled sklearn model bytes.
+            data:   Bytes produced by ``serialize()``.
             config: Optional MLConfig (defaults to MLConfig()).
 
         Returns:
-            Fitted MLClassifier instance.
+            Fitted MLClassifier instance with feature names restored.
         """
         instance = cls(config)
-        instance._model = pickle.loads(data)  # noqa: S301
+        payload = pickle.loads(data)  # noqa: S301
+        if isinstance(payload, dict) and "model" in payload:
+            # New format: dict with metadata
+            instance._model = pickle.loads(payload["model"])  # noqa: S301
+            instance._feature_names = list(payload.get("feature_names") or [])
+            instance._inv_label_remap = {
+                int(k): int(v)
+                for k, v in (payload.get("inv_label_remap") or {}).items()
+            }
+            instance._vector_class = str(payload.get("vector_class") or "FeatureVector")
+        else:
+            # Legacy format: payload is the sklearn estimator directly
+            instance._model = payload
+            instance._feature_names = []
+            instance._inv_label_remap = {}
+            instance._vector_class = "FeatureVector"
         instance._is_trained = True
         return instance

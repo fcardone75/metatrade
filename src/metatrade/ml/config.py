@@ -149,6 +149,53 @@ class MLConfig(BaseConfig):
     # Retrain every N bars processed (used when retrain_trigger="bars").
     retrain_every_bars: int = Field(default=5000, ge=100)
 
+    # ── Signal enricher gates ────────────────────────────────────────────────
+    # Downgrade directional signals to HOLD when the confidence-margin (top1
+    # minus top2 class probability) is below this threshold.
+    # Set cm_gate_enabled=False (default) to disable.
+    cm_gate_enabled: bool = Field(default=False)
+    min_confidence_margin: float = Field(default=0.10, ge=0.0, le=1.0)
+
+    # Downgrade directional signals to HOLD when the EV regressor score
+    # contradicts the classifier direction or |EV| < ev_gate_min_r.
+    # Only fires when an EV model is loaded; ignored otherwise.
+    ev_gate_enabled: bool = Field(default=False)
+    ev_gate_min_r: float = Field(default=0.3, gt=0.0)
+
+    # ── Labeling ─────────────────────────────────────────────────────────────
+    # Labeling method:
+    #   "v1" — original forward-return (close at t+n vs close at t, default)
+    #   "v2" — triple barrier (path-aware: checks intrabar highs/lows)
+    label_method: str = Field(default="v1")
+
+    # Round-trip cost proxy for v2 triple barrier labeling.
+    # Expressed as fraction of price (e.g. 0.0001 = 1 pip on EURUSD at 1.10).
+    # Tightens barriers so a move must exceed the estimated spread before being
+    # labeled directional.  Has no effect when label_method="v1".
+    label_spread_pct: float = Field(default=0.0001, ge=0.0)
+
+    # ── EV regressor ─────────────────────────────────────────────────────────
+    # Enable the Expected Value regressor (PR 3).  When True, the training
+    # pipeline should call ExpectedValueTrainer.fit() on OOS data and pass
+    # ev_trainer to registry.register().
+    ev_enabled: bool = Field(default=False)
+
+    # ATR period for the ContinuousTargetBuilder (must match risk manager ATR).
+    ev_atr_period: int = Field(default=14, ge=2)
+
+    # ATR multiplier defining 1 R unit (must match Chandelier Exit mult).
+    ev_atr_mult: float = Field(default=2.0, gt=0.0)
+
+    # ── Calibration ───────────────────────────────────────────────────────────
+    # Enable post-hoc probability calibration.  When True, the training pipeline
+    # should call MLClassifier.calibrate() on a holdout set after fit() and
+    # before registering the model.
+    calibration_enabled: bool = Field(default=False)
+
+    # Calibration algorithm: "isotonic" (non-parametric, needs ≥ 30 samples) or
+    # "sigmoid" (Platt scaling, parametric, works with fewer samples).
+    calibration_method: str = Field(default="isotonic")
+
     # ── Registry ─────────────────────────────────────────────────────────────
     # Directory where model snapshots are persisted
     model_registry_dir: str = Field(default="data/models")

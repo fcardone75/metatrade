@@ -19,20 +19,26 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from metatrade.ml.artifacts import ArtifactStore
+from metatrade.ml.calibration import ProbabilityCalibrator
 from metatrade.ml.classifier import ClassifierMetrics, MLClassifier
 from metatrade.ml.config import MLConfig
+from metatrade.ml.contracts import MlFeatureSchema, MlModelArtifacts
+from metatrade.ml.trainers import ExpectedValueTrainer
 
 
 @dataclass(frozen=True)
 class ModelSnapshot:
     """Metadata + reference for a trained model."""
 
-    version: str                   # e.g. "v20240601_1430"
+    version: str                              # e.g. "v20240601_1430"
     classifier: MLClassifier
     metrics: ClassifierMetrics
-    created_at: float              # Unix timestamp
-    symbol: str                    # Symbol the model was trained for
+    created_at: float                         # Unix timestamp
+    symbol: str                               # Symbol the model was trained for
     tags: dict[str, Any] = field(default_factory=dict)
+    feature_schema: MlFeatureSchema | None = None  # populated after fit()
+    ev_trainer: ExpectedValueTrainer | None = None  # optional EV regressor
 
 
 class ModelRegistry:
@@ -63,6 +69,8 @@ class ModelRegistry:
         symbol: str,
         version: str | None = None,
         tags: dict[str, Any] | None = None,
+        feature_schema: MlFeatureSchema | None = None,
+        ev_trainer: ExpectedValueTrainer | None = None,
     ) -> ModelSnapshot:
         """Register a trained model in the registry.
 
@@ -71,6 +79,9 @@ class ModelRegistry:
             symbol:     Symbol the model was trained for.
             version:    Optional version string (auto-generated if None).
             tags:       Optional free-form metadata dict.
+            feature_schema: Optional override for the feature schema.
+            ev_trainer: Optional fitted ``ExpectedValueTrainer`` to persist
+                        alongside the classifier.
 
         Returns:
             The created ModelSnapshot.
@@ -87,6 +98,14 @@ class ModelRegistry:
             ts = time.strftime("%Y%m%d_%H%M", time.localtime())
             version = f"v{ts}"
 
+        # Resolve feature schema: caller-supplied > from classifier
+        resolved_schema = feature_schema
+        if resolved_schema is None:
+            try:
+                resolved_schema = classifier.feature_schema()
+            except RuntimeError:
+                pass
+
         snapshot = ModelSnapshot(
             version=version,
             classifier=classifier,
@@ -94,6 +113,8 @@ class ModelRegistry:
             created_at=time.time(),
             symbol=symbol,
             tags=tags or {},
+            feature_schema=resolved_schema,
+            ev_trainer=ev_trainer,
         )
         self._snapshots[version] = snapshot
         self._active_version = version
@@ -145,32 +166,43 @@ class ModelRegistry:
     # ── Persistence ───────────────────────────────────────────────────────────
 
     def _write_to_disk(self, snapshot: ModelSnapshot) -> None:
-        """Serialize and atomically write a snapshot + manifest to disk."""
-        registry_dir = self._config.model_registry_dir
-        os.makedirs(registry_dir, exist_ok=True)
+        """Serialize and atomically write a snapshot to disk via ArtifactStore."""
+        store = ArtifactStore(self._config.model_registry_dir)
 
-        stem = f"{snapshot.symbol}_{snapshot.version}"
-        pkl_path = os.path.join(registry_dir, f"{stem}.pkl")
-        meta_path = os.path.join(registry_dir, f"{stem}_meta.json")
+        feature_schema = snapshot.feature_schema
+        if feature_schema is None:
+            try:
+                feature_schema = snapshot.classifier.feature_schema()
+            except RuntimeError:
+                feature_schema = MlFeatureSchema(
+                    feature_names=tuple(snapshot.classifier._feature_names),
+                    feature_count=len(snapshot.classifier._feature_names),
+                    min_bars=0,
+                    vector_class="unknown",
+                )
 
-        # Write model bytes
-        data = snapshot.classifier.serialize()
-        tmp_pkl = pkl_path + ".tmp"
-        with open(tmp_pkl, "wb") as f:
-            f.write(data)
-        os.replace(tmp_pkl, pkl_path)
+        metrics_dict: dict[str, object] = (
+            snapshot.metrics.to_dict()
+            if snapshot.metrics is not None
+            else {}
+        )
 
-        # Write metadata manifest (holdout_accuracy and tags readable without loading model)
-        manifest = {
-            "version": snapshot.version,
-            "symbol": snapshot.symbol,
-            "created_at": snapshot.created_at,
-            "tags": snapshot.tags,
-        }
-        tmp_meta = meta_path + ".tmp"
-        with open(tmp_meta, "w", encoding="utf-8") as f:
-            json.dump(manifest, f, indent=2)
-        os.replace(tmp_meta, meta_path)
+        ev_bytes: bytes | None = None
+        if snapshot.ev_trainer is not None and snapshot.ev_trainer.is_trained:
+            ev_bytes = snapshot.ev_trainer.serialize()
+
+        artifacts = MlModelArtifacts(
+            version=snapshot.version,
+            symbol=snapshot.symbol,
+            created_at=snapshot.created_at,
+            feature_schema=feature_schema,
+            model_bytes=snapshot.classifier.serialize(),
+            metrics=metrics_dict,
+            calibrator_bytes=snapshot.classifier.serialize_calibrator(),
+            ev_model_bytes=ev_bytes,
+            tags=dict(snapshot.tags),
+        )
+        store.save(artifacts)
 
     @classmethod
     def list_disk_snapshots(cls, registry_dir: str, symbol: str) -> list[dict[str, Any]]:
@@ -198,6 +230,10 @@ class ModelRegistry:
     def load_from_disk(self, symbol: str, version: str) -> ModelSnapshot | None:
         """Load a previously persisted model from disk.
 
+        Tries ArtifactStore first (new format with full metadata). If no
+        ``_meta.json`` is found, falls back to loading the raw ``.pkl`` file
+        directly (legacy format) with placeholder metrics.
+
         Args:
             symbol:  Symbol the model was trained for.
             version: Version string (e.g. "v20240601_1430").
@@ -206,22 +242,57 @@ class ModelRegistry:
             ModelSnapshot if found on disk, None otherwise.
         """
         registry_dir = self._config.model_registry_dir
-        filename = f"{symbol}_{version}.pkl"
-        path = os.path.join(registry_dir, filename)
+        store = ArtifactStore(registry_dir)
 
-        if not os.path.exists(path):
+        artifacts = store.load(symbol, version)
+        if artifacts is not None:
+            classifier = MLClassifier.deserialize(artifacts.model_bytes, self._config)
+            if artifacts.calibrator_bytes is not None:
+                classifier._calibrator = ProbabilityCalibrator.deserialize(
+                    artifacts.calibrator_bytes
+                )
+            metrics = ClassifierMetrics(
+                accuracy=float(artifacts.metrics.get("accuracy") or 0.0),
+                n_samples=int(artifacts.metrics.get("n_samples") or 0),
+                feature_importances={
+                    str(k): float(v)
+                    for k, v in (artifacts.metrics.get("feature_importances") or {}).items()
+                },
+                class_distribution={
+                    int(k): int(v)
+                    for k, v in (artifacts.metrics.get("class_distribution") or {}).items()
+                },
+            )
+            ev_trainer: ExpectedValueTrainer | None = None
+            if artifacts.ev_model_bytes is not None:
+                ev_trainer = ExpectedValueTrainer.deserialize(
+                    artifacts.ev_model_bytes, self._config
+                )
+
+            snapshot = ModelSnapshot(
+                version=artifacts.version,
+                classifier=classifier,
+                metrics=metrics,
+                created_at=artifacts.created_at,
+                symbol=artifacts.symbol,
+                tags=dict(artifacts.tags),
+                feature_schema=artifacts.feature_schema,
+                ev_trainer=ev_trainer,
+            )
+            self._snapshots[version] = snapshot
+            self._active_version = version
+            return snapshot
+
+        # Legacy fallback: raw .pkl without _meta.json
+        pkl_path = os.path.join(registry_dir, f"{symbol}_{version}.pkl")
+        if not os.path.exists(pkl_path):
             return None
 
-        with open(path, "rb") as f:
+        with open(pkl_path, "rb") as f:
             data = f.read()
 
         classifier = MLClassifier.deserialize(data, self._config)
-        # Metrics are not persisted (model bytes only); create placeholder
-        from metatrade.ml.classifier import ClassifierMetrics
-        placeholder_metrics = ClassifierMetrics(
-            accuracy=0.0,
-            n_samples=0,
-        )
+        placeholder_metrics = ClassifierMetrics(accuracy=0.0, n_samples=0)
         snapshot = ModelSnapshot(
             version=version,
             classifier=classifier,

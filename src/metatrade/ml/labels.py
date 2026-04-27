@@ -88,6 +88,51 @@ def label_bars(
     return labels
 
 
+def label_bars_v2(
+    bars: list[Bar],
+    forward_bars: int = 5,
+    atr_threshold_mult: float = 1.5,
+    atr_period: int = 14,
+    spread_pct: float = 0.0,
+) -> list[int | None]:
+    """Triple barrier labeling — path-aware alternative to ``label_bars()``.
+
+    Unlike ``label_bars()``, which only looks at the closing price after
+    ``forward_bars`` bars, this function treats each bar's high and low as
+    potential barrier touches, labeling a bar BUY/SELL as soon as price
+    crosses the corresponding ATR-based barrier within the forward window.
+
+    Args:
+        bars:               Bar series (oldest first).
+        forward_bars:       Time barrier — max bars to look ahead.
+        atr_threshold_mult: ATR multiple for horizontal barrier distance.
+        atr_period:         ATR period (default 14).
+        spread_pct:         Round-trip cost proxy as fraction of price.
+                            Tightens barriers to require a move that exceeds
+                            the estimated transaction cost.
+
+    Returns:
+        List of labels aligned to ``bars``:
+            1  = BUY  — upper barrier hit first
+           -1  = SELL — lower barrier hit first
+            0  = HOLD — time barrier fires (neither horizontal barrier hit)
+            None = ATR warmup or insufficient future data.
+
+    Note:
+        ``label_bars()`` is unchanged and remains the default labeling path.
+        This function is additive and does not affect existing behaviour.
+    """
+    from metatrade.ml.labeling.triple_barrier import TripleBarrierLabeler
+
+    labeler = TripleBarrierLabeler(
+        forward_bars=forward_bars,
+        atr_period=atr_period,
+        atr_mult=atr_threshold_mult,
+        spread_pct=spread_pct,
+    )
+    return labeler.label(bars)
+
+
 def label_single(
     current_close: float,
     future_close: float,

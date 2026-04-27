@@ -55,7 +55,7 @@ from metatrade.ml.features import (
     extract_features,
     extract_features_multires,
 )
-from metatrade.ml.labels import label_bars
+from metatrade.ml.labels import label_bars, label_bars_v2
 
 log = get_logger(__name__)
 
@@ -242,11 +242,19 @@ class WalkForwardTrainer:
             )
 
         # ── Labels ─────────────────────────────────────────────────────────────
-        all_labels = label_bars(
-            bars,
-            forward_bars=cfg.forward_bars,
-            atr_threshold_mult=cfg.atr_threshold_mult,
-        )
+        if cfg.label_method == "v2":
+            all_labels = label_bars_v2(
+                bars,
+                forward_bars=cfg.forward_bars,
+                atr_threshold_mult=cfg.atr_threshold_mult,
+                spread_pct=cfg.label_spread_pct,
+            )
+        else:
+            all_labels = label_bars(
+                bars,
+                forward_bars=cfg.forward_bars,
+                atr_threshold_mult=cfg.atr_threshold_mult,
+            )
 
         # ── Holdout split ──────────────────────────────────────────────────────
         holdout_start = n
