@@ -581,6 +581,7 @@ class BaseRunner:
         ch.register("/accuracy",  self._cmd_accuracy)
         ch.register("/daily",     self._cmd_daily)
         ch.register("/retrain",        self._cmd_retrain)
+        ch.register("/retrain_refresh", self._cmd_retrain_refresh)
         ch.register("/training",       self._cmd_training)
         ch.register("/stoptraining",   self._cmd_stop_training)
         ch.register("/removetraining", self._cmd_remove_training)
@@ -972,6 +973,22 @@ class BaseRunner:
         if launched:
             return "🚀 Training avviato manualmente."
         return "❌ Impossibile avviare il training (script non trovato o errore di sistema)."
+
+    def _cmd_retrain_refresh(self, _args: str) -> str:
+        if self._retrain_scheduler is None:
+            return "⚠️ RetrainScheduler non configurato (ML_RETRAIN_ENABLED=false)."
+        if self._retrain_scheduler.is_training:
+            return "🔁 Training già in corso — attendi che finisca."
+        if self._retrain_scheduler.train_source != "massive":
+            return (
+                "⚠️ <code>/retrain_refresh</code> serve solo con "
+                "<code>ML_RETRAIN_SOURCE=massive</code> (riscarico CSV). "
+                "Usa <code>/retrain</code> per il retrain normale."
+            )
+        launched = self._retrain_scheduler.trigger_now(massive_refresh=True)
+        if launched:
+            return "🚀 Retrain avviato con <b>riscarico Massive</b> (--massive-refresh)."
+        return "❌ Impossibile avviare il training (vedi logs/retrain.log o Mongo job)."
 
     def _cmd_training(self, _args: str) -> str:
         if self._retrain_scheduler is None:

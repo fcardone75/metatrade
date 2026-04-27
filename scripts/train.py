@@ -8,6 +8,9 @@ Usage examples:
     # From MetaTrader 5 (Windows only, MT5 must be open)
     python scripts/train.py --source mt5 --symbol EURUSD --timeframe H1
 
+    # Da Massive.com (MASSIVE_API_KEY nel .env; cache in data/massive)
+    python scripts/train.py --source massive --symbol EURUSD --timeframe H1 --bars 30000
+
     # Piu' timeframe da MT5 (M5, M15, M30) con report JSON e telemetria
     python scripts/train.py --source mt5 --symbol EURUSD --timeframes M5,M15,M30
 
@@ -45,7 +48,7 @@ import sys
 import time
 import traceback
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -110,11 +113,15 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--source",
-        choices=["csv", "mt5"],
+        choices=["csv", "mt5", "massive"],
         required=True,
-        help="Data source: csv (local file) or mt5 (MetaTrader 5, Windows only)",
+        help="Data source: csv, mt5 (MetaTrader 5), o massive (REST Massive.com, richiede MASSIVE_API_KEY)",
     )
-    p.add_argument("--file", type=Path, help="Path to CSV file (required for --source csv)")
+    p.add_argument(
+        "--file",
+        type=Path,
+        help="Path to CSV file (obbligatorio per --source csv; ignorato per massive)",
+    )
     p.add_argument("--symbol", default="EURUSD", help="Symbol name (e.g. EURUSD)")
     p.add_argument(
         "--timeframe",
@@ -143,7 +150,32 @@ def parse_args() -> argparse.Namespace:
         "--bars",
         type=int,
         default=30_000,
-        help="Numero di barre da scaricare da MT5 (default: 30000; piu' barre = piu' storia per walk-forward)",
+        help="Numero di barre: MT5 o finestra Massive se non usi --massive-from/--massive-to (default: 30000)",
+    )
+    p.add_argument(
+        "--massive-from",
+        type=str,
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="Massive: data inizio (con --massive-to); altrimenti si usa --bars su data odierna",
+    )
+    p.add_argument(
+        "--massive-to",
+        type=str,
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="Massive: data fine (con --massive-from)",
+    )
+    p.add_argument(
+        "--massive-cache-dir",
+        type=Path,
+        default=Path("data/massive"),
+        help="Massive: directory CSV cache (default: data/massive)",
+    )
+    p.add_argument(
+        "--massive-refresh",
+        action="store_true",
+        help="Massive: forza riscarico anche se il CSV in cache esiste",
     )
     p.add_argument("--mt5-login", type=int, default=0, help="MT5 account login")
     p.add_argument("--mt5-password", default="", help="MT5 account password")
@@ -181,8 +213,8 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Multi-resolution mode: load M5 and M15 bars alongside the primary "
             "timeframe and use 43-feature MultiResFeatureVector. "
-            "Recommended for M1 training. Requires --source mt5 or a CSV path "
-            "with {TIMEFRAME} placeholder."
+            "Richiede --source mt5, oppure CSV con {TIMEFRAME}, oppure --source massive "
+            "(scarica M5/M15 in cache insieme al TF primario)."
         ),
     )
     p.add_argument(
@@ -454,6 +486,53 @@ def load_higher_tf_bars_csv(
     for htf in ("M5", "M15"):
         path = resolve_csv_path(file_arg, htf, multi=True)
         result[htf] = load_from_csv(path, symbol, htf)
+    return result
+
+
+def _massive_opt_date(s: str | None) -> date | None:
+    if s is None or not str(s).strip():
+        return None
+    return date.fromisoformat(s.strip())
+
+
+def prepare_massive_csv_paths(args: argparse.Namespace, timeframes: list[str]) -> dict[str, Path]:
+    """Scarica (se necessario) i CSV Massive per i TF richiesti e multires M5/M15."""
+    from metatrade.market_data.providers.massive import (
+        collect_timeframes_for_training,
+        ensure_massive_forex_csv,
+        max_adaptive_bars,
+    )
+
+    d_from = _massive_opt_date(args.massive_from)
+    d_to = _massive_opt_date(args.massive_to)
+    if (d_from is None) ^ (d_to is None):
+        log.error(
+            "massive_date_pair",
+            msg="Specificare entrambi --massive-from e --massive-to, oppure nessuno",
+        )
+        sys.exit(1)
+
+    needed = collect_timeframes_for_training(timeframes, args.multires)
+    bars_win = max_adaptive_bars(args.bars) if args.adaptive else args.bars
+    paths: dict[str, Path] = {}
+    for tf in needed:
+        paths[tf] = ensure_massive_forex_csv(
+            symbol=args.symbol,
+            timeframe=tf,
+            bars=bars_win,
+            cache_dir=args.massive_cache_dir,
+            refresh=args.massive_refresh,
+            date_from=d_from,
+            date_to=d_to,
+        )
+    return paths
+
+
+def load_higher_tf_bars_massive(mega_paths: dict[str, Path], symbol: str, primary_tf: str) -> dict[str, list]:
+    """M5/M15 da cache Massive (stessa finestra temporale dei file preparati)."""
+    result: dict[str, list] = {}
+    for htf in ("M5", "M15"):
+        result[htf] = load_from_csv(mega_paths[htf], symbol, htf)
     return result
 
 
@@ -974,7 +1053,7 @@ def train_single_timeframe(
         symbol=args.symbol,
         timeframe=timeframe,
         source=args.source,
-        bars_requested=args.bars if args.source == "mt5" else len(bars),
+        bars_requested=args.bars if args.source in ("mt5", "massive") else len(bars),
         bars_fetched=len(bars),
         train_window=args.train_window,
         test_window=args.test_window,
@@ -1560,7 +1639,7 @@ def auto_tune_single_timeframe(
         symbol=args.symbol,
         timeframe=timeframe,
         source=args.source,
-        bars_requested=args.bars if args.source == "mt5" else n_bars,
+        bars_requested=args.bars if args.source in ("mt5", "massive") else n_bars,
         bars_fetched=n_bars,
         train_window=args.train_window,
         test_window=args.test_window,
@@ -1720,6 +1799,7 @@ def adaptive_train_loop(
     timeframe: str,
     base_bars: int,
     telemetry: TelemetryStore,
+    massive_paths: dict[str, Path] | None = None,
 ) -> TimeframeTrainReport:
     """Retry auto-tune with escalating complexity reduction until target met."""
     target, current_acc, current_model_backend = _compute_adaptive_target(
@@ -1848,6 +1928,11 @@ def adaptive_train_loop(
         # Reload bars (may be more than previous attempt)
         if args.source == "mt5":
             bars = load_from_mt5(aargs, timeframe)
+        elif args.source == "massive":
+            assert massive_paths is not None
+            bars = load_from_csv(massive_paths[timeframe], aargs.symbol, timeframe)
+            if len(bars) > attempt_bars:
+                bars = bars[-attempt_bars:]
         else:
             assert aargs.file is not None
             bars = load_from_csv(
@@ -1859,6 +1944,9 @@ def adaptive_train_loop(
         higher_tf_bars = None
         if args.multires and args.source == "mt5":
             higher_tf_bars = load_higher_tf_bars_mt5(aargs, timeframe)
+        elif args.multires and args.source == "massive":
+            assert massive_paths is not None
+            higher_tf_bars = load_higher_tf_bars_massive(massive_paths, aargs.symbol, timeframe)
 
         log.info(
             "adaptive_attempt_start",
@@ -2042,6 +2130,10 @@ def main() -> None:
         )
         sys.exit(1)
 
+    mega_paths: dict[str, Path] | None = None
+    if args.source == "massive":
+        mega_paths = prepare_massive_csv_paths(args, timeframes)
+
     ml_cfg = MLConfig(
         train_window_bars=args.train_window,
         test_window_bars=args.test_window,
@@ -2078,6 +2170,9 @@ def main() -> None:
             assert args.file is not None
             csv_path = resolve_csv_path(args.file, tf, multi=multi)
             bars = load_from_csv(csv_path, args.symbol, tf)
+        elif args.source == "massive":
+            assert mega_paths is not None
+            bars = load_from_csv(mega_paths[tf], args.symbol, tf)
         else:
             bars = load_from_mt5(args, tf)
 
@@ -2085,6 +2180,9 @@ def main() -> None:
         if args.multires:
             if args.source == "mt5":
                 higher_tf_bars = load_higher_tf_bars_mt5(args, tf)
+            elif args.source == "massive":
+                assert mega_paths is not None
+                higher_tf_bars = load_higher_tf_bars_massive(mega_paths, args.symbol, tf)
             else:
                 assert args.file is not None
                 higher_tf_bars = load_higher_tf_bars_csv(args.file, args.symbol, tf)
@@ -2097,6 +2195,7 @@ def main() -> None:
                     timeframe=tf,
                     base_bars=args.bars,
                     telemetry=telemetry,
+                    massive_paths=mega_paths if args.source == "massive" else None,
                 )
             elif args.auto_tune:
                 report = auto_tune_single_timeframe(
@@ -2183,6 +2282,7 @@ def main() -> None:
             "session_start_utc": args.session_start_utc,
             "session_end_utc": args.session_end_utc,
             "bars_requested_mt5": args.bars if args.source == "mt5" else None,
+            "bars_requested_massive": args.bars if args.source == "massive" else None,
             "runs": [asdict(r) for r in reports],
         }
         out_path = write_json_report(args.model_dir, payload)

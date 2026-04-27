@@ -36,7 +36,17 @@ class TestMongoJobQueue:
         assert doc["symbol"] == "EURUSD"
         assert doc["timeframe"] == "M1"
         assert doc["backend"] == "histgbm"
+        assert doc["data_mode"] == "gridfs"
         assert job_id.startswith("job_eurusd_m1_")
+
+    def test_push_job_massive_sets_data_mode(self):
+        db = MagicMock()
+        col = MagicMock()
+        db.__getitem__ = MagicMock(return_value=col)
+        queue = MongoJobQueue(db)
+        queue.push_job("EURUSD", "M1", "histgbm", [], data_mode="massive")
+        doc = col.insert_one.call_args[0][0]
+        assert doc["data_mode"] == "massive"
 
     def test_push_job_returns_job_id(self):
         db = MagicMock()
@@ -122,6 +132,27 @@ class TestMongoJobQueue:
         assert filt == {"_id": "job_123"}
         assert update["$set"]["data_gridfs_id"] == "some_gridfs_oid"
         assert update["$set"]["data_ready"] is True
+
+    def test_mark_data_ready_massive_allows_none_gridfs(self):
+        db = MagicMock()
+        col = MagicMock()
+        col.find_one.return_value = {"_id": "job_123", "data_mode": "massive"}
+        db.__getitem__ = MagicMock(return_value=col)
+        queue = MongoJobQueue(db)
+        queue.mark_data_ready("job_123", None)
+        col.update_one.assert_called_once()
+        update = col.update_one.call_args[0][1]
+        assert update["$set"]["data_ready"] is True
+        assert "data_gridfs_id" not in update["$set"]
+
+    def test_mark_data_ready_none_gridfs_raises_for_gridfs_job(self):
+        db = MagicMock()
+        col = MagicMock()
+        col.find_one.return_value = {"_id": "job_123", "data_mode": "gridfs"}
+        db.__getitem__ = MagicMock(return_value=col)
+        queue = MongoJobQueue(db)
+        with pytest.raises(ValueError, match="gridfs_id"):
+            queue.mark_data_ready("job_123", None)
 
     def test_poll_pending_filters_data_ready(self):
         db = MagicMock()

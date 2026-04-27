@@ -450,9 +450,10 @@ class LiveRunner(BaseRunner):
         This is idempotent — calling it multiple times just re-reads history.
         """
         try:
-            from datetime import date
-            today_start = datetime.combine(date.today(), datetime.min.time()).replace(tzinfo=UTC)
-            deals = self._broker.get_deals_since(today_start, datetime.now(UTC))
+            now_utc = datetime.now(UTC)
+            # Inizio "giornata" in UTC (coerente con i timestamp deal MT5 via fromtimestamp(..., UTC)).
+            today_start = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+            deals = self._broker.get_deals_since(today_start, now_utc)
         except Exception as exc:
             log.warning("sync_daily_history_failed", error=str(exc))
             return None
@@ -461,7 +462,8 @@ class LiveRunner(BaseRunner):
         losses = 0
         total_pnl = 0.0
         for d in deals:
-            if d.get("entry") != 1:  # only OUT (closing) deals
+            # 1=OUT chiusura classica; 2=INOUT (es. netting) — stesso criterio di mt5_runtime.
+            if d.get("entry") not in (1, 2):
                 continue
             pnl = d["profit"] + d["commission"] + d.get("swap", 0.0)
             total_pnl += pnl

@@ -42,6 +42,7 @@ class MongoJobQueue:
         backend: str,
         train_args: list[str],
         triggered_by: str = "manual",
+        data_mode: str = "gridfs",
     ) -> str:
         job_id = _make_job_id(symbol, timeframe, backend)
         doc = {
@@ -51,6 +52,7 @@ class MongoJobQueue:
             "symbol": symbol,
             "timeframe": timeframe,
             "backend": backend,
+            "data_mode": data_mode,   # gridfs | massive
             "train_args": train_args,
             "data_gridfs_id": None,
             "model_gridfs_id": None,
@@ -66,13 +68,31 @@ class MongoJobQueue:
         log.info("job_queue_pushed", job_id=job_id, symbol=symbol, timeframe=timeframe)
         return job_id
 
-    def mark_data_ready(self, job_id: str, gridfs_id: Any) -> None:
-        """Call after bars upload completes. Worker will not pick up job until this is called."""
-        self._col.update_one(
-            {"_id": job_id},
-            {"$set": {"data_gridfs_id": gridfs_id, "data_ready": True}},
-        )
-        log.info("job_queue_data_ready", job_id=job_id)
+    def mark_data_ready(self, job_id: str, gridfs_id: Any | None) -> None:
+        """After master prep: set data_ready so the worker can start.
+
+        ``gridfs_id`` obbligatorio per ``data_mode=gridfs``; per ``massive`` può essere
+        None (il worker scarica i dati da Massive).
+        """
+        if gridfs_id is not None:
+            self._col.update_one(
+                {"_id": job_id},
+                {"$set": {"data_gridfs_id": gridfs_id, "data_ready": True}},
+            )
+            log.info("job_queue_data_ready", job_id=job_id)
+            return
+
+        doc = self._col.find_one({"_id": job_id})
+        if doc is not None and doc.get("data_mode") == "massive":
+            self._col.update_one(
+                {"_id": job_id},
+                {"$set": {"data_ready": True}},
+            )
+            log.info("job_queue_data_ready_massive", job_id=job_id)
+            return
+
+        log.error("job_queue_mark_data_ready_invalid", job_id=job_id, msg="gridfs_id richiesto se non massive")
+        raise ValueError("mark_data_ready: gridfs_id obbligatorio salvo job data_mode=massive")
 
     def poll_pending(self) -> dict[str, Any] | None:
         """Atomically claim one pending job → running. Returns the job doc or None.

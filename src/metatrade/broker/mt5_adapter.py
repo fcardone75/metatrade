@@ -717,10 +717,20 @@ class MT5BrokerAdapter(IBrokerAdapter):
         Useful for reconstructing daily PnL after a restart.
         Each dict: ticket, position, time_utc, type, entry (0=IN 1=OUT 2=INOUT),
                    volume, price, profit, commission, swap, symbol, comment.
+
+        Nota: molti terminali MT5 non popolano la cache storica finché non viene
+        chiamato ``history_select`` sullo stesso intervallo; senza, ``history_deals_get``
+        può restituire ``None`` o una lista vuota anche con deal reali.
         """
         if not self._connected:
             return []
         mt5 = _get_mt5()
+        if hasattr(mt5, "history_select") and not mt5.history_select(from_dt, to_dt):
+            try:
+                err = mt5.last_error()
+            except Exception:  # noqa: BLE001
+                err = None
+            log.warning("mt5_history_select_failed", error=err)
         deals = mt5.history_deals_get(from_dt, to_dt)
         if deals is None:
             return []

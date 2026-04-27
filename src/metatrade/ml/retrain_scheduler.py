@@ -54,6 +54,45 @@ def _extract_arg(args: list[str], flag: str) -> str | None:
         return None
 
 
+def build_ml_retrain_train_args(
+    ml_cfg: MLConfig,
+    *,
+    symbol: str,
+    timeframe: str,
+    model_dir: str,
+) -> list[str]:
+    """Argomenti train.py per RetrainScheduler (mt5 o massive, con opzioni ML_)."""
+    bars = str(ml_cfg.retrain_bars)
+    core = [
+        "--symbol",
+        symbol,
+        "--timeframe",
+        timeframe,
+        "--model-dir",
+        model_dir,
+        "--bars",
+        bars,
+        "--holdout-fraction",
+        "0.2",
+    ]
+    if ml_cfg.retrain_source == "massive":
+        args = ["--source", "massive", *core]
+    else:
+        args = ["--source", "mt5", *core]
+
+    if ml_cfg.retrain_adaptive:
+        args += [
+            "--adaptive",
+            "--fallback-min",
+            str(ml_cfg.adaptive_fallback_min),
+            "--target-buy-precision",
+            str(ml_cfg.target_buy_precision),
+            "--target-sell-precision",
+            str(ml_cfg.target_sell_precision),
+        ]
+    return args
+
+
 def _daily_slots(day: date, start_hour: int, interval_hours: int) -> list[datetime]:
     """Return all UTC training slots for a given calendar day."""
     slots = []
@@ -131,6 +170,7 @@ class RetrainScheduler:
         self._remote_best_autotune_holdout: float = 0.0
         # Fallback models collected when no full_success: (job_doc) sorted by quality
         self._fallback_candidates: list[dict[str, Any]] = []
+        self._pending_massive_refresh: bool = False
         self._init_mongo()
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -141,6 +181,11 @@ class RetrainScheduler:
         if self._remote_job_ids:
             return self._is_any_remote_job_active()
         return self._process is not None and self._process.poll() is None
+
+    @property
+    def train_source(self) -> str:
+        """Valore ``--source`` effettivo del retrain (es. ``mt5`` o ``massive``)."""
+        return _extract_arg(self._train_args, "--source") or self._cfg.retrain_source
 
     @property
     def next_slot(self) -> datetime:
@@ -210,13 +255,14 @@ class RetrainScheduler:
             return False
         return bar_utc >= self.next_slot
 
-    def trigger_now(self) -> bool:
+    def trigger_now(self, *, massive_refresh: bool = False) -> bool:
         """Force an immediate training run, bypassing the schedule.
 
-        Returns True if the subprocess was launched successfully.
+        ``massive_refresh=True`` aggiunge --massive-refresh (solo con --source massive).
         """
         if self.is_training:
             return False
+        self._pending_massive_refresh = massive_refresh
         symbol = _extract_arg(self._train_args, "--symbol") or "manual"
         timeframe = _extract_arg(self._train_args, "--timeframe") or "manual"
         return self._launch_raw(symbol=symbol, timeframe=timeframe, advance_slot=False)
@@ -269,35 +315,60 @@ class RetrainScheduler:
         except Exception as exc:
             log.error("retrain_scheduler_mongo_init_error", error=str(exc))
 
-    def _trigger_remote(self, symbol: str, timeframe: str, advance_slot: bool) -> bool:
+    def _trigger_remote(
+        self,
+        symbol: str,
+        timeframe: str,
+        advance_slot: bool,
+        *,
+        one_shot_massive_refresh: bool = False,
+    ) -> bool:
         from metatrade.ml.distributed.data_transfer import DataTransfer
         from metatrade.ml.distributed.job_queue import MongoJobQueue
 
         queue = MongoJobQueue(self._mongo_db)
         transfer = DataTransfer(self._mongo_db)
 
-        bars = list(self._bar_buffer)
-        if not bars:
-            log.warning("retrain_scheduler_remote_no_bars", symbol=symbol)
-            return False
-        if len(bars) < 500:
-            log.warning(
-                "retrain_scheduler_remote_few_bars",
-                count=len(bars),
-                hint="Run for longer before retraining, or increase --warmup-bars",
-            )
+        args_for_job = list(self._train_args)
+        if (
+            self._cfg.retrain_source == "massive"
+            and (self._cfg.retrain_massive_refresh or one_shot_massive_refresh)
+            and "--massive-refresh" not in args_for_job
+        ):
+            args_for_job.append("--massive-refresh")
 
         # Parse backends: ML_BACKEND may be "histgbm|lightgbm|xgboost"
-        raw_backend = _extract_arg(self._train_args, "--backend") or self._cfg.backend
+        raw_backend = _extract_arg(args_for_job, "--backend") or self._cfg.backend
         backends = [b.strip() for b in raw_backend.split("|") if b.strip()]
 
-        # Upload bars once, share the GridFS ID across all backend jobs
-        try:
-            first_job_id = f"tmp_{symbol.lower()}_{timeframe.lower()}"
-            gridfs_id = transfer.upload_bars(first_job_id, symbol, timeframe, bars)
-        except Exception as exc:
-            log.error("retrain_scheduler_remote_upload_failed", error=str(exc))
-            return False
+        gridfs_id: Any | None = None
+        data_mode: str = "gridfs"
+
+        if self._cfg.retrain_source == "massive":
+            data_mode = "massive"
+            log.info(
+                "retrain_scheduler_remote_massive",
+                symbol=symbol,
+                timeframe=timeframe,
+                msg="Nessun upload barre: il worker scarica da Massive.",
+            )
+        else:
+            bars = list(self._bar_buffer)
+            if not bars:
+                log.warning("retrain_scheduler_remote_no_bars", symbol=symbol)
+                return False
+            if len(bars) < 500:
+                log.warning(
+                    "retrain_scheduler_remote_few_bars",
+                    count=len(bars),
+                    hint="Run for longer before retraining, or increase --warmup-bars",
+                )
+            try:
+                first_job_id = f"tmp_{symbol.lower()}_{timeframe.lower()}"
+                gridfs_id = transfer.upload_bars(first_job_id, symbol, timeframe, bars)
+            except Exception as exc:
+                log.error("retrain_scheduler_remote_upload_failed", error=str(exc))
+                return False
 
         launched_ids: list[str] = []
         for backend in backends:
@@ -306,10 +377,14 @@ class RetrainScheduler:
                     symbol=symbol,
                     timeframe=timeframe,
                     backend=backend,
-                    train_args=self._train_args,
+                    train_args=args_for_job,
                     triggered_by="scheduled" if advance_slot else "manual",
+                    data_mode=data_mode,
                 )
-                queue.mark_data_ready(job_id, gridfs_id)
+                if data_mode == "massive":
+                    queue.mark_data_ready(job_id, None)
+                else:
+                    queue.mark_data_ready(job_id, gridfs_id)
                 launched_ids.append(job_id)
                 log.info("retrain_scheduler_remote_job_queued", job_id=job_id, backend=backend)
             except Exception as exc:
@@ -538,15 +613,32 @@ class RetrainScheduler:
 
     # ── Local subprocess launch ────────────────────────────────────────────────
 
+    def _compose_launch_train_args(self, *, one_shot_massive_refresh: bool) -> list[str]:
+        args = list(self._train_args)
+        if (
+            _extract_arg(args, "--source") == "massive"
+            and (self._cfg.retrain_massive_refresh or one_shot_massive_refresh)
+            and "--massive-refresh" not in args
+        ):
+            args.append("--massive-refresh")
+        return args
+
     def _launch_raw(self, symbol: str, timeframe: str, advance_slot: bool = True) -> bool:
+        one_shot_refresh = self._pending_massive_refresh
+        self._pending_massive_refresh = False
+
         if self._mongo_cfg is not None:
-            return self._trigger_remote(symbol, timeframe, advance_slot)
+            return self._trigger_remote(
+                symbol, timeframe, advance_slot, one_shot_massive_refresh=one_shot_refresh
+            )
 
         if not self._script.exists():
             log.warning("retrain_scheduler_script_not_found", path=str(self._script))
             return False
 
-        cmd = [sys.executable, str(self._script)] + self._train_args
+        cmd = [sys.executable, str(self._script)] + self._compose_launch_train_args(
+            one_shot_massive_refresh=one_shot_refresh
+        )
         log.info(
             "retrain_scheduler_launch",
             trigger=self._cfg.retrain_trigger,

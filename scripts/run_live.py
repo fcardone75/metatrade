@@ -42,7 +42,7 @@ from metatrade.ml.config import MLConfig
 from metatrade.ml.live_tracker import LiveAccuracyTracker
 from metatrade.ml.model_watcher import ModelWatcher
 from metatrade.ml.registry import ModelRegistry
-from metatrade.ml.retrain_scheduler import RetrainScheduler
+from metatrade.ml.retrain_scheduler import RetrainScheduler, build_ml_retrain_train_args
 from metatrade.market_data.config import MarketDataConfig
 from metatrade.runner.config import RunnerConfig
 from metatrade.runner.module_config import ModuleConfig
@@ -372,21 +372,12 @@ def build_ml_stack(
 
     retrain_scheduler: RetrainScheduler | None = None
     if ml_cfg.retrain_enabled:
-        # Note: --source/--symbol/--timeframe/--model-dir are overridden by the
-        # worker using job metadata and its own local paths. They are kept here
-        # only for the local (non-distributed) training path.
-        train_args = [
-            "--source", "mt5",
-            "--symbol", args.symbol,
-            "--timeframe", args.timeframe,
-            "--model-dir", str(args.model_dir),
-            "--bars", str(ml_cfg.retrain_bars),
-            "--holdout-fraction", "0.2",
-            "--adaptive",
-            "--fallback-min", str(ml_cfg.adaptive_fallback_min),
-            "--target-buy-precision", str(ml_cfg.target_buy_precision),
-            "--target-sell-precision", str(ml_cfg.target_sell_precision),
-        ]
+        train_args = build_ml_retrain_train_args(
+            ml_cfg,
+            symbol=args.symbol,
+            timeframe=args.timeframe,
+            model_dir=str(args.model_dir),
+        )
         retrain_scheduler = RetrainScheduler(
             config=ml_cfg,
             train_args=train_args,

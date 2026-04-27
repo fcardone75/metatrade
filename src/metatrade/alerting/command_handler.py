@@ -106,6 +106,7 @@ class CommandHandler:
             "/daily": "Riepilogo giornata on-demand",
             "/sync": "Riallinea stats giornaliere da history MT5 (utile dopo restart)",
             "/retrain": "Avvia retraining manuale",
+            "/retrain_refresh": "Retrain con riscarico dati Massive (solo se ML_RETRAIN_SOURCE=massive)",
             "/training": "Stato training adattivo (tentativi, holdout, target)",
             "/stoptraining": "Interrompe training in corso",
             "/removetraining": "Rimuove training in corso",

@@ -1,5 +1,5 @@
 .PHONY: help install install-worker install-live start-worker test test-fast lint lint-fix typecheck clean \
-        train train-csv train-mt5 train-mt5-mtf \
+        train train-csv train-mt5 train-mt5-mtf fetch-massive train-massive \
         backtest backtest-no-ml backtest-mt5 \
         walk-forward walk-forward-no-ml walk-forward-mt5 \
         paper paper-no-ml \
@@ -137,6 +137,25 @@ train-mt5-mtf:   ## Train su M5, M15, M30 da MT5 (TIMEFRAMES= override, PROMOTE_
 		--bars $(BARS) \
 		--model-dir $(MODEL_DIR) \
 		$(if $(PROMOTE_TF),--promote-timeframe $(PROMOTE_TF),)
+
+# REFRESH=1 forza riscarico Massive (fetch e train-massive)
+REFRESH ?=
+
+fetch-massive:   ## Scarica OHLCV forex da Massive in data/massive (serve MASSIVE_API_KEY in .env)
+	python scripts/fetch_massive_bars.py \
+		--symbol $(SYMBOL) \
+		--timeframe $(TIMEFRAME) \
+		--bars $(BARS) \
+		$(if $(filter 1,$(REFRESH)),--refresh,)
+
+train-massive:   ## Train con dati Massive (cache CSV; REFRESH=1 per riscaricare)
+	python scripts/train.py \
+		--source massive \
+		--symbol $(SYMBOL) \
+		--timeframe $(TIMEFRAME) \
+		--bars $(BARS) \
+		--model-dir $(MODEL_DIR) \
+		$(if $(filter 1,$(REFRESH)),--massive-refresh,)
 
 # ── Backtesting ───────────────────────────────────────────────────────────────
 
@@ -290,7 +309,8 @@ live-no-ml:   ## Start LIVE trading with technical indicators only — REAL MONE
 
 # ── Dashboard ─────────────────────────────────────────────────────────────────
 
-run-dashboard: venv-ensure  ## Start FastAPI observability dashboard (OBSERVABILITY_PORT in .env, default 8080)
+run-
+: venv-ensure  ## Start FastAPI observability dashboard (OBSERVABILITY_PORT in .env, default 8080)
 	python scripts/run_dashboard.py
 
 # Suggerimento Windows: liberare la porta prima di run-dashboard

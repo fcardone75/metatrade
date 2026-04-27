@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field
 
@@ -153,6 +154,15 @@ class MLConfig(BaseConfig):
 
     # Retrain every N bars processed (used when retrain_trigger="bars").
     retrain_every_bars: int = Field(default=5000, ge=100)
+
+    # Sorgente dati per il retrain: mt5 | massive (REST; sul worker Mongo niente upload barre).
+    retrain_source: Literal["mt5", "massive"] = Field(default="mt5")
+
+    # Con retrain_source=massive: ogni retrain pianificato passa --massive-refresh (riscarico CSV).
+    retrain_massive_refresh: bool = Field(default=False)
+
+    # Aggiungi --adaptive agli argomenti di train.py per il retrain (disattiva se preferisci run più corti).
+    retrain_adaptive: bool = Field(default=True)
 
     # ── Signal enricher gates ────────────────────────────────────────────────
     # Downgrade directional signals to HOLD when the confidence-margin (top1

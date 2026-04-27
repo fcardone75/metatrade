@@ -42,7 +42,7 @@ from metatrade.ml.config import MLConfig
 from metatrade.ml.live_tracker import LiveAccuracyTracker
 from metatrade.ml.model_watcher import ModelWatcher
 from metatrade.ml.registry import ModelRegistry
-from metatrade.ml.retrain_scheduler import RetrainScheduler
+from metatrade.ml.retrain_scheduler import RetrainScheduler, build_ml_retrain_train_args
 from metatrade.market_data.config import MarketDataConfig
 from metatrade.runner.config import RunnerConfig
 from metatrade.runner.module_config import ModuleConfig
@@ -196,13 +196,12 @@ def build_ml_stack(
 
     retrain_scheduler: RetrainScheduler | None = None
     if ml_cfg.retrain_enabled:
-        train_args = [
-            "--source", "mt5",
-            "--symbol", args.symbol,
-            "--timeframe", args.timeframe,
-            "--model-dir", str(args.model_dir),
-            "--holdout-fraction", "0.2",
-        ]
+        train_args = build_ml_retrain_train_args(
+            ml_cfg,
+            symbol=args.symbol,
+            timeframe=args.timeframe,
+            model_dir=str(args.model_dir),
+        )
         retrain_scheduler = RetrainScheduler(
             config=ml_cfg,
             train_args=train_args,

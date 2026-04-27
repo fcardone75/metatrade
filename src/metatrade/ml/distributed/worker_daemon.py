@@ -112,17 +112,24 @@ def _run_job(
     progress_store = MongoProgressStore(db)
     transfer = DataTransfer(db)
 
-    # ── Download bar data (skip if already present from a previous run) ──────
+    data_mode: str = str(job.get("data_mode") or "gridfs")
+    massive_cache = work_dir / "massive"
     csv_path = work_dir / f"{symbol}_{timeframe}_{job_id}.csv"
-    if csv_path.exists():
-        log.info("worker_bars_reusing_cached", job_id=job_id, path=str(csv_path))
+
+    # ── Barre: GridFS dal master oppure Massive sul worker ────────────────────
+    if data_mode == "massive":
+        massive_cache.mkdir(parents=True, exist_ok=True)
+        log.info("worker_training_massive", job_id=job_id, cache_dir=str(massive_cache))
     else:
-        try:
-            row_count = transfer.bars_to_csv_file(job["data_gridfs_id"], str(csv_path))
-            log.info("worker_bars_downloaded", job_id=job_id, rows=row_count)
-        except Exception as exc:
-            queue.fail(job_id, f"bar download failed: {exc}")
-            return
+        if csv_path.exists():
+            log.info("worker_bars_reusing_cached", job_id=job_id, path=str(csv_path))
+        else:
+            try:
+                row_count = transfer.bars_to_csv_file(job["data_gridfs_id"], str(csv_path))
+                log.info("worker_bars_downloaded", job_id=job_id, rows=row_count)
+            except Exception as exc:
+                queue.fail(job_id, f"bar download failed: {exc}")
+                return
 
     # ── Detect resume: how many adaptive attempts already completed? ──────────
     adaptive_path = work_dir / "models" / "adaptive_progress.json"
@@ -140,11 +147,14 @@ def _run_job(
     progress_store.init(job)
 
     # ── Build train.py command ────────────────────────────────────────────────
-    # Drop all environment-specific flags from the master's train_args
-    # (source, file, symbol, timeframe, model-dir are all master-side paths or
-    # data sources that are irrelevant on the worker). Inject correct values
-    # from the job document and the worker's own temp directory.
-    _ENV_FLAGS = {"--source", "--file", "--symbol", "--timeframe", "--model-dir"}
+    _FLAGS_WITH_VALUE = {
+        "--source",
+        "--file",
+        "--symbol",
+        "--timeframe",
+        "--model-dir",
+        "--massive-cache-dir",
+    }
     base_args: list[str] = list(job.get("train_args", []))
     filtered: list[str] = []
     skip_next = False
@@ -152,7 +162,7 @@ def _run_job(
         if skip_next:
             skip_next = False
             continue
-        if arg in _ENV_FLAGS:
+        if arg in _FLAGS_WITH_VALUE:
             skip_next = True
             continue
         filtered.append(arg)
@@ -167,18 +177,42 @@ def _run_job(
     job_backend = job.get("backend")
     backend_args = ["--backend", job_backend] if job_backend else []
 
-    cmd = [
-        sys.executable,
-        str(_TRAIN_SCRIPT),
-        "--source", "csv",
-        "--file", str(csv_path),
-        "--symbol", symbol,
-        "--timeframe", timeframe,
-        "--model-dir", str(model_dir),
-        *filtered,
-        *backend_args,
-        *resume_args,
-    ]
+    if data_mode == "massive":
+        cmd = [
+            sys.executable,
+            str(_TRAIN_SCRIPT),
+            "--source",
+            "massive",
+            "--symbol",
+            symbol,
+            "--timeframe",
+            timeframe,
+            "--model-dir",
+            str(model_dir),
+            "--massive-cache-dir",
+            str(massive_cache),
+            *filtered,
+            *backend_args,
+            *resume_args,
+        ]
+    else:
+        cmd = [
+            sys.executable,
+            str(_TRAIN_SCRIPT),
+            "--source",
+            "csv",
+            "--file",
+            str(csv_path),
+            "--symbol",
+            symbol,
+            "--timeframe",
+            timeframe,
+            "--model-dir",
+            str(model_dir),
+            *filtered,
+            *backend_args,
+            *resume_args,
+        ]
 
     # ── Launch sync + cancel-watch thread ────────────────────────────────────
     stop_event = threading.Event()
