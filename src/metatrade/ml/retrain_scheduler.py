@@ -38,7 +38,6 @@ if TYPE_CHECKING:
 log = get_logger(__name__)
 
 _TRAIN_SCRIPT = Path(__file__).parent.parent.parent.parent / "scripts" / "train.py"
-_BAR_BUFFER_SIZE = 50_000  # ~34 days of M1 bars
 
 
 def _is_weekend(dt: datetime) -> bool:
@@ -110,6 +109,9 @@ class RetrainScheduler:
 
         self._bars_since_last: int = 0
         self._process: subprocess.Popen | None = None  # type: ignore[type-arg]
+        # Buffer sized to retrain_bars so the distributed path can send exactly
+        # as many bars as train.py would fetch from MT5 in the local path.
+        _buf_size = max(self._cfg.retrain_bars, 1_000)
 
         # Wall-clock slot tracking: the UTC datetime of the last slot we fired.
         # Initialised to "now" so we don't immediately re-run a slot that
@@ -117,7 +119,7 @@ class RetrainScheduler:
         self._last_triggered_slot: datetime = datetime.now(UTC)
 
         # ── Bar buffer (for remote training — uploaded to GridFS) ──────────────
-        self._bar_buffer: deque[Bar] = deque(maxlen=_BAR_BUFFER_SIZE)
+        self._bar_buffer: deque[Bar] = deque(maxlen=_buf_size)
 
         # ── Distributed training state ─────────────────────────────────────────
         self._mongo_cfg: Any = None

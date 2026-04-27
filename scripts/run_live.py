@@ -380,6 +380,7 @@ def build_ml_stack(
             "--symbol", args.symbol,
             "--timeframe", args.timeframe,
             "--model-dir", str(args.model_dir),
+            "--bars", str(ml_cfg.retrain_bars),
             "--holdout-fraction", "0.2",
             "--adaptive",
             "--fallback-min", str(ml_cfg.adaptive_fallback_min),

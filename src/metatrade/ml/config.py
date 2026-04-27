@@ -135,6 +135,11 @@ class MLConfig(BaseConfig):
     # Whether to automatically launch train.py in the background.
     retrain_enabled: bool = Field(default=False)
 
+    # Number of MT5 bars to fetch for each retrain run (local path).
+    # Also sets the bar buffer size for the distributed path.
+    # 30_000 M1 bars ≈ 3 weeks; 200_000 M1 bars ≈ 4.5 months.
+    retrain_bars: int = Field(default=30_000, ge=1_000)
+
     # Trigger mode: "hours" = fixed daily slots; "bars" = every N bars.
     retrain_trigger: str = Field(default="hours")
 

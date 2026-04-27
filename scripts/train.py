@@ -58,6 +58,8 @@ from metatrade.core.log import configure_logging, get_logger  # noqa: E402
 from metatrade.market_data.config import MarketDataConfig  # noqa: E402
 from metatrade.ml.config import MLConfig  # noqa: E402
 from metatrade.ml.registry import ModelRegistry  # noqa: E402
+from metatrade.ml.targets import ContinuousTargetBuilder  # noqa: E402
+from metatrade.ml.trainers import ExpectedValueTrainer  # noqa: E402
 from metatrade.ml.walk_forward import (  # noqa: E402
     WalkForwardFold,
     WalkForwardResult,
@@ -486,6 +488,73 @@ def _atomic_write_training_progress(path: Path, payload: dict[str, Any]) -> None
             pass
 
 
+def _train_ev_model(
+    feature_cache: list,
+    bars: list,
+    best_fold: WalkForwardFold,
+    ml_cfg: MLConfig,
+) -> ExpectedValueTrainer | None:
+    """Train EV regressor on the test window of the best fold (OOS from classifier).
+
+    Using the test window (not the training window) avoids leakage: the EV
+    regressor and the classifier share the same feature vectors, so training
+    both on the same bars would let the EV model benefit from the same in-sample
+    memorisation that the classifier already used.
+    """
+    test_start = best_fold.test_start
+    test_end = best_fold.test_end
+    forward_bars = ml_cfg.forward_bars
+
+    ev_end = min(test_end + forward_bars, len(bars))
+    ev_bars = bars[test_start:ev_end]
+
+    target_builder = ContinuousTargetBuilder(forward_bars=forward_bars)
+    targets = target_builder.build(ev_bars)
+    if len(targets) < ml_cfg.min_train_samples:
+        log.warning(
+            "ev_train_skip",
+            reason="insufficient_targets",
+            n_targets=len(targets),
+            min_required=ml_cfg.min_train_samples,
+        )
+        return None
+
+    # Align feature vectors with targets.
+    # feature_cache is indexed over the full bars array; target.bar_index is
+    # relative to ev_bars, so the global index is test_start + bar_index.
+    aligned_fvs = []
+    aligned_targets = []
+    for t in targets:
+        global_idx = test_start + t.bar_index
+        fv = feature_cache[global_idx] if global_idx < len(feature_cache) else None
+        if fv is not None:
+            aligned_fvs.append(fv)
+            aligned_targets.append(t)
+
+    if len(aligned_fvs) < ml_cfg.min_train_samples:
+        log.warning(
+            "ev_train_skip",
+            reason="insufficient_aligned_samples",
+            n_aligned=len(aligned_fvs),
+            min_required=ml_cfg.min_train_samples,
+        )
+        return None
+
+    ev_trainer = ExpectedValueTrainer(config=ml_cfg)
+    try:
+        metrics = ev_trainer.fit(aligned_fvs, aligned_targets)
+        log.info(
+            "ev_model_trained",
+            n_samples=metrics.n_samples,
+            in_sample_r2=round(metrics.r2, 4),
+            in_sample_mae=round(metrics.mae, 4),
+        )
+        return ev_trainer
+    except ValueError as exc:
+        log.warning("ev_train_failed", error=str(exc))
+        return None
+
+
 def _log_fold_table(result: WalkForwardResult) -> None:
     for fold in result.folds:
         log.info(
@@ -703,11 +772,15 @@ def train_single_timeframe(
             },
         )
 
+    feature_cache = trainer.precompute_features(
+        bars,
+        higher_tf_bars=higher_tf_bars or None,
+        on_progress=on_precompute_progress,
+    )
     result, model = trainer.run(
         bars,
         on_fold_complete=on_fold_complete,
-        higher_tf_bars=higher_tf_bars or None,
-        on_precompute_progress=on_precompute_progress,
+        feature_cache=feature_cache,
     )
 
     # Summary after all folds
@@ -855,11 +928,20 @@ def train_single_timeframe(
     args.model_dir.mkdir(parents=True, exist_ok=True)
     registry = ModelRegistry(config=ml_cfg, persist=True)
     best_fold = result.folds[result.best_fold_index]
+    ev_trainer = _train_ev_model(feature_cache, bars, best_fold, ml_cfg)
     version = f"v{time.strftime('%Y%m%d_%H%M%S')}_{timeframe}"
+    ev_tags: dict[str, object] = {}
+    if ev_trainer is not None and ev_trainer.metrics is not None:
+        ev_tags = {
+            "ev_r2": round(ev_trainer.metrics.r2, 4),
+            "ev_mae": round(ev_trainer.metrics.mae, 4),
+            "ev_n_samples": ev_trainer.metrics.n_samples,
+        }
     snapshot = registry.register(
         classifier=model,
         symbol=args.symbol,
         version=version,
+        ev_trainer=ev_trainer,
         tags={
             "source": args.source,
             "backend": ml_cfg.backend,
@@ -869,6 +951,7 @@ def train_single_timeframe(
             "best_fold": best_fold.fold_index,
             "train_bars": len(bars),
             "timeframe": timeframe,
+            **ev_tags,
         },
     )
     registry.promote(snapshot.version)
@@ -1425,11 +1508,20 @@ def auto_tune_single_timeframe(
     args.model_dir.mkdir(parents=True, exist_ok=True)
     registry = ModelRegistry(config=best_cfg, persist=True)
     best_fold = best_result.folds[best_result.best_fold_index]
+    ev_trainer = _train_ev_model(feature_cache, bars, best_fold, best_cfg)
     version = f"v{time.strftime('%Y%m%d_%H%M%S')}_{timeframe}_at"
+    ev_tags_at: dict[str, object] = {}
+    if ev_trainer is not None and ev_trainer.metrics is not None:
+        ev_tags_at = {
+            "ev_r2": round(ev_trainer.metrics.r2, 4),
+            "ev_mae": round(ev_trainer.metrics.mae, 4),
+            "ev_n_samples": ev_trainer.metrics.n_samples,
+        }
     snapshot = registry.register(
         classifier=best_model,
         symbol=args.symbol,
         version=version,
+        ev_trainer=ev_trainer,
         tags={
             "source": args.source,
             "backend": best_cfg.backend,
@@ -1443,6 +1535,7 @@ def auto_tune_single_timeframe(
             "best_fold": best_fold.fold_index,
             "train_bars": n_bars,
             "timeframe": timeframe,
+            **ev_tags_at,
         },
     )
     registry.promote(snapshot.version)
