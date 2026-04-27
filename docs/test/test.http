@@ -1,0 +1,1 @@
+GET https://api.massive.com/v3/reference/tickers?market=fx&active=true&order=asc&limit=100&sort=ticker&apiKey=Xoo26kXIO7OzxbY8My_EZSvVTwZs1o6H
