@@ -971,6 +971,8 @@ class BaseRunner:
             return "🔁 Training già in corso — attendi che finisca."
         launched = self._retrain_scheduler.trigger_now()
         if launched:
+            if self._retrain_scheduler.train_source == "massive":
+                return "🚀 Training avviato (Massive: <b>cache CSV</b>, niente riscarico)."
             return "🚀 Training avviato manualmente."
         return "❌ Impossibile avviare il training (script non trovato o errore di sistema)."
 

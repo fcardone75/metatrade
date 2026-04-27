@@ -519,6 +519,7 @@ class TelegramAlerter:
     QUICK_KEYBOARD: tuple[tuple[str, ...], ...] = (
         ("📊 positions", "🔄 sync", "📅 daily"),
         ("🔁 retrain", "🎯 training", "🏆 trained"),
+        ("🗑 removetraining", "⏹ stoptraining", "📥 retrain_refresh"),
     )
 
     def send_quick_keyboard(

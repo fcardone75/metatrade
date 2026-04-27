@@ -158,9 +158,6 @@ class MLConfig(BaseConfig):
     # Sorgente dati per il retrain: mt5 | massive (REST; sul worker Mongo niente upload barre).
     retrain_source: Literal["mt5", "massive"] = Field(default="mt5")
 
-    # Con retrain_source=massive: ogni retrain pianificato passa --massive-refresh (riscarico CSV).
-    retrain_massive_refresh: bool = Field(default=False)
-
     # Aggiungi --adaptive agli argomenti di train.py per il retrain (disattiva se preferisci run più corti).
     retrain_adaptive: bool = Field(default=True)
 

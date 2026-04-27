@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import subprocess
 import sys
-import time
 from collections import deque
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -258,7 +257,8 @@ class RetrainScheduler:
     def trigger_now(self, *, massive_refresh: bool = False) -> bool:
         """Force an immediate training run, bypassing the schedule.
 
-        ``massive_refresh=True`` aggiunge --massive-refresh (solo con --source massive).
+        ``massive_refresh=True`` è l’unico modo per aggiungere ``--massive-refresh``
+        (riscarico CSV); ``/retrain`` e gli slot schedulati non lo passano mai.
         """
         if self.is_training:
             return False
@@ -332,7 +332,7 @@ class RetrainScheduler:
         args_for_job = list(self._train_args)
         if (
             self._cfg.retrain_source == "massive"
-            and (self._cfg.retrain_massive_refresh or one_shot_massive_refresh)
+            and one_shot_massive_refresh
             and "--massive-refresh" not in args_for_job
         ):
             args_for_job.append("--massive-refresh")
@@ -617,7 +617,7 @@ class RetrainScheduler:
         args = list(self._train_args)
         if (
             _extract_arg(args, "--source") == "massive"
-            and (self._cfg.retrain_massive_refresh or one_shot_massive_refresh)
+            and one_shot_massive_refresh
             and "--massive-refresh" not in args
         ):
             args.append("--massive-refresh")
