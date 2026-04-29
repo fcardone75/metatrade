@@ -1,5 +1,5 @@
 .PHONY: help install install-worker install-live start-worker test test-fast lint lint-fix typecheck clean \
-        train train-csv train-mt5 train-mt5-mtf fetch-massive train-massive \
+        train train-csv train-mt5 train-mt5-mtf fetch-massive backfill-massive-mongo backfill-massive-batches train-massive \
         backtest backtest-no-ml backtest-mt5 \
         walk-forward walk-forward-no-ml walk-forward-mt5 \
         paper paper-no-ml \
@@ -140,6 +140,14 @@ train-mt5-mtf:   ## Train su M5, M15, M30 da MT5 (TIMEFRAMES= override, PROMOTE_
 
 # REFRESH=1 forza riscarico Massive (fetch e train-massive)
 REFRESH ?=
+BACKFILL_FROM ?=
+BACKFILL_TO ?=
+SYMBOL_LIMIT ?=
+SYMBOL_OFFSET ?=
+BATCH_SIZE ?= 10
+MAX_BATCHES ?=
+RUN_ID ?=
+RESUME ?=
 
 fetch-massive:   ## Scarica OHLCV forex da Massive in data/massive (serve MASSIVE_API_KEY in .env)
 	python scripts/fetch_massive_bars.py \
@@ -147,6 +155,29 @@ fetch-massive:   ## Scarica OHLCV forex da Massive in data/massive (serve MASSIV
 		--timeframe $(TIMEFRAME) \
 		--bars $(BARS) \
 		$(if $(filter 1,$(REFRESH)),--refresh,)
+
+backfill-massive-mongo:   ## Scarica storico Massive e salva barre idempotenti su Mongo (SYMBOLS=... TIMEFRAMES=...)
+	python scripts/backfill_massive_mongo.py \
+		--env-file .env.worker \
+		--symbols $(or $(SYMBOLS),$(SYMBOL)) \
+		--timeframes $(or $(TIMEFRAMES),$(TIMEFRAME)) \
+		--bars $(BARS) \
+		$(if $(BACKFILL_FROM),--from $(BACKFILL_FROM),) \
+		$(if $(BACKFILL_TO),--to $(BACKFILL_TO),) \
+		$(if $(SYMBOL_LIMIT),--symbol-limit $(SYMBOL_LIMIT),) \
+		$(if $(SYMBOL_OFFSET),--symbol-offset $(SYMBOL_OFFSET),)
+
+backfill-massive-batches:   ## Esegue backfill Massive->Mongo a batch riprendibili (tutti i TF di default)
+	python scripts/run_massive_backfill_batches.py \
+		--env-file .env.worker \
+		--timeframes $(or $(TIMEFRAMES),M1,M5,M15,M30,H1,H4,D1) \
+		--from $(or $(BACKFILL_FROM),oldest) \
+		--batch-size $(BATCH_SIZE) \
+		--start-offset $(or $(SYMBOL_OFFSET),0) \
+		$(if $(BACKFILL_TO),--to $(BACKFILL_TO),) \
+		$(if $(MAX_BATCHES),--max-batches $(MAX_BATCHES),) \
+		$(if $(RUN_ID),--run-id $(RUN_ID),) \
+		$(if $(filter 1,$(RESUME)),--resume,)
 
 train-massive:   ## Train con dati Massive (cache CSV; REFRESH=1 per riscaricare)
 	python scripts/train.py \
@@ -309,8 +340,7 @@ live-no-ml:   ## Start LIVE trading with technical indicators only — REAL MONE
 
 # ── Dashboard ─────────────────────────────────────────────────────────────────
 
-run-
-: venv-ensure  ## Start FastAPI observability dashboard (OBSERVABILITY_PORT in .env, default 8080)
+run-dashboard: venv-ensure  ## Start FastAPI observability dashboard (OBSERVABILITY_PORT in .env, default 8080)
 	python scripts/run_dashboard.py
 
 # Suggerimento Windows: liberare la porta prima di run-dashboard

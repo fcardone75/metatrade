@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import urllib.parse
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from metatrade.core.log import get_logger
@@ -108,3 +108,50 @@ def fetch_aggregates_range(
         date_to=date_to.isoformat(),
     )
     return out
+
+
+def fetch_first_aggregate_date(
+    *,
+    client: ThrottledMassiveClient,
+    settings: MassiveSettings,
+    symbol: str,
+    timeframe: str,
+    search_from: date,
+    search_to: date,
+) -> date | None:
+    """Return the date of the oldest aggregate bar available in a broad range."""
+    ticker = normalize_forex_ticker(symbol)
+    mult, span = timeframe_to_aggs_params(timeframe)
+    path = (
+        f"/v2/aggs/ticker/{urllib.parse.quote(ticker, safe=':')}"
+        f"/range/{mult}/{span}/{search_from.isoformat()}/{search_to.isoformat()}"
+    )
+    payload = client.get_json(
+        path,
+        {
+            "adjusted": "true",
+            "sort": "asc",
+            "limit": str(settings.max_aggs_limit),
+        },
+    )
+    rows = _parse_results(payload)
+    if not rows:
+        log.warning(
+            "massive_first_aggregate_not_found",
+            ticker=ticker,
+            timeframe=timeframe,
+            search_from=search_from.isoformat(),
+            search_to=search_to.isoformat(),
+        )
+        return None
+    t_ms = int(rows[0]["t"])
+    first = datetime.fromtimestamp(t_ms / 1000.0, tz=UTC).date()
+    log.info(
+        "massive_first_aggregate_found",
+        ticker=ticker,
+        timeframe=timeframe,
+        first_date=first.isoformat(),
+        search_from=search_from.isoformat(),
+        search_to=search_to.isoformat(),
+    )
+    return first
