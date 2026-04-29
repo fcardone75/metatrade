@@ -65,17 +65,26 @@ class ThrottledMassiveClient:
         if extra_params:
             url = append_query(url, extra_params)
 
-        self._throttle()
         req = urllib.request.Request(url, method="GET", headers={"Accept": "application/json"})
-        try:
-            with self._urlopen(req, timeout=self._s.timeout_sec) as resp:
-                raw = resp.read().decode("utf-8", errors="replace")
-                status = getattr(resp, "status", None) or resp.getcode()
-        except urllib.error.HTTPError as e:
-            body = e.read().decode("utf-8", errors="replace") if e.fp else ""
-            raise MassiveHttpError(e.code, body, url) from e
+        # Retry on 429 with exponential backoff (subprocess fresh start may hit rate limit)
+        backoff = 60.0
+        for attempt in range(4):
+            self._throttle()
+            try:
+                with self._urlopen(req, timeout=self._s.timeout_sec) as resp:
+                    raw = resp.read().decode("utf-8", errors="replace")
+                    status = getattr(resp, "status", None) or resp.getcode()
+            except urllib.error.HTTPError as e:
+                if e.code == 429 and attempt < 3:
+                    time.sleep(backoff)
+                    backoff *= 2
+                    continue
+                body = e.read().decode("utf-8", errors="replace") if e.fp else ""
+                raise MassiveHttpError(e.code, body, url) from e
 
-        if status and status >= 400:
-            raise MassiveHttpError(int(status), raw, url)
+            if status and status >= 400:
+                raise MassiveHttpError(int(status), raw, url)
 
-        return json.loads(raw)
+            return json.loads(raw)
+
+        raise MassiveHttpError(429, "max retries exceeded", url)

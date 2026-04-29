@@ -79,8 +79,8 @@ def main() -> None:
             {"_id": run_id},
             {
                 "$setOnInsert": {
-                    "created_at": __import__("datetime").datetime.datetime.now(
-                        __import__("datetime").datetime.UTC
+                    "created_at": __import__("datetime").datetime.now(
+                        __import__("datetime").timezone.utc
                     ),
                 },
                 "$set": {

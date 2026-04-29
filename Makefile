@@ -128,6 +128,7 @@ train-mt5:   ## Train ML model fetching data live from MT5  (SYMBOL=EURUSD BARS=
 		--model-dir $(MODEL_DIR)
 
 TIMEFRAMES ?= M5,M15,M30
+BACKFILL_TF ?= M1,M5,M15,M30,H1,H4,D1
 
 train-mt5-mtf:   ## Train su M5, M15, M30 da MT5 (TIMEFRAMES= override, PROMOTE_TF= timeframe attivo)
 	python scripts/train.py \
@@ -168,11 +169,11 @@ backfill-massive-mongo:   ## Scarica storico Massive e salva barre idempotenti s
 		$(if $(SYMBOL_OFFSET),--symbol-offset $(SYMBOL_OFFSET),)
 
 backfill-massive-batches:   ## Esegue backfill Massive->Mongo a batch riprendibili (tutti i TF di default)
-	python scripts/run_massive_backfill_batches.py \
+	$(VENV_ABS)/bin/python scripts/run_massive_backfill_batches.py \
 		--env-file .env.worker \
-		--timeframes $(or $(TIMEFRAMES),M1,M5,M15,M30,H1,H4,D1) \
+		--timeframes $(BACKFILL_TF) \
 		--from $(or $(BACKFILL_FROM),oldest) \
-		--batch-size $(BATCH_SIZE) \
+		--batch-size $(or $(BATCH_SIZE),10) \
 		--start-offset $(or $(SYMBOL_OFFSET),0) \
 		$(if $(BACKFILL_TO),--to $(BACKFILL_TO),) \
 		$(if $(MAX_BATCHES),--max-batches $(MAX_BATCHES),) \
