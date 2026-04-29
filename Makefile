@@ -177,7 +177,8 @@ backfill-massive-batches:   ## Esegue backfill Massive->Mongo a batch riprendibi
 		$(if $(BACKFILL_TO),--to $(BACKFILL_TO),) \
 		$(if $(MAX_BATCHES),--max-batches $(MAX_BATCHES),) \
 		$(if $(RUN_ID),--run-id $(RUN_ID),) \
-		$(if $(filter 1,$(RESUME)),--resume,)
+		$(if $(filter 1,$(RESUME)),--resume,) \
+		$(if $(filter 1,$(FORCE_RELOAD)),--force-reload,)
 
 train-massive:   ## Train con dati Massive (cache CSV; REFRESH=1 per riscaricare)
 	python scripts/train.py \

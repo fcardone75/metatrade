@@ -38,6 +38,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--start-offset", type=int, default=0)
     p.add_argument("--run-id", default="", help="Checkpoint id Mongo. Default: tf+from+to")
     p.add_argument("--resume", action="store_true", help="Riprende da next_offset del checkpoint")
+    p.add_argument("--force-reload", action="store_true", help="Ignora checkpoint e riparte da offset 0")
     p.add_argument("--max-batches", type=int, default=0, help="0 = tutti i batch rimanenti")
     p.add_argument("--dry-run", action="store_true")
     return p.parse_args()
@@ -92,8 +93,18 @@ def main() -> None:
             upsert=True,
         )
 
+    if args.force_reload and args.resume:
+        raise SystemExit("--force-reload e --resume sono mutualmente esclusivi")
+
     offset = args.start_offset
-    if args.resume:
+    if args.force_reload:
+        if checkpoint_col is not None:
+            checkpoint_col.update_one(
+                {"_id": run_id},
+                {"$set": {"next_offset": 0, "completed_batches": 0, "status": "running"}},
+            )
+        offset = 0
+    elif args.resume:
         if checkpoint_col is None:
             raise SystemExit("--resume richiede Mongo, non usare --dry-run")
         doc = checkpoint_col.find_one({"_id": run_id}) or {}
